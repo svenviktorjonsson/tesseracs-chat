@@ -44,12 +44,17 @@ SUPPORTED_LANGUAGES = {
         # Uses 'sh -c' to chain the compilation (g++) and execution steps.
         "command": ["sh", "-c", "g++ /app/script.cpp -o /app/output_executable && /app/output_executable"]
     },
-    "c#": {
-        "image": "mcr.microsoft.com/dotnet/sdk:latest", # .NET SDK image
-        "filename": "Script.cs", # C# convention often uses PascalCase filename
-        # Command creates a minimal console project, copies user code, and runs.
-        # 'dotnet new' output is suppressed ('> /dev/null').
-        "command": ["sh", "-c", "cd /app && dotnet new console --force -o . > /dev/null && cp Script.cs Program.cs && dotnet run"]
+    "csharp": {
+        "image": "mcr.microsoft.com/dotnet/sdk:latest",
+        "filename": "Script.cs", # Backend saves user code as Script.cs
+        # ------ UPDATED COMMAND TO FIX DUPLICATE DEFINITION ERRORS ------
+        # Creates project, copies user code over Program.cs,
+        # REMOVES the original Script.cs, then runs.
+        "command": [
+            "sh", "-c",
+            "cd /app && dotnet new console --force -o . > /dev/null && cp Script.cs Program.cs && rm Script.cs && dotnet run"
+        ]
+        # ------ END UPDATED COMMAND ------
     },
     "typescript": {
         "image": "node-ts:18", # Use standard Node.js 18 image (Debian based, includes npm/npx)
