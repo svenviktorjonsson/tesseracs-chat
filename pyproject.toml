@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "tesseracs-chat"
+version = "0.1.0"
+description = "Web chat interface for Ollama using FastAPI and LangChain"
+authors = ["Viktor Jonsson <viktor.jonsson@tesseracs.com>"]
+readme = "README.md" # Optional README
+packages = [
+    { include = "app" },
+]
+
+[tool.poetry.dependencies]
+python = "^3.9" # Adjust Python version if needed
+fastapi = "^0.110.0"
+uvicorn = {extras = ["standard"], version = "^0.29.0"}
+
+# Let Poetry resolve the latest compatible LangChain versions
+# Using "*" allows any version, but be aware this might pull in breaking changes in the future.
+langchain = "*"
+langchain-ollama = "*"
+langchain-core = "*"
+langchain-community = "*"
+langchain-text-splitters = "*"
+
+# Other dependencies
+websockets = "^12.0" # Required by FastAPI for WebSockets
+python-dotenv = "^1.0.1" # For optional .env file
+aiofiles = "^23.2.1" # For serving static files asynchronously
+docker = "^7.1.0"
+
+[tool.poetry.scripts]
+app = "app.main:start_server" # Command to run the app
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+

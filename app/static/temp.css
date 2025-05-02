@@ -1,0 +1,364 @@
+/* --- General Styles & Scrollbar --- */
+html, body {
+    height: 100%;
+    margin: 0;
+    font-family: 'Inter', sans-serif;
+    background-color: #f3f4f6; /* Light gray background for the whole page */
+}
+
+#chat-history {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem; /* Use rem for scalable padding */
+    display: flex;
+    flex-direction: column;
+    background-color: #ffffff; /* White background for chat area */
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+    margin: 1rem; /* Add margin around the chat history */
+    border-radius: 0.5rem; /* Rounded corners */
+}
+
+/* Custom scrollbar for chat history */
+#chat-history::-webkit-scrollbar { width: 8px; }
+#chat-history::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 10px; }
+#chat-history::-webkit-scrollbar-thumb { background: #888; border-radius: 10px; }
+#chat-history::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* --- Message Styling --- */
+.message {
+    padding: 0.5rem 0.75rem; /* Use rem */
+    margin-bottom: 0.5rem;
+    border-radius: 0.5rem;
+    max-width: 90%;
+    word-wrap: break-word;
+    line-height: 1.5; /* Improve readability */
+}
+
+.user-message {
+    background-color: #dbeafe; /* Tailwind blue-100 */
+    align-self: flex-end;
+    margin-left: auto;
+    white-space: pre-wrap; /* Preserve user whitespace */
+}
+
+/* Container for a full AI turn (thinking + bubble + code blocks) */
+.ai-turn-container {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start; /* Align items to the left */
+    width: 100%; /* Take full width to allow max-width on children */
+    margin-bottom: 0.5rem; /* Consistent spacing */
+}
+
+.ai-message {
+    background-color: #e5e7eb; /* Tailwind gray-200 */
+    align-self: flex-start;
+    margin-right: auto;
+    max-width: 90%; /* Limit width */
+    /* white-space is handled by content now (Markdown, KaTeX, etc.) */
+}
+
+/* Styling for Markdown elements rendered inside .ai-message */
+.ai-message p { margin-bottom: 0.5em; }
+.ai-message p:last-child { margin-bottom: 0; }
+.ai-message ul, .ai-message ol { margin-left: 1.5em; margin-top: 0.5em; margin-bottom: 0.5em; }
+.ai-message li { margin-bottom: 0.25em; }
+.ai-message blockquote { border-left: 3px solid #ccc; padding-left: 0.8em; margin-left: 0; margin-top: 0.5em; margin-bottom: 0.5em; color: #555; }
+.ai-message code {
+    background-color: rgba(0, 0, 0, 0.06);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 0.9em;
+}
+/* Avoid double background for code elements within Prism blocks */
+.ai-message pre[class*="language-"] code {
+    background-color: transparent;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit; /* Inherit size from pre */
+}
+.ai-message a { color: #007bff; text-decoration: underline; }
+.ai-message a:hover { color: #0056b3; }
+.ai-message hr { border: none; border-top: 1px solid #ccc; margin: 1em 0; }
+.ai-message table { border-collapse: collapse; margin: 1em 0; width: auto; }
+.ai-message th, .ai-message td { border: 1px solid #ccc; padding: 0.3em 0.6em; text-align: left; }
+.ai-message th { background-color: #f2f2f2; font-weight: bold; }
+
+/* Code reference style in the main bubble */
+.code-reference {
+    font-family: monospace;
+    background-color: rgba(0, 0, 0, 0.08); /* Light gray background */
+    padding: 1px 5px; /* Small padding */
+    border-radius: 4px; /* Rounded corners */
+    font-size: 0.85em; /* Slightly smaller font */
+    white-space: nowrap; /* Prevent breaking */
+    margin: 0 2px; /* Add slight spacing around it */
+}
+
+/* --- Loading/Thinking Indicators --- */
+.loading-dots { display: inline-block; }
+.loading-dots::after {
+    display: inline-block; position: relative; left: 1px;
+    animation: ellipsis 1.5s infinite; content: ".";
+    width: 1.5em; text-align: left; vertical-align: bottom;
+}
+@keyframes ellipsis {
+    0% { content: "."; } 33% { content: ".."; } 66% { content: "..."; }
+}
+
+/* --- Thinking Area Styling --- */
+.thinking-area {
+    width: 100%; max-width: 90%; margin-bottom: 4px;
+    align-self: flex-start; font-size: 0.9em;
+}
+.thinking-area details {
+    width: 100%; border: 1px dashed #aaa; border-radius: 6px;
+    background-color: #f0f0f0; overflow: hidden;
+}
+.thinking-summary {
+    padding: 3px 8px; cursor: pointer; font-weight: normal; color: #444;
+    background-color: #e0e0e0; border-bottom: 1px dashed #aaa;
+    outline: none; user-select: none; list-style: none; display: block;
+    transition: background-color 0.15s ease;
+}
+.thinking-summary:hover { background-color: #d0d0d0; }
+.thinking-summary::-webkit-details-marker { display: none; }
+.thinking-summary .dots { display: inline-block; margin-left: 4px; }
+.thinking-summary .dots::after { /* Uses ellipsis animation defined above */
+    display: inline-block; position: relative; left: 1px;
+    animation: ellipsis 1.5s infinite; content: ".";
+    width: 1.5em; text-align: left; vertical-align: bottom;
+}
+.thinking-area details[open] > .thinking-summary .dots { display: none; }
+.thinking-area details pre {
+    margin: 0; padding: 8px; background-color: #f8f8f8;
+    white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word;
+    max-height: 200px; overflow-y: auto;
+}
+
+/* --- Code Block Area --- */
+.code-blocks-area {
+    width: 100%; /* Allow blocks to take full width */
+    max-width: 90%; /* Match AI bubble width */
+    align-self: flex-start; /* Align with AI bubble */
+    margin-top: 0.5rem; /* Space above code blocks */
+}
+
+.code-block-container {
+    margin-bottom: 0.75rem; /* Space between code blocks */
+    border-radius: 0.375rem; /* 6px */
+    overflow: hidden; /* Ensure children respect border radius */
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+/* --- Code Block Header (Refined Layout) --- */
+.code-block-header {
+    display: flex;
+    align-items: center; /* Vertically align items */
+    background-color: #e5e7eb; /* Tailwind gray-200 */
+    padding: 0.25rem 0.5rem; /* 4px 8px */
+    font-size: 0.8em;
+    color: #4b5563; /* Tailwind gray-600 */
+    gap: 0.625rem; /* 10px */
+}
+
+/* Buttons Div - Now on the left */
+.code-block-buttons {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem; /* 6px */
+    flex-shrink: 0; /* Prevent shrinking */
+}
+
+/* Title - Now in the middle */
+.code-block-title {
+    font-weight: 500;
+    flex-shrink: 0; /* Prevent shrinking */
+    margin-right: 0.625rem; /* 10px space after title */
+    white-space: nowrap; /* Prevent title wrapping */
+}
+
+/* Status Span - Pushed to the right */
+.code-status-span {
+    margin-left: auto; /* Pushes this element to the far right */
+    text-align: right;
+    font-style: italic;
+    font-size: 0.9em;
+    padding: 0 0.3125rem; /* 5px */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #6b7280; /* Default Idle color (gray-500) */
+}
+.code-status-span.running,
+.code-status-span.stopping { color: #ca8a04; font-weight: 500; } /* Amber-600 */
+.code-status-span.success { color: #16a34a; font-weight: 500; } /* Green-600 */
+.code-status-span.error,
+.code-status-span.stopped { color: #dc2626; font-weight: 500; } /* Red-600 */
+
+/* --- Code Block Action Buttons --- */
+.code-action-btn {
+    background-color: #d1d5db; /* Tailwind gray-300 */
+    color: #4b5563; /* Gray-600 */
+    border: none;
+    padding: 0.1875rem 0.4375rem; /* 3px 7px */
+    border-radius: 0.25rem; /* 4px */
+    cursor: pointer;
+    font-size: 0.9em;
+    line-height: 1.2; /* Adjusted for potential icons/text */
+    transition: background-color 0.2s ease, color 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap; /* Prevent text wrapping */
+}
+.code-action-btn:hover {
+    background-color: #9ca3af; /* Gray-400 */
+    color: #1f2937; /* Gray-800 */
+}
+.code-action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.code-action-btn.copied { background-color: #16a34a; color: white; }
+
+/* Specific Run/Stop Button Styling (SVG based) */
+.run-code-btn {
+    padding: 4px; /* Keep padding for click area */
+    width: 24px;  /* Fixed width */
+    height: 24px; /* Fixed height */
+    font-size: 1em; /* Control SVG size */
+    background-color: transparent !important; /* No background */
+    border: none !important; /* No border */
+    color: #9ca3af; /* Default icon color (gray-400) */
+    transition: color 0.2s ease; /* Transition color only */
+}
+.run-code-btn:hover {
+    color: #4b5563; /* Darker gray on hover */
+    background-color: transparent !important; /* Ensure no bg on hover */
+}
+
+.run-code-btn[data-status="idle"] { color: #16a34a; } /* Green Play */
+.run-code-btn[data-status="idle"]:hover { color: #15803d; } /* Darker Green */
+
+.run-code-btn[data-status="running"] { color: #dc2626; } /* Red Stop */
+.run-code-btn[data-status="running"]:hover { color: #b91c1c; } /* Darker Red */
+
+.run-code-btn[data-status="stopping"] {
+    color: #f59e0b; /* Amber-500 */
+    cursor: wait;
+    animation: spin 1s linear infinite;
+}
+.run-code-btn[data-status="stopping"]:hover { color: #d97706; } /* Darker Amber */
+
+/* Spin animation for stopping icon */
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* --- Code Area & Output Console --- */
+.code-block-container pre { /* Style the pre containing the code */
+    margin: 0;
+    border-bottom-left-radius: 0.375rem; /* Match container */
+    border-bottom-right-radius: 0.375rem;
+    border: 1px solid #d1d5db; /* Lighter border (gray-300) */
+    border-top: none;
+    overflow: hidden; /* Hide potential overflow */
+    /* Inherit background from Prism theme */
+}
+
+/* Style for the editable code element itself */
+pre[class*="language-"] > code[class*="language-"] {
+    outline: none;
+    white-space: pre-wrap !important;
+    word-wrap: break-word !important;
+    display: block;
+    min-height: 1.5em;
+    padding: 0.5em; /* Internal padding for code */
+    /* Font size/family inherited from Prism theme usually */
+}
+
+/* Optional: Style when focused */
+pre[class*="language-"] > code[class*="language-"]:focus {
+    background-color: rgba(0, 0, 0, 0.03); /* Very subtle focus background */
+    /* box-shadow: inset 0 0 0 1px rgba(0, 122, 255, 0.5); */ /* Optional focus border */
+}
+
+/* Output Console */
+.code-output-console {
+    background-color: #1f2937; /* Dark Gray/Black */
+    color: #f3f4f6; /* Light Gray default text */
+    margin-top: -1px; /* Overlap border slightly */
+    border-bottom-left-radius: 0.375rem;
+    border-bottom-right-radius: 0.375rem;
+    padding: 0.5rem; /* 8px */
+    border: 1px solid #4b5563; /* Darker border for console */
+    border-top: none;
+    max-height: 250px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 0.85em;
+    line-height: 1.4;
+}
+.code-output-console pre { margin: 0; padding: 0; white-space: pre-wrap; word-wrap: break-word; color: inherit; }
+.code-output-console span { display: inline; white-space: pre-wrap; }
+.code-output-console span.stdout-output { color: #ffffff; }
+.code-output-console span.stderr-output { color: #f87171; } /* Lighter Red */
+
+/* Hide code/console when toggle button is clicked */
+.code-block-container pre.hidden,
+.code-block-container .code-output-console.hidden { display: none !important; }
+
+/* --- Footer & Input --- */
+footer {
+    padding: 1rem;
+    background-color: #e5e7eb; /* Gray-200 */
+    border-top: 1px solid #d1d5db; /* Gray-300 */
+}
+#chat-form { display: flex; align-items: center; gap: 0.5rem; /* 8px */ }
+.think-checkbox-container {
+    display: flex; align-items: center; font-size: 0.9em; color: #4b5563;
+}
+.think-checkbox-container input { margin-right: 4px; cursor: pointer; }
+.think-checkbox-container label { cursor: pointer; user-select: none;}
+#message-input {
+    flex-grow: 1; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db;
+    border-radius: 0.5rem; outline: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+#message-input:focus {
+    border-color: #2563eb; /* Blue-600 */
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3); /* Blue focus ring */
+}
+#send-button {
+    background-color: #2563eb; /* Blue-600 */
+    color: white; font-weight: 500; padding: 0.5rem 1rem; border-radius: 0.5rem;
+    border: none; cursor: pointer; transition: background-color 0.2s ease;
+}
+#send-button:hover { background-color: #1d4ed8; /* Blue-700 */ }
+#send-button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* --- Error/System Messages --- */
+.error-message {
+    background-color: #fee2e2; /* Red-100 */
+    color: #991b1b; /* Red-800 */
+    border: 1px solid #fecaca; /* Red-200 */
+    align-self: flex-start; margin-right: auto; padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem; max-width: 90%; word-wrap: break-word;
+    margin-bottom: 0.5rem; white-space: pre-wrap;
+}
+.system-message {
+    width: 100%; text-align: center; font-size: 0.875rem; color: #6b7280;
+    font-style: italic; margin: 0.25rem 0;
+}
+
+/* --- KaTeX Specific Styling --- */
+span[data-katex-rendered="true"] .katex-display {
+    margin: 0.5em 0; overflow-x: auto; overflow-y: hidden; padding: 0.2em 0;
+}
+span[data-katex-rendered="true"] .katex { line-height: normal; vertical-align: baseline; font-size: 1em; }
+.katex-error { color: #cc0000; background-color: #fdd; border: 1px solid #cc0000; padding: 2px 4px; border-radius: 3px; }
+
+/* --- Utility --- */
+.hidden { display: none !important; }
+
+/* Add Prism.js theme styles separately */
+/* Link to a theme in your HTML or include the theme CSS rules here */
+/* e.g., @import url('path/to/prism-theme.css'); */
+
