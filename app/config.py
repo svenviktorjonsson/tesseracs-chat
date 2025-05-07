@@ -9,7 +9,7 @@ load_dotenv()
 
 # --- LLM Configuration ---
 # Model ID for the Ollama language model
-MODEL_ID = os.getenv("MODEL_ID", "qwen3")
+MODEL_ID = os.getenv("MODEL_ID", "qwen3:8B")
 # Base URL for the Ollama API server
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # Prefix used by the frontend to signal non-thinking requests (handled by frontend)

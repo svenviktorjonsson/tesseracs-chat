@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tesseracs-chat"
-version = "0.1.0"
+version = "1.0.0"
 description = "Web chat interface for Ollama using FastAPI and LangChain"
 authors = ["Viktor Jonsson <viktor.jonsson@tesseracs.com>"]
 readme = "README.md" # Optional README
@@ -26,6 +26,7 @@ websockets = "^12.0" # Required by FastAPI for WebSockets
 python-dotenv = "^1.0.1" # For optional .env file
 aiofiles = "^23.2.1" # For serving static files asynchronously
 docker = "^7.1.0"
+requests = "^2.32.3"
 
 [tool.poetry.scripts]
 app = "app.main:start_server" # Command to run the app

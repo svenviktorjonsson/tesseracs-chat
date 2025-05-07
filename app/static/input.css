@@ -1,3 +1,13 @@
+/* --- Add these imports at the TOP --- */
+@import 'prismjs/themes/prism-tomorrow.css';
+@import 'katex/dist/katex.min.css';
+/* ----------------------------------- */
+
+/* Your Tailwind directives */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* --- General Styles & Scrollbar --- */
 html, body {
     height: 100%;
