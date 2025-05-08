@@ -27,6 +27,10 @@ python-dotenv = "^1.0.1" # For optional .env file
 aiofiles = "^23.2.1" # For serving static files asynchronously
 docker = "^7.1.0"
 requests = "^2.32.3"
+python-multipart = "^0.0.20"
+fastapi-mail = "^1.4.2"
+certifi = "^2025.4.26"
+pydantic = "^2.11.4"
 
 [tool.poetry.scripts]
 app = "app.main:start_server" # Command to run the app

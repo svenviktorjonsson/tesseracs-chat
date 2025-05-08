@@ -22,6 +22,8 @@ exclude_dirs = (
     'venv',
     'env',
     '.env',
+    'dist',
+    "assets"
 )
 
 # Files to list in the tree but exclude their *content*

@@ -1,44 +1,43 @@
+// build.js
+
 const esbuild = require('esbuild');
 const stylePlugin = require('esbuild-style-plugin');
-const path = require('path');
+// const path = require('path'); // Not used
 
 async function build() {
-    console.log("--- Starting esbuild build process (Revised Approach) ---");
+    console.log("--- Starting esbuild build process (Revised Approach with Explicit PostCSS Plugins) ---");
     try {
         await esbuild.build({
-            // Define BOTH JS and main CSS as entry points
             entryPoints: {
-                'script': 'app/static/script.js', // Output will be dist/script.js
-                'input': 'app/static/input.css'   // Output will be dist/input.css
+                'script': 'app/static/script.js',
+                'input': 'app/static/input.css'
             },
             bundle: true,
-            // Use outdir instead of outfile when using multiple entry points
             outdir: 'app/static/dist',
-            entryNames: '[name]', // Keep original names (script.js, input.css)
-            format: 'iife', // For script.js
+            entryNames: '[name]',
+            format: 'iife',
             platform: 'browser',
             sourcemap: true,
             minify: false,
             loader: {
-              '.woff': 'file',
-              '.woff2': 'file',
-              '.ttf': 'file',
-              '.eot': 'file',
-              '.svg': 'file'
+                '.woff': 'file',
+                '.woff2': 'file',
+                '.ttf': 'file',
+                '.eot': 'file',
+                '.svg': 'file'
             },
             plugins: [
                 stylePlugin({
-                    // No 'extract' needed when CSS is an entry point
-                    // Plugin is still needed for PostCSS processing of input.css
-                    // and potentially CSS imported from node_modules via script.js
                     postcss: {
-                        // Intentionally empty to force loading postcss.config.js
-                    }
+                        // Explicitly define PostCSS plugins here
+                        plugins: [
+                            require('tailwindcss')('./tailwind.config.js'), // Pass config path explicitly
+                            require('autoprefixer'),
+                        ],
+                    },
                 })
             ],
-            // Assets relative to the outdir ('dist')
             assetNames: 'assets/[name]-[hash]',
-
         });
         console.log('Build successful!');
     } catch (error) {
