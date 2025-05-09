@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tesseracs-chat"
-version = "1.0.0"
+version = "1.0.1"
 description = "Web chat interface for Ollama using FastAPI and LangChain"
 authors = ["Viktor Jonsson <viktor.jonsson@tesseracs.com>"]
 readme = "README.md" # Optional README
