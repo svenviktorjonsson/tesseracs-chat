@@ -227,87 +227,8 @@ function setCursorPosition(parentElement, offset) {
     parentElement.focus();
 }
 
-/**
- * Fetches the list of user sessions from the API and displays them in the sidebar.
- */
-async function fetchAndDisplaySessions() {
-    console.log("[fetchAndDisplaySessions] Function called."); // Log: Start of function
 
-    const sessionListElement = document.getElementById('session-list');
-    const chatSessionTitle = document.getElementById('chat-session-title');
 
-    if (!sessionListElement) {
-        console.log("[fetchAndDisplaySessions] Session list element (#session-list) not found. Exiting.");
-        return;
-    }
-
-    console.log("[fetchAndDisplaySessions] Setting loading state.");
-    sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">Loading sessions...</li>';
-
-    try {
-        console.log("[fetchAndDisplaySessions] Making fetch request to /api/sessions...");
-        const response = await fetch('/api/sessions');
-        console.log(`[fetchAndDisplaySessions] Fetch response status: ${response.status}`); // Log: Response status
-
-        if (!response.ok) {
-            let errorDetail = `HTTP error ${response.status}`;
-            try {
-                const errorJson = await response.json();
-                errorDetail = errorJson.detail || errorDetail;
-            } catch (e) { /* Ignore */ }
-            console.error(`[fetchAndDisplaySessions] Error fetching sessions: ${errorDetail}`);
-            sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
-            return;
-        }
-
-        const sessions = await response.json();
-        console.log("[fetchAndDisplaySessions] Received sessions:", sessions); // Log: The received data
-
-        sessionListElement.innerHTML = ''; // Clear loading/error
-
-        if (sessions.length === 0) {
-            console.log("[fetchAndDisplaySessions] No sessions found. Displaying message.");
-            sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">No sessions yet</li>';
-        } else {
-            console.log(`[fetchAndDisplaySessions] Processing ${sessions.length} sessions...`);
-            const activeSessionId = getSessionIdFromPath(); // Assumes getSessionIdFromPath() exists and works
-            console.log(`[fetchAndDisplaySessions] Current active session ID from path: ${activeSessionId}`);
-
-            sessions.forEach((session, index) => {
-                // console.log(`[fetchAndDisplaySessions] Adding session ${index + 1}: ID=${session.id}, Name=${session.name}`); // Optional: Log each session
-                const li = document.createElement('li');
-                const a = document.createElement('a');
-                a.href = `/chat/${session.id}`;
-                a.classList.add('block', 'px-3', 'py-2', 'rounded-md', 'text-sm', 'text-gray-300', 'hover:bg-gray-700', 'hover:text-white', 'truncate');
-
-                if (session.id === activeSessionId) {
-                    // console.log(`[fetchAndDisplaySessions] Highlighting active session: ${session.id}`);
-                    a.classList.add('bg-gray-900', 'text-white');
-                    a.setAttribute('aria-current', 'page');
-                    if (chatSessionTitle) {
-                        chatSessionTitle.textContent = session.name || `Chat Session ${session.id.substring(0, 4)}`;
-                    }
-                }
-
-                a.textContent = session.name || `Session ${session.id.substring(0, 8)}`;
-                a.title = session.name || `Session ${session.id}`;
-
-                // Placeholder for Rename/Delete buttons
-                // const iconsSpan = document.createElement('span');
-                // iconsSpan.innerHTML = `...`;
-                // a.appendChild(iconsSpan);
-
-                li.appendChild(a);
-                sessionListElement.appendChild(li);
-            });
-            console.log("[fetchAndDisplaySessions] Finished processing sessions.");
-        }
-
-    } catch (error) {
-        console.error("[fetchAndDisplaySessions] Failed to fetch or display sessions:", error);
-        sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
-    }
-}
 
 function addUserMessage(text) {
     // Ensure chatHistory and messageInput elements exist to prevent errors
@@ -418,10 +339,7 @@ function setInputDisabledState(inputsDisabled, aiResponding) {
     }
 }
 
-/**
- * Sets up the DOM structure for a new turn from the AI, including thinking area,
- * answer bubble (with sender name), and code blocks area.
- */
+
 function setupNewAiTurn() {
     currentTurnId++;
     codeBlockCounterThisTurn = 0;
@@ -514,16 +432,6 @@ function setupNewAiTurn() {
     console.log(`[setupNewAiTurn] Finished setup for Turn ID: ${currentTurnId}.`);
 }
 
-// You'll also need to adjust `appendToAnswer` and `formatAnswerBubbleFinal`
-// to target the `liveContentDiv` within `currentAnswerElement` for the actual message content,
-// instead of `currentAnswerElement` directly, to keep the sender name and future timestamp separate.
-
-// Example adjustment for appendToAnswer (conceptual):
-// Original: currentAnswerElement.appendChild(node);
-// New: const targetContentArea = currentAnswerElement.querySelector('.live-ai-content-area');
-//      if (targetContentArea) targetContentArea.appendChild(node); else currentAnswerElement.appendChild(node);
-// Similar logic for text nodes and for formatAnswerBubbleFinal's innerHTML operations.
-
 
 function appendRawTextToThinkingArea(text) {
     if (text && text.trim().length > 0) {
@@ -584,10 +492,7 @@ function appendCodeReference() {
     }
 }
 
-/**
- * Finalizes the AI answer bubble content with Markdown and KaTeX processing.
- * Targets the specific content div within the answer bubble.
- */
+
 function formatAnswerBubbleFinal() {
     if (!currentAnswerElement) {
         console.warn("[formatAnswerBubbleFinal] Skipping: currentAnswerElement is null.");
@@ -725,7 +630,6 @@ function formatAnswerBubbleFinal() {
     lastAppendedNode = null; // Reset for the next stream
     // firstAnswerTokenReceived remains true.
 }
-
 
 function resetStreamingState() {
     // console.log("[DEBUG] Resetting streaming state.");
@@ -878,11 +782,6 @@ function finalizeTurnOnErrorOrClose() {
     }
 }
 
-/**
- * Creates the DOM structure for a new, live code block being streamed.
- * Hides the run button for unsupported languages.
- * @param {string} language - The language specified after the opening ``` fence.
- */
 function createCodeBlockStructure(language) {
     if (!currentCodeBlocksArea) {
         console.error("createCodeBlockStructure: Code blocks area is null!");
@@ -1173,11 +1072,7 @@ function addCodeOutput(outputPreElement, streamType, text) {
     outputPreElement.scrollTop = outputPreElement.scrollHeight;
 }
 
-/**
- * Appends text content to the currently active code block element 
- * and triggers debounced syntax highlighting.
- * @param {string} text - The text chunk to append.
- */
+
 function appendToCodeBlock(text) {
     // Ensure we have a target code element to append to
     if (currentCodeBlockElement) {
@@ -1211,12 +1106,7 @@ function appendToCodeBlock(text) {
     }
 }
 
-/**
- * Appends text or a DOM node to the current AI's answer area.
- * Targets the specific content div within the answer bubble.
- * @param {string | null} text - Text to append.
- * @param {Node | null} node - DOM node to append.
- */
+
 function appendToAnswer(text = null, node = null) {
     if (!currentAnswerElement) {
         console.error("[appendToAnswer] currentAnswerElement is null. Cannot append.");
@@ -1303,12 +1193,6 @@ function appendToAnswer(text = null, node = null) {
 }
 
 
-/**
- * Finalizes the currently active code block, performing a final, 
- * non-debounced syntax highlight to ensure completeness.
- * Resets code block streaming state variables.
- * @param {boolean} isTruncated - Indicates if the stream ended unexpectedly (e.g., via EOS).
- */
 function finalizeCodeBlock(isTruncated = false) {
     // Check if there is an active code block element being processed
     if (currentCodeBlockElement) {
@@ -1360,7 +1244,6 @@ function finalizeCodeBlock(isTruncated = false) {
     // fenceBuffer should also be reset if it's tracked globally and related
     // fenceBuffer = ''; 
 }
-
 
 function resetAllCodeButtonsOnErrorOrClose() {
     console.log("Resetting all code run/stop buttons and statuses due to connection issue.");
@@ -1894,11 +1777,6 @@ function connectWebSocket() {
     }
 }
 
-// --- Utility Functions --- 
-// (debounce function)
-// (throttle function defined above)
-
-// Throttled function for highlighting the streaming code block
 let throttledStreamHighlight = throttle(() => {
     // Optional: Keep logs to verify throttling
     console.log(">>> throttledStreamHighlight: Attempting highlight..."); 
@@ -1924,34 +1802,6 @@ let throttledStreamHighlight = throttle(() => {
 // Throttle limit in milliseconds (e.g., run at most once every 250ms)
 }, 250); // Adjust limit as needed (e.g., 200-500ms) 
 
-// --- End Utility Functions ---
-
-let debouncedStreamHighlight = debounce(() => {
-    // --- ADDED LOGGING ---
-    console.log(">>> debouncedStreamHighlight: Fired!"); 
-    console.log(`>>> debouncedStreamHighlight: currentProcessingMode = ${currentProcessingMode}`);
-    console.log(">>> debouncedStreamHighlight: currentCodeBlockElement =", currentCodeBlockElement);
-    // --- END OF ADDED LOGGING ---
-
-    // Check if we are currently inside a code block being streamed
-    if (currentCodeBlockElement && currentProcessingMode === MODE_INSIDE_CODE_BLOCK) {
-        console.log(">>> debouncedStreamHighlight: Conditions met. Attempting highlight."); // Log attempt
-        try {
-            // Check if Prism and highlightElement are available
-            if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-                console.log(">>> debouncedStreamHighlight: Prism.highlightElement found. Calling..."); // Log before call
-                Prism.highlightElement(currentCodeBlockElement);
-                console.log(">>> debouncedStreamHighlight: Prism.highlightElement call completed."); // Log after call
-            } else {
-                console.warn(">>> debouncedStreamHighlight: Prism.js or Prism.highlightElement not available!");
-            }
-        } catch (e) {
-            console.error(">>> debouncedStreamHighlight: Error during highlight:", e, currentCodeBlockElement);
-        }
-    } else {
-         console.log(">>> debouncedStreamHighlight: Conditions NOT met. Skipping highlight."); 
-    }
-}, 300); // Keep your debounce delay (e.g., 300ms)
 
 // Helper function to escape HTML to prevent XSS where markdown is not intended.
 function escapeHTML(str) {
@@ -1964,15 +1814,7 @@ function escapeHTML(str) {
         .replace(/'/g, '&#039;');
 }
 
-/**
- * Renders a single message object (from history) into the chat history UI.
- * Handles user, system, and AI messages, including complex rendering for AI messages
- * (thinking area, code blocks, KaTeX, and Markdown).
- * Strips NO_THINK_PREFIX from historical user messages.
- * @param {object} msg - The message object from the database.
- * @param {HTMLElement} chatHistoryDiv - The main chat history container element.
- * @param {boolean} isHistory - Flag indicating if the message is from loaded history.
- */
+
 function renderSingleMessage(msg, chatHistoryDiv, isHistory = false) {
     // Ensure essential parameters and libraries are available
     if (!chatHistoryDiv || !msg) {
@@ -2246,12 +2088,6 @@ function renderSingleMessage(msg, chatHistoryDiv, isHistory = false) {
 }
 
 
-
-
-/**
- * Fetches chat history for the current session and displays it.
- * @param {string} sessionId - The ID of the current chat session.
- */
 async function loadAndDisplayChatHistory(sessionId) {
     const chatHistoryDiv = document.getElementById('chat-history');
     if (!chatHistoryDiv) {
@@ -2297,17 +2133,6 @@ async function loadAndDisplayChatHistory(sessionId) {
 }
 
 
-
-/**
- * Creates and appends a display structure for a historical code block,
- * making the code editable, re-highlighting on input, and hiding the
- * run button for unsupported languages.
- * @param {string} language - The language of the code.
- * @param {string} codeContent - The actual code string.
- * @param {string} turnIdSuffix - A unique suffix for element IDs within this historical turn.
- * @param {number} codeBlockIndex - The 1-based index of this code block within the AI turn.
- * @param {HTMLElement} codeBlocksAreaElement - The parent DOM element to append this code block to.
- */
 function createHistoricalCodeBlockDisplay(language, codeContent, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement) {
     // Ensure the target area for code blocks exists
     if (!codeBlocksAreaElement) {
@@ -2522,7 +2347,6 @@ function createHistoricalCodeBlockDisplay(language, codeContent, turnIdSuffix, c
 }
 
 
-// --- User Info Initialization ---
 async function initializeCurrentUser() {
     try {
         const response = await fetch('/api/me');
@@ -2545,11 +2369,150 @@ async function initializeCurrentUser() {
     }
 }
 
-// --- DOMContentLoaded Event Listener ---
+async function fetchAndDisplaySessions() {
+    // This function should be defined in your script.js
+    const sessionListElement = document.getElementById('session-list');
+    const chatSessionTitle = document.getElementById('chat-session-title'); // If you use this to update title
+
+    if (!sessionListElement) {
+        console.error("[fetchAndDisplaySessions] Session list element (#session-list) not found.");
+        return;
+    }
+
+    sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">Loading sessions...</li>';
+
+    try {
+        const response = await fetch('/api/sessions');
+        if (!response.ok) {
+            let errorDetail = `HTTP error ${response.status}`;
+            try {
+                const errorJson = await response.json();
+                errorDetail = errorJson.detail || errorDetail;
+            } catch (e) { /* Ignore JSON parsing error if response is not JSON */ }
+            console.error(`[fetchAndDisplaySessions] Error fetching sessions: ${errorDetail}`);
+            sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
+            return;
+        }
+
+        const sessions = await response.json();
+        sessionListElement.innerHTML = ''; 
+
+        if (sessions.length === 0) {
+            sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">No sessions yet. Click "New Chat".</li>';
+        } else {
+            const activeSessionId = getSessionIdFromPath(); 
+
+            sessions.forEach((session) => {
+                if (!session.id || typeof session.name === 'undefined') { // Check if name is undefined, allow empty string
+                    console.warn('Session object is missing id or name:', session);
+                    return;
+                }
+
+                const listItem = document.createElement('li');
+                // Added group for group-hover effects on the delete button
+                listItem.className = 'flex items-center justify-between pr-2 group hover:bg-gray-700 rounded-md'; 
+
+                const link = document.createElement('a');
+                // Ensure chatPageBaseUrl is defined or use a fixed prefix like /chat/
+                const chatPageBaseUrl = '/chat/'; 
+                const base = chatPageBaseUrl.endsWith('/') ? chatPageBaseUrl : chatPageBaseUrl + '/';
+                link.href = `${base}${session.id}`;
+                
+                // Make link take up available space, truncate text
+                link.className = 'block pl-3 pr-1 py-2 text-gray-300 group-hover:text-white rounded-l-md text-sm truncate flex-grow';
+                
+                let lastActiveDisplay = "Never";
+                if (session.last_active) {
+                    try {
+                        lastActiveDisplay = new Date(session.last_active).toLocaleString();
+                    } catch (e) {
+                        lastActiveDisplay = session.last_active; 
+                    }
+                }
+                link.title = `${session.name || `Session ${session.id.substring(0,4)}...`}\nLast active: ${lastActiveDisplay}`;
+                link.textContent = session.name || `Session ${session.id.substring(0, 8)}`;
+                
+                if (session.id === activeSessionId) {
+                    link.classList.add('bg-gray-900', 'text-white', 'font-semibold');
+                    listItem.classList.remove('hover:bg-gray-700'); // Remove general hover if active
+                    listItem.classList.add('bg-gray-900'); // Highlight the whole li item
+                    if (chatSessionTitle) {
+                        chatSessionTitle.textContent = session.name || `Chat Session ${session.id.substring(0, 4)}`;
+                    }
+                }
+
+                // --- ADDED DELETE BUTTON ---
+                const deleteButton = document.createElement('button');
+                deleteButton.innerHTML = '&#x2715;'; // Cross mark (X)
+                // Styling for visibility on hover of the list item (group-hover)
+                deleteButton.className = 'ml-2 p-1 text-gray-500 hover:text-red-400 focus:outline-none rounded-full hover:bg-gray-600 transition-colors duration-150 ease-in-out text-xs opacity-0 group-hover:opacity-100 focus:opacity-100 flex-shrink-0';
+                deleteButton.title = `Delete session: ${session.name || 'Unnamed Session'}`;
+                
+                deleteButton.onclick = (event) => {
+                    event.stopPropagation(); // Prevent navigating to the session link
+                    event.preventDefault();   // Prevent any default button action
+                    // Call a handler function, passing necessary info
+                    handleDeleteSession(session.id, session.name || `Session ${session.id.substring(0,8)}`);
+                };
+                // --- END OF ADDED DELETE BUTTON ---
+
+                listItem.appendChild(link);
+                listItem.appendChild(deleteButton); // Append the delete button
+                sessionListElement.appendChild(listItem);
+            });
+        }
+    } catch (error) {
+        console.error("[fetchAndDisplaySessions] Failed to fetch or display sessions:", error);
+        sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
+    }
+}
+
+async function handleDeleteSession(sessionId, sessionName) {
+    // This function should be defined in your script.js
+    if (!window.confirm(`Are you sure you want to delete the session "${sessionName}"? This action cannot be undone.`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/sessions/${sessionId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json'
+                // Add authorization headers if your API requires them
+            }
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: "Failed to delete session. Server error." }));
+            console.error(`Failed to delete session ${sessionId}. Status: ${response.status}`, errorData);
+            if(typeof addErrorMessage === 'function') addErrorMessage(`Error deleting session: ${errorData.detail || response.statusText}`);
+            else alert(`Error deleting session: ${errorData.detail || response.statusText}`);
+            return;
+        }
+
+        // Session deleted successfully
+        console.log(`Session ${sessionId} successfully deleted.`);
+        
+        // If the currently viewed session was deleted, redirect to home/dashboard
+        const currentPathSessionId = getSessionIdFromPath();
+        if (currentPathSessionId === sessionId) {
+            window.location.href = '/'; // Redirect to the session choice page
+        } else {
+            // Otherwise, just refresh the session list
+            if (typeof fetchAndDisplaySessions === 'function') {
+                await fetchAndDisplaySessions();
+            }
+        }
+    } catch (error) {
+        console.error('Error during delete session request:', error);
+        if(typeof addErrorMessage === 'function') addErrorMessage('An error occurred while trying to delete the session.');
+        else alert('An error occurred while trying to delete the session. Please check the console.');
+    }
+}
+
+
 document.addEventListener('DOMContentLoaded', async () => {
     await initializeCurrentUser();
-
-    // const listElementCheck = document.getElementById('session-list'); // Not used here
 
     if (typeof setInputDisabledState === 'function') {
         setInputDisabledState(true, false); 
@@ -2560,6 +2523,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             gfm: true, breaks: true, sanitize: false, smartLists: true, smartypants: false,
         });
     }
+
+    if (typeof fetchAndDisplaySessions === 'function') {
+        await fetchAndDisplaySessions();
+    }
+
 
     if (chatForm && messageInput && sendButton && stopAiButton) {
         chatForm.addEventListener('submit', (event) => {
@@ -2618,15 +2586,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }));
             stopAiButton.disabled = true;
-            stopAiButton.innerHTML = `
-                <svg class="animate-spin h-5 w-5 mr-1 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Stopping...`;
+            // The text/icon will be reset by finalizeTurnOnErrorOrClose -> setInputDisabledState
             
             if (typeof finalizeTurnOnErrorOrClose === 'function') {
-                finalizeTurnOnErrorOrClose();
+                finalizeTurnOnErrorOrClose(); 
             }
         });
 
@@ -2639,7 +2602,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const currentSessionId = (typeof getSessionIdFromPath === 'function') ? getSessionIdFromPath() : null;
     if (currentSessionId) {
         if (typeof loadAndDisplayChatHistory === 'function') { 
-            // await loadAndDisplayChatHistory(currentSessionId); // Assuming this function exists
+            await loadAndDisplayChatHistory(currentSessionId); 
         }
         if (typeof connectWebSocket === 'function') {
             connectWebSocket();

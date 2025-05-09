@@ -978,62 +978,57 @@ async def get_chat_page_for_session(
     # Consider passing session_name or user_name to the template if needed
     return FileResponse(chat_html_path)
 
-
 async def handle_chat_message(
-    chain: Any,                     # Your LangChain chain
-    memory: Any,                    # The conversation memory object
+    chain: Any,                     
+    memory: Any,                    
     websocket: WebSocket,
-    client_js_id: str,              # Unique ID for the JS client instance
-    current_user: Dict[str, Any],   # Authenticated user details
-    session_id: str,                # The ID of the chat session
+    client_js_id: str,              
+    current_user: Dict[str, Any],   
+    session_id: str,                
     user_input: str,
-    turn_id: int                    # <<< NEW: The turn ID from the frontend
+    turn_id: int                    
 ):
-    """
-    Handles processing a chat message with the LLM, streaming the response,
-    and allowing the stream to be stopped.
-    """
     user_name = current_user.get('name', 'User')
     user_db_id = current_user['id']
     full_response = ""
-    thinking_content = None # Placeholder for future
+    thinking_content = None 
     
-    # --- MODIFIED: Create a unique stream ID and register for stopping ---
-    stream_id = f"{client_js_id}_{turn_id}" # Use client_js_id and frontend's turn_id
-    stop_event: asyncio.Event = None # Initialize to None
+    stream_id = f"{client_js_id}_{turn_id}" 
+    stop_event: asyncio.Event = None 
 
+    # --- Log User Message Saving ---
     db_conn_user_msg = None
     try:
-        # Save user message to DB (existing logic)
+        print(f"DB ATTEMPT: Saving user message for session {session_id}, turn {turn_id}...")
         db_conn_user_msg = database.get_db_connection()
         db_cursor_user_msg = db_conn_user_msg.cursor()
         db_cursor_user_msg.execute(
-            """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, client_id_temp)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (session_id, user_db_id, user_name, 'user', user_input, client_js_id)
+            """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, client_id_temp, turn_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, user_db_id, user_name, 'user', user_input, client_js_id, turn_id)
         )
+        print(f"DB PRE-COMMIT: User message executed for session {session_id}, turn {turn_id}.")
         db_conn_user_msg.commit()
+        print(f"DB SUCCESS: User message saved and committed for session {session_id}, turn {turn_id}.")
     except Exception as db_err:
         print(f"DB ERROR saving user message for session {session_id} (client {client_js_id}, turn {turn_id}): {db_err}")
+        traceback.print_exc() 
         if db_conn_user_msg: db_conn_user_msg.rollback()
     finally:
         if db_conn_user_msg: db_conn_user_msg.close()
 
+    # --- Main Streaming and AI Response Saving Block ---
     try:
-        # --- MODIFIED: Register stream and get stop_event ---
         stop_event = await state.register_ai_stream(stream_id)
         print(f"AI STREAM (handle_chat_message): Starting stream {stream_id} for session {session_id}")
 
-        # Stream response using the chain
         async for chunk_data in chain.astream({"input": user_input}):
-            # --- MODIFIED: Check stop_event in the loop ---
             if stop_event.is_set():
                 print(f"AI STREAM (handle_chat_message): Stop event set for stream {stream_id}. Breaking loop.")
-                break # Exit the streaming loop if stop is signaled
+                break 
 
-            # Extract content (your existing logic for handling chunk_data)
             if isinstance(chunk_data, dict):
-                chunk_str = chunk_data.get("answer", "") # Or your relevant key
+                chunk_str = chunk_data.get("answer", "") 
             else:
                 chunk_str = str(chunk_data)
 
@@ -1043,34 +1038,46 @@ async def handle_chat_message(
             await websocket.send_text(chunk_str)
             full_response += chunk_str
         
-        # --- MODIFIED: Check if loop was broken by stop_event before sending EOS ---
+        print(f"AI STREAM (handle_chat_message): Full response content after stream for turn {turn_id}: '{full_response[:200]}...'") # Log content of full_response
+
         if stop_event.is_set():
-            print(f"AI STREAM (handle_chat_message): Stream {stream_id} was stopped by signal. Not sending EOS from here, frontend will finalize.")
-            # Frontend's finalizeTurnOnErrorOrClose will handle UI. Backend might send EOS in stop_ai_stream handler.
+            print(f"AI STREAM (handle_chat_message): Stream {stream_id} was stopped by signal.")
         elif websocket.client_state == WebSocketState.CONNECTED:
-            await websocket.send_text("<EOS>") # Send End-Of-Stream marker if finished naturally
+            await websocket.send_text("<EOS>") 
             print(f"AI STREAM (handle_chat_message): Finished streaming naturally for stream {stream_id} to session {session_id}")
         
-        # Save context to memory and DB (existing logic)
+        # Save context to LangChain memory object
+        print(f"MEMORY ATTEMPT: Saving context to LangChain memory object for session {session_id}, turn {turn_id}.")
         memory.save_context({"input": user_input}, {"output": full_response})
-        if hasattr(state, 'save_memory_state_to_db'): # Check if function exists
+        print(f"MEMORY SUCCESS: Context saved to LangChain memory object for session {session_id}, turn {turn_id}.")
+
+        # Persist LangChain memory state to DB
+        if hasattr(state, 'save_memory_state_to_db'): 
+            print(f"MEMORY DB ATTEMPT: Saving memory state to DB for session {session_id}, turn {turn_id}.")
             try:
-                state.save_memory_state_to_db(session_id, memory)
+                state.save_memory_state_to_db(session_id, memory) 
+                # Success log for this is expected from state.py's save_memory_state_to_db
             except Exception as save_mem_err:
                 print(f"ERROR saving memory state to DB for session {session_id}: {save_mem_err}")
+                traceback.print_exc() 
         
+        # Save AI message to DB
         db_conn_ai_msg = None
         try:
+            print(f"DB ATTEMPT: Saving AI message for session {session_id}, turn {turn_id}.")
             db_conn_ai_msg = database.get_db_connection()
             db_cursor_ai_msg = db_conn_ai_msg.cursor()
             db_cursor_ai_msg.execute(
-                """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, thinking_content, client_id_temp)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, None, "AI", 'ai', full_response, thinking_content, client_js_id)
+                """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, thinking_content, client_id_temp, turn_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", 
+                (session_id, None, "AI", 'ai', full_response, thinking_content, client_js_id, turn_id)
             )
+            print(f"DB PRE-COMMIT: AI message executed for session {session_id}, turn {turn_id}.")
             db_conn_ai_msg.commit()
+            print(f"DB SUCCESS: AI message saved and committed for session {session_id}, turn {turn_id}.")
         except Exception as db_err:
             print(f"DB ERROR saving AI message for session {session_id} (stream {stream_id}): {db_err}")
+            traceback.print_exc() 
             if db_conn_ai_msg: db_conn_ai_msg.rollback()
         finally:
             if db_conn_ai_msg: db_conn_ai_msg.close()
@@ -1082,16 +1089,12 @@ async def handle_chat_message(
         if websocket.client_state == WebSocketState.CONNECTED:
             try:
                 await websocket.send_text(error_msg)
-                # Also send EOS after error to ensure frontend resets UI properly
                 await websocket.send_text("<EOS>")
             except Exception as send_err:
                 print(f"WS ERROR: Could not send LLM error/EOS to client {client_js_id} for stream {stream_id}: {send_err}")
     finally:
-        # --- MODIFIED: Always unregister the stream ---
-        if stream_id and stop_event: # Ensure stream_id was formed and event exists
+        if stream_id and stop_event: 
             await state.unregister_ai_stream(stream_id)
-            print(f"AI STREAM (handle_chat_message): Stream {stream_id} unregistered for session {session_id}")
-
 
 @app.websocket("/ws/{session_id_ws}/{client_js_id}")
 async def websocket_endpoint(
@@ -1290,7 +1293,6 @@ async def websocket_endpoint(
             except Exception as final_close_err: print(f"{ws_log_prefix} Error during final WebSocket close: {final_close_err}")
         print(f"{ws_log_prefix} Cleanup complete.")
 
-# --- API Routes for Sessions & Messages ---
 
 @app.patch("/api/sessions/{session_id}", response_model=Dict[str, Any], tags=["Sessions"])
 async def rename_session(
@@ -1361,41 +1363,62 @@ async def get_user_sessions(
         if conn: conn.close()
 
 
-@app.get("/api/sessions/{session_id}/messages", response_model=List[Dict[str, Any]], tags=["Messages"])
+@app.get("/api/sessions/{session_id}/messages", response_model=List[models.MessageItem], tags=["Messages"]) # Assuming models.MessageItem exists
 async def get_chat_messages_for_session(
     session_id: str = FastApiPath(..., description="The ID of the session to fetch messages for."),
     user: Dict[str, Any] = Depends(auth.get_current_active_user)
 ):
     """Fetches all messages for a session the user participates in."""
-    if not user: raise HTTPException(status_code=401, detail="Not authenticated")
-    user_id = user['id']; messages_list = []
+    if not user: raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    user_id = user['id']
+    messages_list = []
     conn = None
+    print(f"API (get_messages): Attempting to fetch messages for session {session_id}, user {user_id}.") # <<< ADDED LOG
     try:
-        conn = database.get_db_connection(); cursor = conn.cursor()
-        # Verify session exists and user is participant
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verify session exists and user is participant (existing logic)
         cursor.execute("SELECT 1 FROM sessions WHERE id = ? AND is_active = 1", (session_id,))
-        if not cursor.fetchone(): raise HTTPException(status_code=404, detail="Session not found or inactive.")
+        if not cursor.fetchone(): 
+            print(f"API (get_messages): Session {session_id} not found or inactive.") # <<< ADDED LOG
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or inactive.")
         cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user_id))
-        if not cursor.fetchone(): raise HTTPException(status_code=403, detail="Access denied to this session.")
+        if not cursor.fetchone(): 
+            print(f"API (get_messages): User {user_id} denied access to session {session_id}.") # <<< ADDED LOG
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this session.")
+        
         # Fetch messages
+        print(f"API (get_messages): Executing query for messages in session {session_id}.") # <<< ADDED LOG
         cursor.execute(
-            """SELECT id, session_id, user_id, sender_name, sender_type, content, client_id_temp, thinking_content, timestamp
-               FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC""",
+            """SELECT id, session_id, user_id, sender_name, sender_type, content, client_id_temp, thinking_content, timestamp, turn_id
+               FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC""", # Added turn_id to SELECT
             (session_id,)
         )
         rows = cursor.fetchall()
-        for row in rows: messages_list.append(dict(row))
-        # print(f"API: Fetched {len(messages_list)} messages for session {session_id} for user ID {user_id}") # Verbose
+        print(f"API (get_messages): Fetched {len(rows)} rows from DB for session {session_id}.") # <<< ADDED LOG
+        
+        for row_num, row_data in enumerate(rows):
+            # print(f"API (get_messages): Processing row {row_num + 1}: {dict(row_data)}") # Optional: log each row
+            messages_list.append(dict(row_data))
+            
+        print(f"API (get_messages): Returning {len(messages_list)} messages for session {session_id}.") # <<< ADDED LOG
         return messages_list
+        
     except sqlite3.Error as db_err:
-        print(f"API ERROR (/api/sessions/.../messages): DB error for user {user_id}, session {session_id}: {db_err}"); traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Database error fetching messages.")
-    except HTTPException as http_exc: raise http_exc
+        print(f"API ERROR (get_messages): DB error for user {user_id}, session {session_id}: {db_err}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error fetching messages.")
+    except HTTPException as http_exc: 
+        raise http_exc # Re-raise specific HTTP exceptions
     except Exception as e:
-        print(f"API ERROR (/api/sessions/.../messages): Unexpected error for user {user_id}, session {session_id}: {e}"); traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Server error fetching messages.")
+        print(f"API ERROR (get_messages): Unexpected error for user {user_id}, session {session_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server error fetching messages.")
     finally:
-        if conn: conn.close()
+        if conn: 
+            conn.close()
+            print(f"API (get_messages): DB connection closed for session {session_id}.") # <<< ADDED LOG
 
 
 @app.delete("/api/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Sessions"])

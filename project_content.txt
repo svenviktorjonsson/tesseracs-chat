@@ -24,6 +24,7 @@ app/
 ├── email_utils.py
 ├── llm.py
 ├── main.py
+├── models.py
 ├── state.py
 ├── utils.py
 ├── static/
@@ -33,6 +34,10 @@ app/
 │   ├── login.html
 │   ├── script.js
 │   ├── session-choice.html
+│   ├── settings.html
+│   ├── email_templates/
+│   │   ├── password_reset_email.html
+│   │   ├── registration_email.html
 │   ├── js/
 │   │   ├── app-ui.js
 
@@ -215,7 +220,7 @@ module.exports = {
 === pyproject.toml ===
 [tool.poetry]
 name = "tesseracs-chat"
-version = "1.0.0"
+version = "1.0.1"
 description = "Web chat interface for Ollama using FastAPI and LangChain"
 authors = ["Viktor Jonsson <viktor.jonsson@tesseracs.com>"]
 readme = "README.md" # Optional README
@@ -246,7 +251,7 @@ python-multipart = "^0.0.20"
 fastapi-mail = "^1.4.2"
 certifi = "^2025.4.26"
 pydantic = "^2.11.4"
-passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+passlib = {extras = ["bcrypt"], version = "*"}
 
 [tool.poetry.scripts]
 app = "app.main:start_server" # Command to run the app
@@ -1998,10 +2003,18 @@ from dotenv import load_dotenv
 # Load environment variables from a .env file if it exists
 load_dotenv()
 
+# --- Application Base URL ---
+# This is the primary public-facing URL for your application.
+# Used for generating absolute URLs in emails, etc.
+# Ensure this matches your production domain and includes the scheme (http or https).
+# It can be overridden by setting a BASE_URL environment variable.
+BASE_URL = os.getenv("BASE_URL", "http://tesseracs.com") # Default to http://tesseracs.com
+
 # --- LLM Configuration ---
 MODEL_ID = os.getenv("MODEL_ID", "qwen3:8B")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434") # This is for the Ollama service
 NO_THINK_PREFIX = "\\no_think"
+THINK_PREFIX = "\\think"
 
 # --- Docker Configuration ---
 SUPPORTED_LANGUAGES = {
@@ -2069,22 +2082,25 @@ MAIL_CONFIG = {
     "MAIL_USERNAME": os.getenv("MAIL_USERNAME"),
     "MAIL_PASSWORD": os.getenv("MAIL_PASSWORD"),
     "MAIL_FROM": os.getenv("MAIL_FROM"),
-    "MAIL_PORT": int(os.getenv("MAIL_PORT", 465)), # Keep 465 from last attempt
+    "MAIL_PORT": int(os.getenv("MAIL_PORT", 465)),
     "MAIL_SERVER": os.getenv("MAIL_SERVER"),
     "MAIL_FROM_NAME": os.getenv("MAIL_FROM_NAME", "Tesseracs Chat"),
-    "MAIL_STARTTLS": os.getenv("MAIL_STARTTLS", 'False').lower() in ('true', '1', 't'), # Keep False
-    "MAIL_SSL_TLS": os.getenv("MAIL_SSL_TLS", 'True').lower() in ('true', '1', 't'),    # Keep True
+    "MAIL_STARTTLS": os.getenv("MAIL_STARTTLS", 'False').lower() in ('true', '1', 't'),
+    "MAIL_SSL_TLS": os.getenv("MAIL_SSL_TLS", 'True').lower() in ('true', '1', 't'),
     "USE_CREDENTIALS": True,
-    # Read validation setting from env, default to True (secure)
     "VALIDATE_CERTS": os.getenv("MAIL_VALIDATE_CERTS", 'True').lower() in ('true', '1', 't')
 }
 
 if not all([MAIL_CONFIG["MAIL_USERNAME"], MAIL_CONFIG["MAIL_PASSWORD"], MAIL_CONFIG["MAIL_SERVER"]]):
     print("WARNING: Essential email configuration missing in .env file.")
 
-# Print validation status being used for clarity
 print(f"DEBUG config: Email certificate validation (VALIDATE_CERTS) is set to: {MAIL_CONFIG['VALIDATE_CERTS']}")
+print(f"DEBUG config: Application BASE_URL is set to: {BASE_URL}") # Added log for BASE_URL
 
+
+# --- Rate Limiting Configuration ---
+FORGOT_PASSWORD_ATTEMPT_LIMIT = int(os.getenv("FORGOT_PASSWORD_ATTEMPT_LIMIT", 3))
+FORGOT_PASSWORD_ATTEMPT_WINDOW_HOURS = int(os.getenv("FORGOT_PASSWORD_ATTEMPT_WINDOW_HOURS", 24))
 
 
 === app/database.py ===
@@ -2176,13 +2192,13 @@ def init_db():
     CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,         
-        user_id INTEGER,                 
-        sender_name TEXT,                 
+        user_id INTEGER,               
+        sender_name TEXT,               
         sender_type TEXT NOT NULL CHECK(sender_type IN ('user', 'ai', 'system', 'anon_user')), 
-        content TEXT NOT NULL,            
-        client_id_temp TEXT,             
-        turn_id INTEGER,                 
-        thinking_content TEXT,           
+        content TEXT NOT NULL,           
+        client_id_temp TEXT,           
+        turn_id INTEGER,             
+        thinking_content TEXT,         
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL 
@@ -2190,16 +2206,27 @@ def init_db():
     """)
     print("Ensured 'chat_messages' table exists.")
 
-    # --- ADDED TABLE for Session Memory State ---
+    # Session Memory State Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS session_memory_state (
-        session_id TEXT PRIMARY KEY,          -- Links directly to the session
-        memory_state_json TEXT NOT NULL,      -- Stores the serialized memory state (e.g., as JSON)
+        session_id TEXT PRIMARY KEY,         -- Links directly to the session
+        memory_state_json TEXT NOT NULL,     -- Stores the serialized memory state (e.g., as JSON)
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the memory was last saved
         FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
     );
     """)
     print("Ensured 'session_memory_state' table exists.")
+
+    # --- ADDED TABLE for Password Reset Attempts ---
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS password_reset_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL,                            -- The email for which the reset was attempted.
+        ip_address TEXT,                                -- Optional: IP address of the requester.
+        attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Timestamp of the attempt.
+    );
+    """)
+    print("Ensured 'password_reset_attempts' table exists.")
     # --- END OF ADDED TABLE ---
 
     # Add indexes for frequently queried columns for performance
@@ -2210,9 +2237,15 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_participants_session_id ON session_participants (session_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_participants_user_id ON session_participants (user_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages (session_id);")
-    # Add index for the new table's foreign key
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_memory_state_session_id ON session_memory_state (session_id);")
-    print("Ensured indexes exist.")
+    
+    # --- ADDED INDEX for Password Reset Attempts ---
+    # Index on email and timestamp for efficient querying of recent attempts.
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_attempts_email_time ON password_reset_attempts (email, attempted_at);")
+    print("Ensured 'idx_password_reset_attempts_email_time' index exists.")
+    # --- END OF ADDED INDEX ---
+
+    print("Ensured all indexes exist.")
 
     conn.commit()
     conn.close()
@@ -2235,6 +2268,7 @@ if __name__ == "__main__":
     # Ensure the parent directory for the database exists
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     init_db()
+
 
 === app/docker_utils.py ===
 # app/docker_utils.py
@@ -2716,104 +2750,68 @@ from pathlib import Path
 import traceback
 from . import config # Import your config module
 
+# --- Email Configuration ---
 # Create the ConnectionConfig using settings from config.py
+# This configuration is used to connect to the email server.
 conf = ConnectionConfig(
     MAIL_USERNAME=config.MAIL_CONFIG.get("MAIL_USERNAME"),
     MAIL_PASSWORD=config.MAIL_CONFIG.get("MAIL_PASSWORD"),
     MAIL_FROM=config.MAIL_CONFIG.get("MAIL_FROM"),
-    MAIL_PORT=config.MAIL_CONFIG.get("MAIL_PORT", 587),
+    MAIL_PORT=config.MAIL_CONFIG.get("MAIL_PORT", 587), # Default to 587 if not in config
     MAIL_SERVER=config.MAIL_CONFIG.get("MAIL_SERVER"),
     MAIL_FROM_NAME=config.MAIL_CONFIG.get("MAIL_FROM_NAME"),
-    MAIL_STARTTLS=config.MAIL_CONFIG.get("MAIL_STARTTLS", True),
-    MAIL_SSL_TLS=config.MAIL_CONFIG.get("MAIL_SSL_TLS", False),
+    MAIL_STARTTLS=config.MAIL_CONFIG.get("MAIL_STARTTLS", True), # Default to True
+    MAIL_SSL_TLS=config.MAIL_CONFIG.get("MAIL_SSL_TLS", False),   # Default to False
     USE_CREDENTIALS=config.MAIL_CONFIG.get("USE_CREDENTIALS", True),
-    VALIDATE_CERTS=config.MAIL_CONFIG.get("VALIDATE_CERTS", True)
+    VALIDATE_CERTS=config.MAIL_CONFIG.get("VALIDATE_CERTS", True) # Default to True
 )
 
-# Initialize FastMail instance
+# Initialize FastMail instance with the configuration
 fm = FastMail(conf)
+
+# Define the base path for email templates
+# config.APP_DIR should point to the 'app' directory.
+EMAIL_TEMPLATES_DIR = config.APP_DIR / "static" / "email_templates"
 
 async def send_registration_password_email(
     recipient_email: str,
     recipient_name: str,
     generated_password: str,
-    login_url: str # URL to your login page
+    login_url: str
 ) -> bool:
     """
-    Sends the auto-generated password to a new user using FastMail.
+    Sends the generated password to a new user using an HTML template.
+    The password sent is the user's actual password.
     """
-    if not conf.MAIL_FROM or not conf.MAIL_SERVER: # Basic check
+    # Basic check for essential mail server configuration
+    if not conf.MAIL_FROM or not conf.MAIL_SERVER:
         print("EMAIL ERROR: Mail configuration (MAIL_FROM, MAIL_SERVER) is incomplete. Cannot send registration password email.")
         return False
 
+    template_path = EMAIL_TEMPLATES_DIR / "registration_email.html"
     subject = "Welcome to Tesseracs Chat - Your Account Details"
-    html_body = f"""
-    <html>
-    <head>
-        <style>
-            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }}
-            .email-container {{ width: 100%; max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 20px; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-            .header {{ text-align: center; padding-bottom: 20px; border-bottom: 1px solid #eee; }}
-            .header h2 {{ color: #2563eb; margin: 0; }}
-            .content p {{ margin: 15px 0; }}
-            .content strong {{ color: #1d4ed8; }}
-            .password-display {{
-                background-color: #e9ecef;
-                padding: 12px;
-                border-radius: 4px;
-                font-family: 'Courier New', Courier, monospace;
-                font-size: 1.1em;
-                text-align: center;
-                margin: 20px 0;
-                color: #000;
-                border: 1px dashed #ccc;
-            }}
-            .login-button-container {{ text-align: center; margin: 25px 0; }}
-            .login-button {{
-                display: inline-block;
-                background-color: #2563eb;
-                color: white !important; /* Important for link inside button */
-                padding: 12px 25px;
-                text-decoration: none;
-                border-radius: 5px;
-                font-size: 16px;
-                font-weight: bold;
-                transition: background-color 0.3s ease;
-            }}
-            .login-button:hover {{ background-color: #1d4ed8; }}
-            .footer {{ text-align: center; margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee; font-size: 0.9em; color: #777; }}
-            .link {{ color: #2563eb; text-decoration: none; }}
-            .link:hover {{ text-decoration: underline; }}
-        </style>
-    </head>
-    <body>
-        <div class="email-container">
-            <div class="header">
-                <h2>Welcome to Tesseracs Chat, {recipient_name}!</h2>
-            </div>
-            <div class="content">
-                <p>Your account has been successfully created.</p>
-                <p>Your email: <strong>{recipient_email}</strong></p>
-                <p>Your temporary password is:</p>
-                <div class="password-display">{generated_password}</div>
-                <p>Please use this password to log in. You can log in here:</p>
-                <div class="login-button-container">
-                    <a href="{login_url}" class="login-button">Log In to Tesseracs Chat</a>
-                </div>
-                <p>If the button doesn't work, copy and paste this link into your browser:</p>
-                <p><a href="{login_url}" class="link">{login_url}</a></p>
-                <p>We recommend that you keep this password secure. If a password change feature becomes available in the future, consider using it.</p>
-                <p>If you did not request this account, please ignore this email.</p>
-            </div>
-            <div class="footer">
-                <p>Thanks,<br>The Tesseracs Chat Team</p>
-                <p><small>This is an automated message. Please do not reply directly to this email.</small></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
 
+    try:
+        # Read the HTML template from file
+        with open(template_path, "r", encoding="utf-8") as f:
+            html_template = f.read()
+
+        # Replace placeholders in the template
+        # Ensure all placeholders match those in the HTML template
+        html_body = html_template.replace("{{ recipient_name }}", recipient_name)
+        html_body = html_body.replace("{{ email }}", recipient_email) # Changed from {{ recipient_email }} for consistency
+        html_body = html_body.replace("{{ password }}", generated_password)
+        html_body = html_body.replace("{{ login_url }}", login_url)
+
+    except FileNotFoundError:
+        print(f"EMAIL ERROR: Registration email template not found at {template_path}")
+        return False
+    except Exception as e:
+        print(f"EMAIL ERROR: Failed to read or process registration email template: {e}")
+        traceback.print_exc()
+        return False
+
+    # Create the email message schema
     message = MessageSchema(
         subject=subject,
         recipients=[recipient_email],
@@ -2822,11 +2820,13 @@ async def send_registration_password_email(
     )
 
     try:
+        # Attempt to send the email
         print(f"EMAIL: Attempting to send registration password to {recipient_email} via {conf.MAIL_SERVER}:{conf.MAIL_PORT}")
         await fm.send_message(message)
         print(f"EMAIL: Registration password email successfully sent to {recipient_email}.")
-        return True # Indicate success
+        return True  # Indicate success
     except Exception as e:
+        # Log any errors during email sending
         print(f"EMAIL ERROR: Failed to send registration password email to {recipient_email}")
         print(f"EMAIL ERROR DETAILS: {type(e).__name__} - {e}")
         traceback.print_exc()
@@ -2839,81 +2839,38 @@ async def send_password_reset_email(
     login_url: str
 ) -> bool:
     """
-    Sends an email containing a newly generated password after a reset request.
+    Sends an email containing a newly generated password after a reset request,
+    using an HTML template.
     """
+    # Basic check for essential mail server configuration
     if not conf.MAIL_FROM or not conf.MAIL_SERVER:
         print("EMAIL ERROR: Mail configuration (MAIL_FROM, MAIL_SERVER) is incomplete. Cannot send password reset email.")
         return False
 
+    template_path = EMAIL_TEMPLATES_DIR / "password_reset_email.html"
     subject = "Your Tesseracs Chat Password Has Been Reset"
-    # Use the same styling as the registration email for consistency
-    html_body = f"""
-    <html>
-    <head>
-        <style>
-            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }}
-            .email-container {{ width: 100%; max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 20px; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-            .header {{ text-align: center; padding-bottom: 20px; border-bottom: 1px solid #eee; }}
-            .header h2 {{ color: #2563eb; margin: 0; }}
-            .content p {{ margin: 15px 0; }}
-            .content strong {{ color: #1d4ed8; }}
-            .password-display {{
-                background-color: #e9ecef;
-                padding: 12px;
-                border-radius: 4px;
-                font-family: 'Courier New', Courier, monospace;
-                font-size: 1.1em;
-                text-align: center;
-                margin: 20px 0;
-                color: #000;
-                border: 1px dashed #ccc;
-            }}
-            .login-button-container {{ text-align: center; margin: 25px 0; }}
-            .login-button {{
-                display: inline-block;
-                background-color: #2563eb;
-                color: white !important;
-                padding: 12px 25px;
-                text-decoration: none;
-                border-radius: 5px;
-                font-size: 16px;
-                font-weight: bold;
-                transition: background-color 0.3s ease;
-            }}
-            .login-button:hover {{ background-color: #1d4ed8; }}
-            .footer {{ text-align: center; margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee; font-size: 0.9em; color: #777; }}
-            .link {{ color: #2563eb; text-decoration: none; }}
-            .link:hover {{ text-decoration: underline; }}
-        </style>
-    </head>
-    <body>
-        <div class="email-container">
-            <div class="header">
-                <h2>Password Reset for Tesseracs Chat</h2>
-            </div>
-            <div class="content">
-                <p>Hello {recipient_name},</p>
-                <p>As requested, your password for Tesseracs Chat has been reset.</p>
-                <p>Your email: <strong>{recipient_email}</strong></p>
-                <p>Your new temporary password is:</p>
-                <div class="password-display">{new_password}</div>
-                <p>Please use this new password to log in. You can log in here:</p>
-                <div class="login-button-container">
-                    <a href="{login_url}" class="login-button">Log In to Tesseracs Chat</a>
-                </div>
-                <p>If the button doesn't work, copy and paste this link into your browser:</p>
-                <p><a href="{login_url}" class="link">{login_url}</a></p>
-                <p>If you did not request a password reset, please contact support or secure your account immediately.</p>
-            </div>
-            <div class="footer">
-                <p>Thanks,<br>The Tesseracs Chat Team</p>
-                <p><small>This is an automated message. Please do not reply directly to this email.</small></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
 
+    try:
+        # Read the HTML template from file
+        with open(template_path, "r", encoding="utf-8") as f:
+            html_template = f.read()
+
+        # Replace placeholders in the template
+        # Ensure all placeholders match those in the HTML template
+        html_body = html_template.replace("{{ recipient_name }}", recipient_name)
+        html_body = html_body.replace("{{ email }}", recipient_email) # Changed from {{ recipient_email }} for consistency
+        html_body = html_body.replace("{{ password }}", new_password)
+        html_body = html_body.replace("{{ login_url }}", login_url)
+
+    except FileNotFoundError:
+        print(f"EMAIL ERROR: Password reset email template not found at {template_path}")
+        return False
+    except Exception as e:
+        print(f"EMAIL ERROR: Failed to read or process password reset email template: {e}")
+        traceback.print_exc()
+        return False
+
+    # Create the email message schema
     message = MessageSchema(
         subject=subject,
         recipients=[recipient_email],
@@ -2922,15 +2879,17 @@ async def send_password_reset_email(
     )
 
     try:
+        # Attempt to send the email
         print(f"EMAIL: Attempting to send password reset to {recipient_email} via {conf.MAIL_SERVER}:{conf.MAIL_PORT}")
         await fm.send_message(message)
         print(f"EMAIL: Password reset email successfully sent to {recipient_email}.")
-        return True
+        return True # Indicate success
     except Exception as e:
+        # Log any errors during email sending
         print(f"EMAIL ERROR: Failed to send password reset email to {recipient_email}")
         print(f"EMAIL ERROR DETAILS: {type(e).__name__} - {e}")
         traceback.print_exc()
-        return False
+        return False # Indicate failure
 
 
 === app/llm.py ===
@@ -2938,10 +2897,10 @@ async def send_password_reset_email(
 
 
 === app/main.py ===
+
 # app/main.py
 
-from pydantic import BaseModel, Field, EmailStr
-
+# Standard library imports
 import os
 import sys
 import uvicorn
@@ -2952,6 +2911,11 @@ import asyncio
 import json
 import sqlite3
 import uuid
+from urllib.parse import urlparse
+import datetime
+from typing import Optional, Dict, Any, List # For type hinting
+
+# FastAPI and related imports
 from fastapi import (
     FastAPI,
     Request,
@@ -2960,8 +2924,8 @@ from fastapi import (
     WebSocketDisconnect,
     Form,
     Depends,
-    Response as FastAPIResponse,
-    Path as FastApiPath,
+    Response as FastAPIResponse, # Aliased to avoid naming conflicts
+    Path as FastApiPath,        # Aliased to avoid naming conflicts
     Body,
     status
 )
@@ -2969,8 +2933,11 @@ from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocketState
-import datetime
-from typing import Optional, Dict, Any, List
+
+# Pydantic core imports (might still be needed for FastAPI's dependency injection if not all models are covered)
+# However, specific model fields like EmailStr, constr are now expected to be used within app/models.py
+from pydantic import BaseModel # BaseModel might be used if you define ad-hoc request/response models directly in routes
+                             # If all models are in app/models.py, this specific line might become redundant.
 
 # Project local imports
 from . import config
@@ -2980,44 +2947,632 @@ from . import docker_utils
 from . import utils
 from . import database
 from . import auth
-from .auth import Token as AuthTokenResponse # Use renamed Token model
 from . import email_utils
+from . import models # Import your new models file
 
 # --- FastAPI App Initialization ---
 app = FastAPI(title="Tesseracs Chat")
 
-# --- Pydantic Models ---
-class SessionUpdateRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-
-class UserResponseModel(BaseModel): # For /api/me
-    id: int
-    name: str
-    email: str
-
-class EmailCheckRequest(BaseModel):
-    email: EmailStr
-
-class EmailCheckResponse(BaseModel):
-    exists: bool
-    user_name: Optional[str] = None
-
-class RegistrationRequest(BaseModel):
-    email: EmailStr
-    name: str = Field(..., min_length=1, max_length=100)
-
-class RegistrationResponse(BaseModel):
-    message: str
-
-# --- ADDED: Pydantic models for Forgot Password ---
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
-
-class ForgotPasswordResponse(BaseModel):
-    message: str
-# --- END ADDED ---
-
 # --- Database Initialization on Startup ---
+# This event handler runs when the FastAPI application starts up.
+@app.on_event("startup")
+async def startup_event():
+    """
+    Performs initialization tasks when the application starts:
+    - Ensures the database directory exists.
+    - Initializes the database schema.
+    - Checks Docker client availability.
+    - Checks LLM model connection.
+    """
+    print("Application startup: Initializing database...")
+    # Ensure the parent directory for the SQLite database file exists.
+    database.DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Initialize database tables if they don't already exist.
+    database.init_db()
+    print("Database initialization check complete.")
+
+    # Check if the Docker client is available.
+    if docker_utils.get_docker_client() is None:
+        print("WARNING: Docker client unavailable during startup. Code execution features will be disabled.")
+    else:
+        print("Docker client confirmed available at startup.")
+
+    # Attempt to connect to the LLM.
+    try:
+        llm.get_model() # This function should attempt to initialize/connect to the LLM.
+        print("LLM model connection checked successfully.")
+    except Exception as e:
+        print(f"CRITICAL ERROR during startup LLM check: {e}")
+        # Depending on severity, you might want to sys.exit(1) here if LLM is essential.
+
+
+# --- Static Files Setup ---
+# This section configures how static files (CSS, JavaScript, images) are served.
+
+# Validate that the base static directory is correctly configured and exists.
+if not config.STATIC_DIR or not config.STATIC_DIR.is_dir():
+    print(f"CRITICAL ERROR: Base static directory invalid or not found: {config.STATIC_DIR}")
+    sys.exit(1) # Exit if the static directory is not found.
+
+# Define the path to the 'dist' directory, typically containing bundled frontend assets.
+dist_dir = config.STATIC_DIR / "dist"
+if not dist_dir.is_dir():
+    print(f"CRITICAL ERROR: Bundled assets directory not found: {dist_dir}. Ensure frontend assets are built (e.g., 'npm run build').")
+    sys.exit(1) # Exit if the distribution directory is not found.
+
+# Mount the 'dist' directory to serve its contents under the '/dist' path.
+# These are typically the compiled/minified CSS and JavaScript files.
+app.mount("/dist", StaticFiles(directory=dist_dir), name="dist_assets")
+
+# Mount the base static directory (e.g., 'app/static') to serve its contents under the '/static' path.
+# This can be used for HTML files, images, or other assets not part of the frontend build process.
+app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static_pages")
+
+print(f"Mounted bundled assets from '{dist_dir}' at '/dist'")
+print(f"Mounted static pages directory '{config.STATIC_DIR}' at '/static'")
+
+
+@app.post("/register", response_model=models.RegistrationResponse, tags=["Authentication"])
+async def register_new_user(request_data: models.RegistrationRequest, request: Request):
+    """
+    Registers a new user, hashes their generated password, and emails it to them.
+    The emailed password is their actual password for the account.
+    Uses config.BASE_URL for the login link.
+    """
+    email = request_data.email.lower().strip()
+    name = request_data.name.strip()
+
+    if not name: # Basic validation for the name
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Name cannot be empty.")
+
+    conn = None # Initialize connection variable
+    try:
+        # Establish database connection
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
+        # Check if email already exists
+        cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered.")
+
+        # Generate a secure password for the user
+        plain_password = database.generate_secure_token(12)
+        hashed_password = auth.get_password_hash(plain_password)
+
+        # Insert the new user into the database
+        cursor.execute(
+            "INSERT INTO users (name, email, password_hash, is_active) VALUES (?, ?, ?, ?)",
+            (name, email, hashed_password, True)
+        )
+        user_id = cursor.lastrowid
+        if not user_id:
+            conn.rollback()
+            raise sqlite3.Error("Failed to get lastrowid after user insertion.")
+
+        # --- Construct login_page_url using config.BASE_URL ---
+        # Get the URL from FastAPI's url_for for the path component
+        login_url_from_fastapi = str(request.url_for('get_login_page_route'))
+        
+        # Parse the URL to reliably extract only the path and query parameters
+        parsed_url_from_fastapi = urlparse(login_url_from_fastapi)
+        login_path_component = parsed_url_from_fastapi.path # e.g., "/login"
+        if parsed_url_from_fastapi.query: # Append query string if it exists
+            login_path_component += "?" + parsed_url_from_fastapi.query
+            
+        # Use config.BASE_URL (which should not have a trailing slash)
+        login_page_url = f"{config.BASE_URL.rstrip('/')}{login_path_component}"
+        
+        print(f"DEBUG (register): config.BASE_URL: {config.BASE_URL}")
+        print(f"DEBUG (register): request.url_for('get_login_page_route') returned: {login_url_from_fastapi}")
+        print(f"DEBUG (register): Extracted path component: {login_path_component}")
+        print(f"DEBUG (register): Constructed login_page_url for email: {login_page_url}")
+        # --- END OF URL CONSTRUCTION ---
+
+        email_sent = await email_utils.send_registration_password_email(
+            recipient_email=email,
+            recipient_name=name,
+            generated_password=plain_password,
+            login_url=login_page_url
+        )
+
+        if not email_sent:
+            conn.commit() 
+            print(f"User {email} (ID: {user_id}) created, but password email FAILED to send.")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Account created, but failed to send password email. Please try resetting the password or contact support."
+            )
+
+        conn.commit()
+        print(f"New user registered: {email} (ID: {user_id}). Password email sent with login URL: {login_page_url}")
+
+        return models.RegistrationResponse(message="Account created! Your password has been sent to your email.")
+
+    except HTTPException as http_exc:
+        if conn: conn.rollback()
+        raise http_exc
+    except sqlite3.Error as db_err:
+        if conn: conn.rollback()
+        print(f"API ERROR (/register): Database error for {email}: {db_err}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error during registration.")
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"API ERROR (/register): Unexpected error for {email}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected server error occurred during registration.")
+    finally:
+        if conn: conn.close()
+
+@app.post("/api/me/regenerate-password", response_model=models.RegeneratePasswordResponse, tags=["User Account Management"])
+async def regenerate_user_password(
+    request: Request, # To construct login URL for email
+    response: FastAPIResponse, # To potentially clear cookies if we decide to logout from backend
+    payload: models.RegeneratePasswordRequest = Body(...),
+    current_user: Dict[str, Any] = Depends(auth.get_current_active_user)
+):
+    """
+    Allows an authenticated user to regenerate their password.
+    Requires the user's current password for verification.
+    A new password will be generated and emailed to the user.
+    The client is expected to handle logout after a successful response.
+    """
+    user_id = current_user.get("id")
+    user_email = current_user.get("email")
+    user_name = current_user.get("name") # For the email
+
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
+        # Fetch the current user's stored password hash for verification
+        cursor.execute("SELECT password_hash FROM users WHERE id = ? AND email = ?", (user_id, user_email))
+        user_record = cursor.fetchone()
+
+        if not user_record:
+            print(f"ACCOUNT ERROR (regenerate-password): User ID {user_id} / Email {user_email} not found in database despite being authenticated.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User record not found. Please try logging out and back in."
+            )
+
+        stored_password_hash = user_record["password_hash"]
+        if not stored_password_hash:
+             print(f"ACCOUNT ERROR (regenerate-password): User ID {user_id} ({user_email}) has no password hash stored.")
+             raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Cannot verify password due to an account data issue. Please contact support."
+            )
+
+        # Verify the provided current password
+        if not auth.verify_password(payload.current_password, stored_password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect current password."
+            )
+
+        # If current password is correct, generate a new password
+        new_plain_password = database.generate_secure_token(12) # Generate a new 12-character password
+        new_hashed_password = auth.get_password_hash(new_plain_password)
+
+        # Update the user's password hash in the database
+        cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hashed_password, user_id))
+        if cursor.rowcount == 0:
+            conn.rollback()
+            print(f"ACCOUNT ERROR (regenerate-password): Failed to update password hash for user ID {user_id} ({user_email}).")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update password due to a server error."
+            )
+
+        # Construct the login URL for the email using config.BASE_URL
+        login_url_from_fastapi = str(request.url_for('get_login_page_route'))
+        parsed_url_from_fastapi = urlparse(login_url_from_fastapi)
+        login_path_component = parsed_url_from_fastapi.path
+        if parsed_url_from_fastapi.query:
+            login_path_component += "?" + parsed_url_from_fastapi.query
+        login_page_url = f"{config.BASE_URL.rstrip('/')}{login_path_component}"
+
+        # Send an email with the new password
+        # We can reuse send_password_reset_email or create a new specific template/function
+        # For now, reusing send_password_reset_email which sends the new password.
+        email_sent = await email_utils.send_password_reset_email(
+            recipient_email=user_email,
+            recipient_name=user_name, # Pass the user's name
+            new_password=new_plain_password,
+            login_url=login_page_url
+        )
+
+        if not email_sent:
+            # If email sending fails, we should roll back the password change
+            # to avoid leaving the user in a state where their password changed
+            # but they didn't receive the new one.
+            conn.rollback()
+            print(f"ACCOUNT ERROR (regenerate-password): Password for user {user_id} ({user_email}) was updated in DB, but FAILED to send email. DB changes rolled back.")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Password was reset, but failed to send the notification email. Please try again."
+            )
+
+        # Invalidate all existing session tokens for this user to force re-login on other devices.
+        # This is an important security step after a password change.
+        now_utc_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        cursor.execute(
+            """
+            UPDATE auth_tokens 
+            SET used_at = ?, expires_at = ? 
+            WHERE user_id = ? AND token_type = 'session' AND used_at IS NULL
+            """,
+            (now_utc_iso, now_utc_iso, user_id)
+        )
+        print(f"ACCOUNT (regenerate-password): Invalidated {cursor.rowcount} active session tokens for user ID {user_id} ({user_email}).")
+
+
+        conn.commit()
+        print(f"ACCOUNT: User ID {user_id} ({user_email}) successfully regenerated their password. New password email sent.")
+        
+        # The client will handle the actual logout.
+        # We do not clear the cookie here, but the session tokens are invalidated.
+        # The current session cookie on the client's browser will become invalid on the next request
+        # that requires auth, or the client can explicitly clear it.
+
+        return models.RegeneratePasswordResponse(
+            message="Password regenerated successfully. An email has been sent with your new password. You should now log out and log back in with the new password."
+        )
+
+    except HTTPException as http_exc:
+        if conn: conn.rollback()
+        raise http_exc
+    except sqlite3.Error as db_err:
+        if conn: conn.rollback()
+        print(f"API ERROR (/api/me/regenerate-password): Database error for user {user_email}: {db_err}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error while regenerating password.")
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"API ERROR (/api/me/regenerate-password): Unexpected error for user {user_email}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected server error occurred.")
+    finally:
+        if conn: conn.close()
+
+
+@app.get("/settings", response_class=FileResponse, name="get_settings_page", tags=["Pages"])
+async def get_settings_page(
+    request: Request,
+    user: Dict[str, Any] = Depends(auth.get_current_active_user) # Protect the route
+):
+    """
+    Serves the user settings page.
+    Requires authentication.
+    """
+    if not user:
+        # This should be handled by the Depends(auth.get_current_active_user)
+        # but as a safeguard, redirect to login if somehow user is None.
+        return RedirectResponse(url=request.url_for('get_login_page_route'), status_code=status.HTTP_302_FOUND)
+
+    settings_html_path = config.STATIC_DIR / "settings.html"
+    if not settings_html_path.is_file():
+        print(f"ERROR: settings.html not found at expected location: {settings_html_path}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Settings page HTML file not found.")
+    
+    return FileResponse(settings_html_path)
+
+# --- Add this new route for updating user email ---
+@app.patch("/api/me/update-email", response_model=models.UpdateEmailResponse, tags=["User Account Management"])
+async def update_user_email(
+    response: FastAPIResponse, # To potentially clear cookies if we decide to logout from backend
+    payload: models.UpdateEmailRequest = Body(...),
+    current_user: Dict[str, Any] = Depends(auth.get_current_active_user)
+):
+    """
+    Allows an authenticated user to update their email address.
+    Requires the user's current password for verification.
+    Checks if the new email is already in use.
+    If successful, invalidates existing sessions and the client is expected to handle logout.
+    """
+    user_id = current_user.get("id")
+    current_email_for_logging = current_user.get("email") # For logging
+    new_email_normalized = payload.new_email.lower().strip()
+
+    if new_email_normalized == current_email_for_logging:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New email address is the same as the current one."
+        )
+
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
+        # 1. Fetch the current user's stored password hash for verification
+        cursor.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+        user_record = cursor.fetchone()
+
+        if not user_record:
+            print(f"ACCOUNT ERROR (update-email): User ID {user_id} not found in database despite being authenticated.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User record not found. Please try logging out and back in."
+            )
+
+        stored_password_hash = user_record["password_hash"]
+        if not stored_password_hash:
+             print(f"ACCOUNT ERROR (update-email): User ID {user_id} ({current_email_for_logging}) has no password hash stored.")
+             raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Cannot verify password due to an account data issue. Please contact support."
+            )
+
+        # 2. Verify the provided current password
+        if not auth.verify_password(payload.current_password, stored_password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect current password."
+            )
+
+        # 3. Check if the new email address is already in use by another user
+        cursor.execute("SELECT id FROM users WHERE email = ? AND id != ?", (new_email_normalized, user_id))
+        existing_user_with_new_email = cursor.fetchone()
+        if existing_user_with_new_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This email address is already in use by another account."
+            )
+
+        # 4. If password is correct and new email is available, update the email
+        cursor.execute("UPDATE users SET email = ? WHERE id = ?", (new_email_normalized, user_id))
+        if cursor.rowcount == 0:
+            conn.rollback()
+            print(f"ACCOUNT ERROR (update-email): Failed to update email for user ID {user_id} ({current_email_for_logging}) even after checks. Rowcount was 0.")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update email due to a server error during the update operation."
+            )
+
+        # 5. Invalidate all existing session tokens for this user to force re-login.
+        now_utc_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        cursor.execute(
+            """
+            UPDATE auth_tokens 
+            SET used_at = ?, expires_at = ? 
+            WHERE user_id = ? AND token_type = 'session' AND used_at IS NULL
+            """,
+            (now_utc_iso, now_utc_iso, user_id)
+        )
+        print(f"ACCOUNT (update-email): Invalidated {cursor.rowcount} active session tokens for user ID {user_id} (old email: {current_email_for_logging}).")
+
+        conn.commit()
+        print(f"ACCOUNT: User ID {user_id} successfully updated email from '{current_email_for_logging}' to '{new_email_normalized}'.")
+        
+        # The client will handle the actual logout.
+        # The current session cookie on the client's browser will become invalid on the next request
+        # that requires auth, or the client can explicitly clear it.
+
+        return models.UpdateEmailResponse(
+            message="Email updated successfully. You will now be logged out to apply changes.",
+            new_email=new_email_normalized
+        )
+
+    except HTTPException as http_exc:
+        if conn: conn.rollback()
+        raise http_exc
+    except sqlite3.Error as db_err:
+        if conn: conn.rollback()
+        print(f"API ERROR (/api/me/update-email): Database error for user {current_email_for_logging}: {db_err}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="A database error occurred while updating your email.")
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"API ERROR (/api/me/update-email): Unexpected error for user {current_email_for_logging}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected server error occurred while updating your email.")
+    finally:
+        if conn: conn.close()
+
+# --- Add this new route for updating user name ---
+@app.patch("/api/me/update-name", response_model=models.UpdateNameResponse, tags=["User Account Management"])
+async def update_user_name(
+    update_data: models.UpdateNameRequest = Body(...), # Use models.UpdateNameRequest
+    current_user: Dict[str, Any] = Depends(auth.get_current_active_user) # Dependency to get authenticated user
+):
+    """
+    Allows an authenticated user to update their display name.
+    Requires the user's current password for verification.
+    """
+    # current_user is already validated by auth.get_current_active_user,
+    # which raises HTTPException(status_code=401) if not authenticated or inactive.
+
+    user_id = current_user.get("id")
+    user_email = current_user.get("email") # For logging purposes
+
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
+        # Fetch the current user's stored password hash for verification
+        cursor.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+        user_record = cursor.fetchone()
+
+        if not user_record:
+            # This should ideally not happen if user is authenticated and their record exists
+            print(f"ACCOUNT ERROR (update-name): User ID {user_id} not found in database despite being authenticated.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, # Or 500 if this indicates a severe inconsistency
+                detail="User record not found. Please try logging out and back in."
+            )
+
+        stored_password_hash = user_record["password_hash"]
+        if not stored_password_hash:
+             # This indicates an issue with the user's account data (e.g., created without a password hash)
+             print(f"ACCOUNT ERROR (update-name): User ID {user_id} ({user_email}) has no password hash stored.")
+             raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Cannot verify password due to an account data issue. Please contact support."
+            )
+
+        # Verify the provided current password against the stored hash
+        if not auth.verify_password(update_data.current_password, stored_password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, # Incorrect password
+                detail="Incorrect current password."
+            )
+
+        # If password is correct, update the name
+        # new_name is already stripped and validated by Pydantic's constr in models.UpdateNameRequest
+        new_name_stripped = update_data.new_name
+
+        cursor.execute("UPDATE users SET name = ? WHERE id = ?", (new_name_stripped, user_id))
+        if cursor.rowcount == 0:
+            # This would be unusual if the user exists and password was verified,
+            # might indicate a concurrent deletion or DB issue.
+            conn.rollback()
+            print(f"ACCOUNT ERROR (update-name): Failed to update name for user ID {user_id} ({user_email}) even after password verification. Rowcount was 0.")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update name due to a server error during the update operation."
+            )
+
+        conn.commit()
+        print(f"ACCOUNT: User ID {user_id} ({user_email}) successfully updated name to '{new_name_stripped}'.")
+        
+        # Return a success response including the new name
+        return models.UpdateNameResponse(message="Name updated successfully.", new_name=new_name_stripped)
+
+    except HTTPException as http_exc:
+        # Re-raise HTTPExceptions that were intentionally raised (e.g., 401, 404)
+        if conn: conn.rollback() # Ensure rollback if transaction was started
+        raise http_exc
+    except sqlite3.Error as db_err:
+        # Handle database-specific errors
+        if conn: conn.rollback()
+        print(f"API ERROR (/api/me/update-name): Database error for user {user_email}: {db_err}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="A database error occurred while updating your name."
+        )
+    except Exception as e:
+        # Handle any other unexpected errors
+        if conn: conn.rollback()
+        print(f"API ERROR (/api/me/update-name): Unexpected error for user {user_email}: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected server error occurred while updating your name."
+        )
+    finally:
+        # Always close the database connection if it was opened
+        if conn:
+            conn.close()
+
+@app.post("/forgot_password", response_model=models.ForgotPasswordResponse, tags=["Authentication"])
+async def handle_forgot_password(
+    request_data: models.ForgotPasswordRequest,
+    request: Request # To construct login URL for email and get client IP
+):
+    """
+    Handles a forgot password request with rate limiting.
+    Uses config.BASE_URL for the login link.
+    Rate limiting parameters are sourced from config.py.
+    """
+    email = request_data.email.lower().strip()
+    client_ip = request.client.host if request.client else None
+
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
+        time_window_start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=config.FORGOT_PASSWORD_ATTEMPT_WINDOW_HOURS)
+        
+        cursor.execute(
+            "SELECT COUNT(*) FROM password_reset_attempts WHERE email = ? AND attempted_at >= ?",
+            (email, time_window_start.isoformat())
+        )
+        attempt_count_row = cursor.fetchone()
+        recent_attempts = attempt_count_row[0] if attempt_count_row else 0
+
+        if recent_attempts >= config.FORGOT_PASSWORD_ATTEMPT_LIMIT:
+            print(f"AUTH (/forgot_password): Rate limit exceeded for email {email}. Recent attempts: {recent_attempts} (Limit: {config.FORGOT_PASSWORD_ATTEMPT_LIMIT})")
+            return models.ForgotPasswordResponse(message="If an account with this email exists, a password reset email has been sent.")
+
+        cursor.execute(
+            "INSERT INTO password_reset_attempts (email, ip_address) VALUES (?, ?)",
+            (email, client_ip)
+        )
+        
+        cursor.execute("SELECT id, name FROM users WHERE email = ? AND is_active = 1", (email,))
+        user_row = cursor.fetchone()
+
+        if not user_row:
+            conn.commit() 
+            print(f"AUTH (/forgot_password): Reset requested for non-existent/inactive email: {email}. Attempt logged.")
+            return models.ForgotPasswordResponse(message="If an account with this email exists, a password reset email has been sent.")
+
+        user = dict(user_row)
+        user_id = user["id"]
+        user_name = user["name"]
+
+        new_plain_password = database.generate_secure_token(12)
+        new_hashed_password = auth.get_password_hash(new_plain_password)
+
+        cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hashed_password, user_id))
+        if cursor.rowcount == 0:
+            conn.rollback()
+            print(f"AUTH ERROR (/forgot_password): Failed to update password hash for user {user_id} ({email}).")
+            return models.ForgotPasswordResponse(message="If an account with this email exists, a password reset email has been sent.")
+
+        # --- Construct login_page_url using config.BASE_URL ---
+        login_url_from_fastapi = str(request.url_for('get_login_page_route'))
+        parsed_url_from_fastapi = urlparse(login_url_from_fastapi)
+        login_path_component = parsed_url_from_fastapi.path
+        if parsed_url_from_fastapi.query:
+            login_path_component += "?" + parsed_url_from_fastapi.query
+        
+        # Use config.BASE_URL (which should not have a trailing slash)
+        login_page_url = f"{config.BASE_URL.rstrip('/')}{login_path_component}"
+
+        print(f"DEBUG (forgot_password): config.BASE_URL: {config.BASE_URL}")
+        print(f"DEBUG (forgot_password): request.url_for('get_login_page_route') returned: {login_url_from_fastapi}")
+        print(f"DEBUG (forgot_password): Extracted path component: {login_path_component}")
+        print(f"DEBUG (forgot_password): Constructed login_page_url for email: {login_page_url}")
+        # --- END OF URL CONSTRUCTION ---
+        
+        email_sent = await email_utils.send_password_reset_email(
+            recipient_email=email,
+            recipient_name=user_name,
+            new_password=new_plain_password,
+            login_url=login_page_url
+        )
+
+        if not email_sent:
+            conn.rollback()
+            print(f"AUTH ERROR (/forgot_password): Password reset email FAILED to send for user {user_id} ({email}). DB changes rolled back.")
+            return models.ForgotPasswordResponse(message="If an account with this email exists, a password reset email has been sent.")
+
+        conn.commit()
+        print(f"AUTH (/forgot_password): Password reset successful for user {user_id} ({email}). New password email sent. Attempt logged.")
+        return models.ForgotPasswordResponse(message="If an account with this email exists, a password reset email has been sent.")
+
+    except sqlite3.Error as db_err:
+        if conn: conn.rollback()
+        print(f"API ERROR (/forgot_password): DB error for {email}: {db_err}")
+        traceback.print_exc()
+        return models.ForgotPasswordResponse(message="An error occurred while processing your request. Please try again.")
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"API ERROR (/forgot_password): Unexpected error for {email}: {e}")
+        traceback.print_exc()
+        return models.ForgotPasswordResponse(message="An unexpected error occurred. Please try again.")
+    finally:
+        if conn: conn.close()
+
+
 @app.on_event("startup")
 async def startup_event():
     print("Application startup: Initializing database...")
@@ -3049,7 +3604,7 @@ print(f"Mounted static pages directory '{config.STATIC_DIR}' at '/static'")
 
 # --- Authentication & User Routes ---
 
-@app.post("/token", response_model=AuthTokenResponse, tags=["Authentication"])
+@app.post("/token", response_model=models.Token, tags=["Authentication"])
 async def login_for_access_token(
     response: FastAPIResponse,
     form_data: OAuth2PasswordRequestForm = Depends()
@@ -3076,7 +3631,7 @@ async def login_for_access_token(
 
         session_token_raw = await auth.create_user_session(response=response, user_id=user["id"])
         print(f"AUTH (/token): User '{email}' (ID: {user['id']}) logged in successfully.")
-        return AuthTokenResponse(
+        return models.Token(
             access_token=session_token_raw, token_type="bearer",
             user_id=user["id"], user_name=user["name"], user_email=user["email"]
         )
@@ -3091,8 +3646,8 @@ async def login_for_access_token(
         if conn: conn.close()
 
 
-@app.post("/check_email", response_model=EmailCheckResponse, tags=["Authentication"])
-async def check_email_exists(request_data: EmailCheckRequest):
+@app.post("/check_email", response_model=models.EmailCheckResponse, tags=["Authentication"])
+async def check_email_exists(request_data: models.EmailCheckRequest):
     """Checks if an email exists in the database."""
     email_to_check = request_data.email.lower()
     conn = None
@@ -3102,9 +3657,9 @@ async def check_email_exists(request_data: EmailCheckRequest):
         cursor.execute("SELECT id, name FROM users WHERE email = ?", (email_to_check,))
         user_row = cursor.fetchone()
         if user_row:
-            return EmailCheckResponse(exists=True, user_name=user_row["name"])
+            return models.EmailCheckResponse(exists=True, user_name=user_row["name"])
         else:
-            return EmailCheckResponse(exists=False)
+            return models.EmailCheckResponse(exists=False)
     except sqlite3.Error as db_err:
         print(f"API ERROR (/check_email): DB error for {email_to_check}: {db_err}"); traceback.print_exc()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error checking email.")
@@ -3115,8 +3670,8 @@ async def check_email_exists(request_data: EmailCheckRequest):
         if conn: conn.close()
 
 
-@app.post("/register", response_model=RegistrationResponse, tags=["Authentication"])
-async def register_new_user(request_data: RegistrationRequest, request: Request):
+@app.post("/register", response_model=models.RegistrationResponse, tags=["Authentication"])
+async def register_new_user(request_data: models.RegistrationRequest, request: Request):
     """Registers a new user, hashes password, emails generated password."""
     email = request_data.email.lower().strip()
     name = request_data.name.strip()
@@ -3143,7 +3698,7 @@ async def register_new_user(request_data: RegistrationRequest, request: Request)
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Account created, but failed to send password email.")
 
         conn.commit(); print(f"New user registered: {email} (ID: {user_id}). Password email sent.")
-        return RegistrationResponse(message="Account created! Temporary password sent to your email.")
+        return models.RegistrationResponse(message="Account created! Temporary password sent to your email.")
     except HTTPException as http_exc:
         if conn: conn.rollback(); raise http_exc
     except sqlite3.Error as db_err:
@@ -3154,87 +3709,6 @@ async def register_new_user(request_data: RegistrationRequest, request: Request)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unexpected server error during registration.")
     finally:
         if conn: conn.close()
-
-# --- ADDED: Forgot Password Endpoint ---
-@app.post("/forgot_password", response_model=ForgotPasswordResponse, tags=["Authentication"])
-async def handle_forgot_password(
-    request_data: ForgotPasswordRequest,
-    request: Request # To construct login URL for email
-):
-    """
-    Handles a forgot password request. If the email exists, generates a new
-    password, updates it in the database, and emails the new password to the user.
-    """
-    email = request_data.email.lower().strip()
-    conn = None
-    try:
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-
-        # Find the user by email
-        cursor.execute("SELECT id, name FROM users WHERE email = ? AND is_active = 1", (email,))
-        user_row = cursor.fetchone()
-
-        if not user_row:
-            # IMPORTANT: Do not reveal if the email exists or not for security.
-            # Send a generic success message regardless.
-            print(f"AUTH (/forgot_password): Request received for non-existent or inactive email: {email}")
-            return ForgotPasswordResponse(message="If an account with this email exists, a password reset email has been sent.")
-
-        user = dict(user_row)
-        user_id = user["id"]
-        user_name = user["name"]
-
-        # Generate a new random password
-        new_plain_password = database.generate_secure_token(12)
-        new_hashed_password = auth.get_password_hash(new_plain_password)
-
-        # Update the user's password hash in the database
-        cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hashed_password, user_id))
-        if cursor.rowcount == 0:
-            # Should not happen if we just found the user, but handle defensively
-            conn.rollback()
-            print(f"AUTH ERROR (/forgot_password): Failed to update password hash for user {user_id} ({email}).")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update password.")
-
-        # Send the password reset email
-        base_url = str(request.base_url).rstrip('/')
-        login_page_url = f"{base_url}{request.url_for('get_login_page_route')}"
-        email_sent = await email_utils.send_password_reset_email(
-            recipient_email=email,
-            recipient_name=user_name,
-            new_password=new_plain_password, # Send the plain text new password
-            login_url=login_page_url
-        )
-
-        if not email_sent:
-            # If email fails, roll back the password change in the DB to avoid confusion.
-            # The user's old password remains valid.
-            conn.rollback()
-            print(f"AUTH ERROR (/forgot_password): Password reset email FAILED to send for user {user_id} ({email}). DB changes rolled back.")
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to send password reset email. Please try again.")
-
-        # Commit the password change ONLY if the email was sent successfully
-        conn.commit()
-        print(f"AUTH (/forgot_password): Password reset successful for user {user_id} ({email}). New password email sent.")
-        return ForgotPasswordResponse(message="If an account with this email exists, a password reset email has been sent.")
-
-    except HTTPException as http_exc:
-        # Don't rollback here if it's just a 404 simulated response
-        if http_exc.status_code != status.HTTP_404_NOT_FOUND:
-             if conn: conn.rollback()
-        raise http_exc
-    except sqlite3.Error as db_err:
-        if conn: conn.rollback()
-        print(f"API ERROR (/forgot_password): DB error for {email}: {db_err}"); traceback.print_exc()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error processing request.")
-    except Exception as e:
-        if conn: conn.rollback()
-        print(f"API ERROR (/forgot_password): Unexpected error for {email}: {e}"); traceback.print_exc()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unexpected server error processing request.")
-    finally:
-        if conn: conn.close()
-# --- END ADDED ---
 
 
 @app.get("/login", response_class=HTMLResponse, name="get_login_page_route", tags=["Pages"])
@@ -3254,14 +3728,14 @@ async def logout_route(response: FastAPIResponse, session_token_value: Optional[
     return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
 
 
-@app.get("/api/me", response_model=UserResponseModel, tags=["Users"])
+@app.get("/api/me", response_model=models.UserResponseModel, tags=["Users"])
 async def get_current_user_details(user: Dict[str, Any] = Depends(auth.get_current_active_user)):
     """Gets details for the currently authenticated user."""
     if not user: raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     if not all(key in user for key in ["id", "name", "email"]):
         print(f"ERROR /api/me: User dict missing keys. User: {user}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="User data incomplete.")
-    return UserResponseModel(id=user["id"], name=user["name"], email=user["email"])
+    return models.UserResponseModel(id=user["id"], name=user["name"], email=user["email"])
 
 # --- Main Application Routes (Protected) ---
 
@@ -3404,20 +3878,32 @@ async def get_chat_page_for_session(
     return FileResponse(chat_html_path)
 
 
-# --- WebSocket Handler ---
 async def handle_chat_message(
-    chain: Any, memory: Any, websocket: WebSocket, client_js_id: str,
-    current_user: Dict, session_id: str, user_input: str
+    chain: Any,                     # Your LangChain chain
+    memory: Any,                    # The conversation memory object
+    websocket: WebSocket,
+    client_js_id: str,              # Unique ID for the JS client instance
+    current_user: Dict[str, Any],   # Authenticated user details
+    session_id: str,                # The ID of the chat session
+    user_input: str,
+    turn_id: int                    # <<< NEW: The turn ID from the frontend
 ):
-    """Handles processing a chat message and streaming the response."""
+    """
+    Handles processing a chat message with the LLM, streaming the response,
+    and allowing the stream to be stopped.
+    """
     user_name = current_user.get('name', 'User')
     user_db_id = current_user['id']
     full_response = ""
-    thinking_content = None # Placeholder for potential future thinking extraction
-    db_conn_user_msg = None
+    thinking_content = None # Placeholder for future
+    
+    # --- MODIFIED: Create a unique stream ID and register for stopping ---
+    stream_id = f"{client_js_id}_{turn_id}" # Use client_js_id and frontend's turn_id
+    stop_event: asyncio.Event = None # Initialize to None
 
-    # Save user message to DB
+    db_conn_user_msg = None
     try:
+        # Save user message to DB (existing logic)
         db_conn_user_msg = database.get_db_connection()
         db_cursor_user_msg = db_conn_user_msg.cursor()
         db_cursor_user_msg.execute(
@@ -3427,73 +3913,83 @@ async def handle_chat_message(
         )
         db_conn_user_msg.commit()
     except Exception as db_err:
-        print(f"DB ERROR saving user message for session {session_id} (client {client_js_id}): {db_err}")
+        print(f"DB ERROR saving user message for session {session_id} (client {client_js_id}, turn {turn_id}): {db_err}")
         if db_conn_user_msg: db_conn_user_msg.rollback()
     finally:
         if db_conn_user_msg: db_conn_user_msg.close()
 
-    # Process message with LLM chain and stream response
     try:
+        # --- MODIFIED: Register stream and get stop_event ---
+        stop_event = await state.register_ai_stream(stream_id)
+        print(f"AI STREAM (handle_chat_message): Starting stream {stream_id} for session {session_id}")
+
+        # Stream response using the chain
         async for chunk_data in chain.astream({"input": user_input}):
-            # Extract content and potentially thinking steps if your chain provides them
-            # This part depends heavily on your specific LangChain setup
+            # --- MODIFIED: Check stop_event in the loop ---
+            if stop_event.is_set():
+                print(f"AI STREAM (handle_chat_message): Stop event set for stream {stream_id}. Breaking loop.")
+                break # Exit the streaming loop if stop is signaled
+
+            # Extract content (your existing logic for handling chunk_data)
             if isinstance(chunk_data, dict):
-                # Example: Check for specific keys if your chain yields dicts
-                chunk_str = chunk_data.get("answer", "") # Or whatever key holds the main response
-                # thinking_step = chunk_data.get("intermediate_steps", "") # Example
-                # if thinking_step: appendRawTextToThinkingArea(thinking_step) # Send thinking via WS if needed
+                chunk_str = chunk_data.get("answer", "") # Or your relevant key
             else:
-                chunk_str = str(chunk_data) # Assume simple string chunks
+                chunk_str = str(chunk_data)
 
             if websocket.client_state != WebSocketState.CONNECTED:
-                print(f"WS: WebSocket disconnected during LLM stream for session {session_id}. Aborting.")
-                return
+                print(f"WS: WebSocket disconnected during LLM stream for session {session_id}, stream {stream_id}. Aborting send.")
+                return 
             await websocket.send_text(chunk_str)
             full_response += chunk_str
+        
+        # --- MODIFIED: Check if loop was broken by stop_event before sending EOS ---
+        if stop_event.is_set():
+            print(f"AI STREAM (handle_chat_message): Stream {stream_id} was stopped by signal. Not sending EOS from here, frontend will finalize.")
+            # Frontend's finalizeTurnOnErrorOrClose will handle UI. Backend might send EOS in stop_ai_stream handler.
+        elif websocket.client_state == WebSocketState.CONNECTED:
+            await websocket.send_text("<EOS>") # Send End-Of-Stream marker if finished naturally
+            print(f"AI STREAM (handle_chat_message): Finished streaming naturally for stream {stream_id} to session {session_id}")
+        
+        # Save context to memory and DB (existing logic)
+        memory.save_context({"input": user_input}, {"output": full_response})
+        if hasattr(state, 'save_memory_state_to_db'): # Check if function exists
+            try:
+                state.save_memory_state_to_db(session_id, memory)
+            except Exception as save_mem_err:
+                print(f"ERROR saving memory state to DB for session {session_id}: {save_mem_err}")
+        
+        db_conn_ai_msg = None
+        try:
+            db_conn_ai_msg = database.get_db_connection()
+            db_cursor_ai_msg = db_conn_ai_msg.cursor()
+            db_cursor_ai_msg.execute(
+                """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, thinking_content, client_id_temp)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, None, "AI", 'ai', full_response, thinking_content, client_js_id)
+            )
+            db_conn_ai_msg.commit()
+        except Exception as db_err:
+            print(f"DB ERROR saving AI message for session {session_id} (stream {stream_id}): {db_err}")
+            if db_conn_ai_msg: db_conn_ai_msg.rollback()
+        finally:
+            if db_conn_ai_msg: db_conn_ai_msg.close()
+
     except Exception as chain_exc:
-        error_msg = f"<ERROR>LLM Error: Processing your message failed. Please try again. Details: {chain_exc}"
-        print(f"LLM chain error for session {session_id} (client {client_js_id}): {chain_exc}")
+        error_msg = f"<ERROR>LLM Error: Processing your message failed. Details: {chain_exc}"
+        print(f"LLM chain error for session {session_id} (stream {stream_id}): {chain_exc}")
         traceback.print_exc()
         if websocket.client_state == WebSocketState.CONNECTED:
-            try: await websocket.send_text(error_msg)
-            except Exception as send_err: print(f"WS ERROR: Could not send LLM error to client {client_js_id}: {send_err}")
-        return # Stop processing on chain error
-
-    # After successful streaming
-    if websocket.client_state == WebSocketState.CONNECTED:
-        try:
-            await websocket.send_text("<EOS>") # Send End-Of-Stream marker
-
-            # Save context to the in-memory object
-            memory.save_context({"input": user_input}, {"output": full_response})
-            print(f"WS: Context saved to in-memory object for session {session_id} (client {client_js_id}).")
-
-            # Save memory state to database
-            if state and hasattr(state, 'save_memory_state_to_db'):
-                try: state.save_memory_state_to_db(session_id, memory)
-                except Exception as save_mem_err: print(f"ERROR saving memory state to DB for session {session_id}: {save_mem_err}")
-            else: print(f"Warning: state.save_memory_state_to_db function not found. Memory not persisted.")
-
-            # Save AI message to DB (including thinking content if captured)
-            db_conn_ai_msg = None
             try:
-                db_conn_ai_msg = database.get_db_connection()
-                db_cursor_ai_msg = db_conn_ai_msg.cursor()
-                db_cursor_ai_msg.execute(
-                    """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, thinking_content, client_id_temp)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (session_id, None, "AI", 'ai', full_response, thinking_content, client_js_id) # Add thinking_content
-                )
-                db_conn_ai_msg.commit()
-            except Exception as db_err:
-                print(f"DB ERROR saving AI message for session {session_id} (client {client_js_id}): {db_err}")
-                if db_conn_ai_msg: db_conn_ai_msg.rollback()
-            finally:
-                if db_conn_ai_msg: db_conn_ai_msg.close()
-
-        except Exception as post_stream_err:
-            print(f"CHAT ERROR: Post-stream processing for session {session_id} (client {client_js_id}): {post_stream_err}")
-            traceback.print_exc()
+                await websocket.send_text(error_msg)
+                # Also send EOS after error to ensure frontend resets UI properly
+                await websocket.send_text("<EOS>")
+            except Exception as send_err:
+                print(f"WS ERROR: Could not send LLM error/EOS to client {client_js_id} for stream {stream_id}: {send_err}")
+    finally:
+        # --- MODIFIED: Always unregister the stream ---
+        if stream_id and stop_event: # Ensure stream_id was formed and event exists
+            await state.unregister_ai_stream(stream_id)
+            print(f"AI STREAM (handle_chat_message): Stream {stream_id} unregistered for session {session_id}")
 
 
 @app.websocket("/ws/{session_id_ws}/{client_js_id}")
@@ -3502,7 +3998,9 @@ async def websocket_endpoint(
     session_id_ws: str = FastApiPath(..., title="Session ID", description="The ID of the chat session."),
     client_js_id: str = FastApiPath(..., title="Client JS ID", description="A unique ID generated by the client-side JavaScript.")
 ):
-    """Handles WebSocket connections for chat sessions."""
+    """
+    Handles WebSocket connections for chat, code execution, and AI stream stopping.
+    """
     # Authenticate user via session cookie
     session_token_from_cookie = websocket.cookies.get(auth.SESSION_COOKIE_NAME)
     current_ws_user: Optional[Dict[str, Any]] = None
@@ -3520,56 +4018,55 @@ async def websocket_endpoint(
     ws_log_prefix = f"WS (User: {user_email}, Session: {session_id_ws}, ClientJS: {client_js_id}):"
     print(f"{ws_log_prefix} User authenticated.")
 
-    # Verify session existence and user participation
-    conn_verify = None; is_participant = False
+    # Verify session existence and user participation (existing logic)
+    conn_verify = None
+    is_participant = False
     try:
-        conn_verify = database.get_db_connection(); cursor_verify = conn_verify.cursor()
+        conn_verify = database.get_db_connection()
+        cursor_verify = conn_verify.cursor()
         cursor_verify.execute("SELECT 1 FROM sessions WHERE id = ? AND is_active = 1", (session_id_ws,))
         if not cursor_verify.fetchone():
             print(f"{ws_log_prefix} Session not found or inactive. Closing.")
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION); return
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
         cursor_verify.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id_ws, user_id))
         is_participant = cursor_verify.fetchone() is not None
         if not is_participant:
             print(f"{ws_log_prefix} User NOT participant. Closing.")
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION); return
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
     except Exception as e:
-        print(f"{ws_log_prefix} DB error verifying participation: {e}"); traceback.print_exc()
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR); return
+        print(f"{ws_log_prefix} DB error verifying participation: {e}")
+        traceback.print_exc()
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        return
     finally:
         if conn_verify: conn_verify.close()
-
     print(f"{ws_log_prefix} User confirmed participant.")
 
-    # Accept connection
     try:
         await websocket.accept()
         print(f"{ws_log_prefix} WebSocket connection accepted.")
     except Exception as accept_err:
-        print(f"{ws_log_prefix} Error accepting WebSocket: {accept_err}"); return
+        print(f"{ws_log_prefix} Error accepting WebSocket: {accept_err}")
+        return
 
-    # Get or load conversation memory
-    memory = state.get_memory_for_client(session_id_ws) # Handles DB loading
-
-    # Define memory loading function for LangChain
+    memory = state.get_memory_for_client(session_id_ws)
     def load_memory_for_current_session(_ignored_input_map=None):
-        memory_vars = memory.load_memory_variables({})
-        history = memory_vars.get("history", [])
-        # print(f"{ws_log_prefix} Loading memory: Found {len(history)} messages.") # Optional detailed log
-        return history
-
-    # Create LangChain processing chain
+        return memory.load_memory_variables({}).get("history", [])
+    
     chain: Any
     try:
         chain = llm.create_chain(load_memory_for_current_session)
         print(f"{ws_log_prefix} LLM chain created.")
     except Exception as chain_init_error:
-        print(f"{ws_log_prefix} ERROR creating LCEL chain: {chain_init_error}"); traceback.print_exc()
+        print(f"{ws_log_prefix} ERROR creating LCEL chain: {chain_init_error}")
+        traceback.print_exc()
         if websocket.client_state == WebSocketState.CONNECTED:
-             await websocket.send_json({"type": "error", "payload": {"message": "Server error: Could not initialize chat."}})
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR); return
+            await websocket.send_json({"type": "error", "payload": {"message": "Server error: Could not initialize chat."}})
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        return
 
-    # Main loop for handling messages
     try:
         while True:
             if websocket.client_state != WebSocketState.CONNECTED:
@@ -3577,64 +4074,127 @@ async def websocket_endpoint(
                 break
 
             received_data = await websocket.receive_text()
-            # print(f"{ws_log_prefix} Received data: {received_data[:100]}{'...' if len(received_data) > 100 else ''}") # Verbose
-
+            
             try:
                 message_data = json.loads(received_data)
                 message_type = message_data.get("type")
                 payload = message_data.get("payload")
 
-                if message_type == "run_code" and payload and payload.get("code_block_id"):
-                    language = payload.get("language"); code = payload.get("code"); code_block_id = payload.get("code_block_id")
+                if message_type == "chat_message" and payload: # Expect chat messages in this format
+                    user_input = payload.get("user_input")
+                    turn_id = payload.get("turn_id") # Get turn_id from payload
+                    if user_input is not None and turn_id is not None:
+                        print(f"{ws_log_prefix} Received 'chat_message' for turn {turn_id}.")
+                        # Create a task for handle_chat_message so it doesn't block the receive loop
+                        asyncio.create_task(
+                            handle_chat_message(chain, memory, websocket, client_js_id, current_ws_user, session_id_ws, user_input, turn_id)
+                        )
+                    else:
+                        print(f"{ws_log_prefix} Invalid 'chat_message' payload: {payload}")
+                        if websocket.client_state == WebSocketState.CONNECTED:
+                             await websocket.send_text("<ERROR>Invalid chat message payload from client.")
+                             await websocket.send_text("<EOS>")
+
+
+                elif message_type == "run_code" and payload and payload.get("code_block_id"):
+                    language = payload.get("language")
+                    code = payload.get("code")
+                    code_block_id = payload.get("code_block_id")
                     print(f"{ws_log_prefix} Received 'run_code' for block {code_block_id}.")
                     if language and code is not None:
                         asyncio.create_task(docker_utils.run_code_in_docker_stream(websocket, client_js_id, code_block_id, language, code))
                     else:
                         print(f"{ws_log_prefix} Invalid 'run_code' payload for block {code_block_id}.")
-                        await websocket.send_json({"type": "code_finished", "payload": {"code_block_id": payload.get("code_block_id","unknown"), "exit_code": -1, "error": "Invalid run_code payload."}})
-
+                        if websocket.client_state == WebSocketState.CONNECTED: # Check connection before sending
+                            await websocket.send_json({"type": "code_finished", "payload": {"code_block_id": code_block_id, "exit_code": -1, "error": "Invalid run_code payload."}})
+                
                 elif message_type == "stop_code" and payload and payload.get("code_block_id"):
                     code_block_id = payload.get("code_block_id")
                     print(f"{ws_log_prefix} Received 'stop_code' for block {code_block_id}.")
                     asyncio.create_task(docker_utils.stop_docker_container(code_block_id))
 
+                # --- ADDED: Handler for stop_ai_stream ---
+                elif message_type == "stop_ai_stream" and payload:
+                    stop_client_id = payload.get("client_id") # This should match client_js_id
+                    stop_session_id = payload.get("session_id") # This should match session_id_ws
+                    stop_turn_id = payload.get("turn_id")
+
+                    if stop_client_id == client_js_id and stop_session_id == session_id_ws and stop_turn_id is not None:
+                        stream_id_to_stop = f"{stop_client_id}_{stop_turn_id}"
+                        print(f"{ws_log_prefix} Received 'stop_ai_stream' for stream ID: {stream_id_to_stop}")
+                        stopped = await state.signal_stop_ai_stream(stream_id_to_stop)
+                        if stopped:
+                            print(f"{ws_log_prefix} Successfully signaled stop for stream {stream_id_to_stop}.")
+                            # The stream itself in handle_chat_message will break and not send further chunks.
+                            # The frontend's finalizeTurnOnErrorOrClose already handles UI reset.
+                            # Optionally, send an explicit <EOS> here if the stream might not have sent one
+                            # due to abrupt stop, though frontend finalization should cover it.
+                            # if websocket.client_state == WebSocketState.CONNECTED:
+                            #     await websocket.send_text("<EOS>") # Consider if this is needed or causes double EOS
+                        else:
+                            print(f"{ws_log_prefix} Failed to signal stop or stream {stream_id_to_stop} not found.")
+                    else:
+                        print(f"{ws_log_prefix} Received 'stop_ai_stream' with mismatched IDs or missing turn_id: {payload}")
+                # --- END OF ADDED ---
+                
                 else:
-                    print(f"{ws_log_prefix} Received JSON, but unknown type '{message_type}'. Treating as chat.")
-                    await handle_chat_message(chain, memory, websocket, client_js_id, current_ws_user, session_id_ws, received_data)
+                    print(f"{ws_log_prefix} Received unknown JSON command type '{message_type}' or invalid payload.")
+                    # Optionally send an error back to the client
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        await websocket.send_text(f"<ERROR>Unknown command type: {message_type}")
+                        await websocket.send_text("<EOS>")
+
 
             except json.JSONDecodeError:
-                # Treat as plain text chat message
-                # print(f"{ws_log_prefix} Data not JSON, treating as chat message.") # Verbose
-                await handle_chat_message(chain, memory, websocket, client_js_id, current_ws_user, session_id_ws, received_data)
-
-            except Exception as handler_exc:
-                print(f"{ws_log_prefix} ERROR handling received message: {handler_exc}"); traceback.print_exc()
+                # Handle plain text messages (old format, or if client sends non-JSON by mistake)
+                # For simplicity, we might decide to phase out plain text and require JSON for chat.
+                # If supporting plain text, you'd call handle_chat_message without a turn_id or generate one.
+                print(f"{ws_log_prefix} Received non-JSON data, treating as legacy chat or error: {received_data[:100]}...")
+                # For now, let's assume chat messages should be JSON. Send an error.
                 if websocket.client_state == WebSocketState.CONNECTED:
-                     await websocket.send_json({"type": "error", "payload": {"message": "Server error processing your request."}})
+                    await websocket.send_text("<ERROR>Invalid message format. Expected JSON.")
+                    await websocket.send_text("<EOS>")
+            
+            except Exception as handler_exc:
+                print(f"{ws_log_prefix} ERROR handling received message: {handler_exc}")
+                traceback.print_exc()
+                if websocket.client_state == WebSocketState.CONNECTED:
+                    try:
+                        await websocket.send_text(f"<ERROR>Server error processing your request: {handler_exc}")
+                        await websocket.send_text("<EOS>") # Ensure UI resets
+                    except Exception as send_err_inner:
+                         print(f"{ws_log_prefix} ERROR sending error to client: {send_err_inner}")
+
 
     except WebSocketDisconnect:
         print(f"{ws_log_prefix} WebSocket disconnected by client.")
     except Exception as e:
-        print(f"{ws_log_prefix} ERROR in WebSocket main loop: {e}"); traceback.print_exc()
+        print(f"{ws_log_prefix} ERROR in WebSocket main loop: {e}")
+        traceback.print_exc()
         if websocket.client_state == WebSocketState.CONNECTED:
             try: await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
             except Exception: pass
     finally:
         print(f"{ws_log_prefix} Cleaning up resources...")
-        # Memory is NOT removed from global cache here for persistence
-        await docker_utils.cleanup_client_containers(client_js_id) # Cleanup Docker containers
+        # state.remove_memory_for_client(session_id_ws) # Memory is persisted per session, not removed on disconnect
+        await docker_utils.cleanup_client_containers(client_js_id) # Cleanup Docker containers for this JS client instance
+        
+        # Ensure any AI streams specifically associated with this client_js_id are cleaned up
+        # This is a more complex cleanup if multiple turns could be "active" for stopping.
+        # For now, unregister_ai_stream is called in handle_chat_message's finally block.
+        # A more robust cleanup might iterate through state.active_ai_streams if keys include client_js_id.
+
         if websocket.client_state == WebSocketState.CONNECTED:
             try: await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
             except Exception as final_close_err: print(f"{ws_log_prefix} Error during final WebSocket close: {final_close_err}")
         print(f"{ws_log_prefix} Cleanup complete.")
-
 
 # --- API Routes for Sessions & Messages ---
 
 @app.patch("/api/sessions/{session_id}", response_model=Dict[str, Any], tags=["Sessions"])
 async def rename_session(
     session_id: str = FastApiPath(..., description="The ID of the session to rename."),
-    update_data: SessionUpdateRequest = Body(...),
+    update_data: models.SessionUpdateRequest = Body(...),
     user: Dict[str, Any] = Depends(auth.get_current_active_user)
 ):
     """Updates the name of a specific chat session."""
@@ -3804,6 +4364,104 @@ if __name__ == "__main__":
     start_server()
 
 
+=== app/models.py ===
+# app/models.py
+from pydantic import BaseModel, Field, EmailStr, StringConstraints # Removed constr, Added StringConstraints
+from typing import Optional, List, Dict, Any, Pattern, Annotated # Added Annotated
+
+# --- Authentication & User Models ---
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user_id: Optional[int] = None
+    user_name: Optional[str] = None
+    user_email: Optional[EmailStr] = None
+
+class UserResponseModel(BaseModel): # For /api/me
+    id: int
+    name: str
+    email: EmailStr
+
+class EmailCheckRequest(BaseModel):
+    email: EmailStr
+
+class EmailCheckResponse(BaseModel):
+    exists: bool
+    user_name: Optional[str] = None
+
+class RegistrationRequest(BaseModel):
+    email: EmailStr
+    # Using Annotated with StringConstraints for Pydantic V2
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+class RegistrationResponse(BaseModel):
+    message: str
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+
+class UpdateNameRequest(BaseModel):
+    # Correct Pydantic V2 way to apply string constraints
+    new_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    current_password: str = Field(..., min_length=1) # min_length for string fields is fine with Field
+
+class UpdateNameResponse(BaseModel):
+    message: str
+    new_name: str
+
+class RegeneratePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, description="The user's current password for verification.")
+
+class RegeneratePasswordResponse(BaseModel):
+    message: str # e.g., "Password regenerated successfully. An email has been sent with your new password. You will now be logged out."
+
+# --- ADDED: Models for Update Email (User Settings) ---
+class UpdateEmailRequest(BaseModel):
+    new_email: EmailStr # Ensures the new email is in a valid format.
+    current_password: str = Field(..., min_length=1, description="The user's current password for verification.")
+
+class UpdateEmailResponse(BaseModel):
+    message: str # e.g., "Email updated successfully. You will now be logged out."
+    new_email: EmailStr
+# --- END OF ADDED Models ---
+
+
+# --- Session & Message Models (from app/main.py context) ---
+class SessionUpdateRequest(BaseModel):
+    # Correct Pydantic V2 way for name field here as well
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+# If you have Pydantic models for session lists or message lists, they would go here too.
+# For example, if you decide to type the response for /api/sessions:
+class SessionListItem(BaseModel):
+    id: str
+    name: Optional[str] = None # Name can be None initially
+    last_active: Optional[str] = None # Or datetime, adjust as per your DB/API response
+
+class SessionListResponse(BaseModel): # Example, not currently used in main.py
+    sessions: List[SessionListItem]
+
+# Example for /api/sessions/{session_id}/messages response items
+class MessageItem(BaseModel): # Example, not currently used in main.py
+    id: int
+    session_id: str
+    user_id: Optional[int] = None
+    sender_name: Optional[str] = None
+    sender_type: str # 'user', 'ai', 'system', 'anon_user'
+    content: str
+    client_id_temp: Optional[str] = None
+    thinking_content: Optional[str] = None
+    timestamp: str # Or datetime
+
+class MessageListResponse(BaseModel): # Example, not currently used in main.py
+    messages: List[MessageItem]
+
+# Add any other Pydantic models your application uses or will use.
+
+
 === app/state.py ===
 # app/state.py
 
@@ -3813,18 +4471,36 @@ import sqlite3
 import datetime
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import messages_from_dict, messages_to_dict
-from typing import Dict, Any
+from typing import Dict, Any, Optional # Added Optional
 from . import database
 
+# In-memory storage for client-specific conversation memory
 client_memory: Dict[str, ConversationBufferMemory] = {}
-running_containers: Dict[str, Dict[str, Any]] = {}
-running_containers_lock = asyncio.Lock()
+
+# --- MODIFIED: Global state for WebSocket Connections and Running Containers (from your original temp.py) ---
+# This was for Docker code execution, ensure it's still relevant or adapt as needed.
+# For AI stream stopping, we'll add a new structure.
+running_containers: Dict[str, Dict[str, Any]] = {} # For Docker code execution
+running_containers_lock = asyncio.Lock() # Lock for running_containers
+
+# --- ADDED: For managing active AI streaming tasks ---
+# Stores asyncio.Event objects for active AI streams, keyed by a unique stream ID (e.g., f"{client_js_id}_{turn_id}")
+# Each event, when set, signals the corresponding AI stream to stop.
+active_ai_streams: Dict[str, asyncio.Event] = {}
+active_ai_streams_lock = asyncio.Lock() # Lock for safe concurrent access to active_ai_streams
+# --- END OF ADDED ---
+
 
 def get_memory_for_client(session_id: str) -> ConversationBufferMemory:
+    """
+    Retrieves or creates ConversationBufferMemory for a specific session_id.
+    Loads from DB if available, otherwise creates a new one.
+    """
     global client_memory
     if session_id in client_memory:
         return client_memory[session_id]
 
+    # Attempt to load from database
     conn = None
     try:
         conn = database.get_db_connection()
@@ -3837,51 +4513,71 @@ def get_memory_for_client(session_id: str) -> ConversationBufferMemory:
 
         if row and row["memory_state_json"]:
             try:
-                memory_data = json.loads(row["memory_state_json"])
-                if isinstance(memory_data, list):
+                memory_data_list = json.loads(row["memory_state_json"]) # Expecting a list of message dicts
+                if isinstance(memory_data_list, list):
+                    # Create a new memory instance
                     memory_instance = ConversationBufferMemory(
-                        return_messages=True,
+                        return_messages=True, 
                         memory_key="history"
                     )
-                    loaded_messages = messages_from_dict(memory_data)
+                    # Load messages into the new instance
+                    loaded_messages = messages_from_dict(memory_data_list)
                     memory_instance.chat_memory.messages = loaded_messages
+                    
                     client_memory[session_id] = memory_instance
+                    print(f"STATE: Memory loaded from DB for session {session_id}")
                     return memory_instance
-            except (json.JSONDecodeError, Exception):
-                 pass
-    except sqlite3.Error:
-         pass
+                else:
+                    print(f"STATE WARNING: Memory data for session {session_id} is not a list. Creating new memory.")
+            except (json.JSONDecodeError, TypeError, Exception) as e:
+                # Catch TypeError if messages_from_dict fails, or other errors
+                print(f"STATE ERROR: Failed to load/parse memory for session {session_id} from DB: {e}. Creating new memory.")
+                # Fall through to create new memory
+    except sqlite3.Error as db_err:
+        print(f"STATE DB ERROR: Could not query session_memory_state for session {session_id}: {db_err}")
+        # Fall through to create new memory
     finally:
         if conn:
             conn.close()
 
+    # If not found in cache or DB, or if loading failed, create new memory
+    print(f"STATE: Creating new memory for session {session_id}")
     new_memory = ConversationBufferMemory(return_messages=True, memory_key="history")
     client_memory[session_id] = new_memory
     return new_memory
 
-def save_memory_state_to_db(session_id: str, memory: ConversationBufferMemory):
+def save_memory_state_to_db(session_id: str, memory: Optional[ConversationBufferMemory]):
+    """
+    Saves the current state of the ConversationBufferMemory to the database for a given session_id.
+    """
     if not memory:
+        print(f"STATE WARNING: Attempted to save null memory for session {session_id}. Skipping.")
         return
 
     conn = None
     try:
+        # Get messages from memory and convert to a list of dictionaries
         messages = memory.chat_memory.messages
-        memory_state_list = messages_to_dict(messages)
-        memory_state_json = json.dumps(memory_state_list)
+        memory_state_list = messages_to_dict(messages) # Should return List[Dict[str, Any]]
+        memory_state_json = json.dumps(memory_state_list) # Serialize the list of dicts
+        
         current_time_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         conn = database.get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT OR REPLACE INTO session_memory_state
-            (session_id, memory_state_json, updated_at)
+            INSERT OR REPLACE INTO session_memory_state 
+            (session_id, memory_state_json, updated_at) 
             VALUES (?, ?, ?)
             """,
             (session_id, memory_state_json, current_time_utc)
         )
         conn.commit()
-    except (json.JSONDecodeError, sqlite3.Error, Exception):
+        # print(f"STATE: Memory saved to DB for session {session_id}") # Can be verbose
+    except (json.JSONDecodeError, sqlite3.Error, Exception) as e:
+        # Catch potential errors during serialization or DB operation
+        print(f"STATE ERROR: Failed to save memory state to DB for session {session_id}: {e}")
         if conn:
             conn.rollback()
     finally:
@@ -3889,9 +4585,53 @@ def save_memory_state_to_db(session_id: str, memory: ConversationBufferMemory):
             conn.close()
 
 def remove_memory_for_client(session_id: str):
+    """Removes memory for a specific session_id from the in-memory cache."""
     global client_memory
     if session_id in client_memory:
         del client_memory[session_id]
+        print(f"STATE: Memory removed from cache for session {session_id}")
+
+# --- ADDED: Functions to manage AI stream stop events ---
+async def register_ai_stream(stream_id: str) -> asyncio.Event:
+    """
+    Registers a new AI stream and returns an event to signal its stopping.
+    """
+    async with active_ai_streams_lock:
+        if stream_id in active_ai_streams:
+            # This case should ideally be handled (e.g., stop previous before starting new)
+            # or ensure stream_ids are unique enough (e.g., include a UUID).
+            print(f"STATE WARNING: Stream ID {stream_id} already registered. Overwriting stop event.")
+        stop_event = asyncio.Event()
+        active_ai_streams[stream_id] = stop_event
+        print(f"STATE: AI stream {stream_id} registered for stopping.")
+        return stop_event
+
+async def unregister_ai_stream(stream_id: str):
+    """
+    Unregisters an AI stream, typically when it finishes or is stopped.
+    """
+    async with active_ai_streams_lock:
+        if stream_id in active_ai_streams:
+            del active_ai_streams[stream_id]
+            print(f"STATE: AI stream {stream_id} unregistered.")
+        else:
+            print(f"STATE WARNING: Attempted to unregister non-existent AI stream {stream_id}.")
+
+async def signal_stop_ai_stream(stream_id: str):
+    """
+    Sets the stop event for a given AI stream ID, if it exists.
+    """
+    async with active_ai_streams_lock:
+        stop_event = active_ai_streams.get(stream_id)
+        if stop_event:
+            stop_event.set()
+            print(f"STATE: Stop signal sent to AI stream {stream_id}.")
+            return True
+        else:
+            print(f"STATE WARNING: Attempted to signal stop for non-existent AI stream {stream_id}.")
+            return False
+# --- END OF ADDED ---
+
 
 === app/utils.py ===
 # app/utils.py
@@ -3937,7 +4677,7 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
     </ul>
 
     <div class="mt-auto pt-4 border-t border-gray-700">
-        <a href="#" id="settings-link-sidebar" class="flex items-center px-3 py-2 text-gray-300 hover:bg-gray-700 hover:text-white rounded-md text-sm">
+        <a href="/settings" id="settings-link-sidebar" class="flex items-center px-3 py-2 text-gray-300 hover:bg-gray-700 hover:text-white rounded-md text-sm">
             <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826 3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
             Settings
         </a>
@@ -3949,6 +4689,7 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
         Logout
     </a>
 </div>
+
 
 === app/static/chat-session.html ===
 <!DOCTYPE html>
@@ -3966,20 +4707,41 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
         .sidebar-scrollable::-webkit-scrollbar { width: 6px; }
         .sidebar-scrollable::-webkit-scrollbar-track { background: #edf2f7; border-radius: 3px; }
         .sidebar-scrollable::-webkit-scrollbar-thumb { background-color: #a0aec0; border-radius: 3px; border: 1px solid #edf2f7; }
+        
+        /* Style for the Stop button */
+        #stop-ai-button {
+            background-color: #ef4444; /* Tailwind red-500 */
+            color: white;
+            padding: 0.5rem 1rem; /* py-2 px-4 */
+            border-radius: 0.5rem; /* rounded-lg */
+            font-weight: bold;
+            transition: background-color 0.15s ease-in-out;
+            margin-left: 0.5rem; /* space-x-2 equivalent */
+        }
+        #stop-ai-button:hover {
+            background-color: #dc2626; /* Tailwind red-600 */
+        }
+        #stop-ai-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .hidden {
+            display: none !important;
+        }
     </style>
 </head>
 <body class="font-sans bg-gray-100 text-gray-800">
 
     <div class="flex h-screen overflow-hidden">
         <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col overflow-hidden">
-        </aside>
+            </aside>
 
         <main class="flex-1 flex flex-col overflow-hidden">
             <header class="bg-white border-b border-gray-200 p-4 shadow-sm">
                 <h1 id="chat-session-title" class="text-lg font-semibold text-gray-800">Chat Session</h1>
             </header>
             <div id="chat-history" class="flex-1 overflow-y-auto p-4 space-y-4 bg-white shadow-inner m-4 rounded-lg">
-            </div>
+                </div>
             <footer class="p-4 bg-gray-200 border-t border-gray-300">
                 <form id="chat-form" class="flex items-center space-x-2">
                     <div class="think-checkbox-container flex items-center text-sm text-gray-600 mr-2">
@@ -3991,6 +4753,10 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
                     <button type="submit" id="send-button"
                             class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed">
                         Send
+                    </button>
+                    <button type="button" id="stop-ai-button" class="hidden">
+                        <svg class="w-5 h-5 inline-block mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1zm4 0a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                        Stop
                     </button>
                 </form>
             </footer>
@@ -4004,16 +4770,16 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
             console.log("Chat Session Page: DOMContentLoaded. Attempting to load UI components.");
             const sidebarLoaded = await loadSidebarHTML('/static/_sidebar.html', 'sidebar-loader-target');
             if (sidebarLoaded) {
-                // Use '/chat/' as the base URL for session links
                 await populateSessionList('/api/sessions', 'session-list', '/chat/');
             } else {
                 console.error("Chat Session Page: Sidebar loading failed, session list will not be populated by app-ui.js.");
             }
         });
     </script>
-    <script src="/dist/script.js" defer></script>
+    <script src="/dist/script.js" defer></script> 
 </body>
 </html>
+
 
 === app/static/input.css ===
 --- CONTENT EXCLUDED (listed in exclude_files) ---
@@ -4030,7 +4796,7 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
     <style>
         /* Simple class to hide elements */
         .hidden-field {
-            display: none;
+            display: none !important; /* Use !important to ensure override if other styles conflict */
         }
         /* Style for the forgot password link */
         .forgot-password-link {
@@ -4039,13 +4805,31 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
             font-size: 0.875rem; /* text-sm */
             color: #4b5563; /* text-gray-600 */
             text-decoration: none;
-            /* Removed negative margin-top, added positive margin-top */
             margin-top: 0.5rem; /* Add some space above the link */
             margin-bottom: 1.25rem; /* Keep bottom margin for spacing below */
         }
         .forgot-password-link:hover {
             color: #1d4ed8; /* hover:text-blue-700 */
             text-decoration: underline;
+        }
+        /* Style for the "Change Email" button */
+        .change-email-button {
+            display: block;
+            width: auto; /* Fit content */
+            margin-top: 0.75rem; /* Space above */
+            margin-left: auto; /* Align to the right if container allows */
+            margin-right: auto; /* Center if container is flex/grid and justifies center */
+            padding: 0.5rem 1rem;
+            font-size: 0.875rem;
+            color: #4b5563; /* text-gray-600 */
+            background-color: #f3f4f6; /* Tailwind gray-100 */
+            border: 1px solid #d1d5db; /* Tailwind gray-300 */
+            border-radius: 0.375rem; /* rounded-md */
+            cursor: pointer;
+            text-align: center;
+        }
+        .change-email-button:hover {
+            background-color: #e5e7eb; /* Tailwind gray-200 */
         }
     </style>
 </head>
@@ -4073,6 +4857,8 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
             </div>
 
             <button type="submit" id="submit-button" class="w-full py-3 bg-blue-600 text-white rounded-md text-sm font-medium cursor-pointer transition-colors duration-200 ease-in-out hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed">Continue</button>
+
+            <button type="button" id="change-email-button" class="change-email-button hidden-field">Change Email / Start Over</button>
         </form>
 
         <p id="form-instructions" class="text-xs text-center mt-6 text-gray-500">
@@ -4092,81 +4878,140 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
         const messageArea = document.getElementById('message-area');
         const formInstructions = document.getElementById('form-instructions');
         const forgotPasswordLink = document.getElementById('forgot-password-link');
+        const changeEmailButton = document.getElementById('change-email-button');
 
         // --- State Management ---
-        // Possible states: 'initial_email', 'login_password', 'register_name', 'forgot_password_prompt'
+        // Possible states: 'initial_email', 'login_password', 'register_name', 'forgot_password_prompt', 'login_after_registration', 'login_after_password_reset'
         let formState = 'initial_email';
+        let cachedEmail = ''; // Used for pre-filling email after registration or password reset
 
         // --- UI Update Function ---
         function updateUIForState() {
             // Reset fields visibility and requirements first
             passwordFieldContainer.classList.add('hidden-field');
             nameFieldContainer.classList.add('hidden-field');
+            forgotPasswordLink.classList.add('hidden-field'); // Hide by default
+            changeEmailButton.classList.add('hidden-field'); // Hide by default
+
             passwordInput.required = false;
             nameInput.required = false;
             emailInput.readOnly = false; // Make email editable by default
+            submitButton.disabled = false; // Enable button by default, specific states will adjust
 
             switch (formState) {
                 case 'initial_email':
+                    emailInput.value = '';
+                    passwordInput.value = '';
+                    nameInput.value = '';
+                    cachedEmail = ''; // Clear cached email
                     submitButton.textContent = 'Continue';
                     formInstructions.textContent = 'Enter your email to log in or create an account.';
+                    submitButton.disabled = emailInput.value.trim() === '';
+                    emailInput.focus();
                     break;
                 case 'login_password':
                     passwordFieldContainer.classList.remove('hidden-field');
+                    forgotPasswordLink.classList.remove('hidden-field');
+                    changeEmailButton.classList.remove('hidden-field');
                     passwordInput.required = true;
-                    emailInput.readOnly = true; // Prevent email change during login attempt
+                    emailInput.readOnly = true;
                     submitButton.textContent = 'Login';
                     formInstructions.textContent = 'Enter your password to log in.';
+                    passwordInput.value = '';
+                    submitButton.disabled = true; // Password field is empty
+                    passwordInput.focus();
                     break;
                 case 'register_name':
                     nameFieldContainer.classList.remove('hidden-field');
+                    changeEmailButton.classList.remove('hidden-field');
                     nameInput.required = true;
-                    emailInput.readOnly = true; // Prevent email change during registration
+                    emailInput.readOnly = true;
                     submitButton.textContent = 'Create Account & Send Password';
                     formInstructions.textContent = 'This email is not registered. Enter your name to create an account. A password will be emailed to you.';
+                    nameInput.value = '';
+                    submitButton.disabled = nameInput.value.trim() === '';
+                    nameInput.focus();
                     break;
                 case 'forgot_password_prompt':
-                    // Only email field is needed, others remain hidden
-                    emailInput.readOnly = false; // Ensure email is editable
+                    emailInput.readOnly = false;
+                    emailInput.value = ''; // Clear email for forgot password
                     submitButton.textContent = 'Send Reset Email';
-                    formInstructions.textContent = 'Enter your email address to receive a password reset.';
+                    formInstructions.textContent = 'Enter your email address to receive a password reset email.';
+                    changeEmailButton.classList.remove('hidden-field');
+                    submitButton.disabled = emailInput.value.trim() === '';
+                    emailInput.focus();
+                    break;
+                case 'login_after_registration':
+                case 'login_after_password_reset': // This state will share UI with login_after_registration
+                    emailInput.value = cachedEmail; // Pre-fill with cached email
+                    emailInput.readOnly = true;
+                    passwordFieldContainer.classList.remove('hidden-field');
+                    // forgotPasswordLink remains hidden for these states
+                    changeEmailButton.classList.remove('hidden-field');
+                    passwordInput.required = true;
+                    submitButton.textContent = 'Login';
+                    // Instructions are set by the submit handler based on which flow it was
+                    if (formState === 'login_after_registration') {
+                        formInstructions.textContent = 'Account created! Please check your email for the password and enter it below.';
+                    } else { // login_after_password_reset
+                        // The message area will show the "If an account exists..." message from the server.
+                        // We can add a generic instruction here or rely on the message area.
+                        formInstructions.textContent = 'Please check your email for the new password and enter it below.';
+                    }
+                    passwordInput.value = '';
+                    submitButton.disabled = true; // Password field is empty
+                    passwordInput.focus();
                     break;
             }
         }
 
         // --- Event Listeners ---
-
-        // Forgot Password Link Click Handler
-        forgotPasswordLink.addEventListener('click', (event) => {
-            event.preventDefault(); // Prevent default link behavior
-            console.log("Forgot Password link clicked.");
-            formState = 'forgot_password_prompt';
-            updateUIForState();
-            // Clear any previous messages and focus email field
-            messageArea.style.display = 'none';
-            messageArea.textContent = '';
-            emailInput.focus();
+        emailInput.addEventListener('input', function() {
+            if (formState === 'initial_email' || formState === 'forgot_password_prompt') {
+                submitButton.disabled = emailInput.value.trim() === '';
+            }
         });
 
-        // Form Submission Handler (Handles all states)
+        nameInput.addEventListener('input', function() {
+            if (formState === 'register_name') {
+                submitButton.disabled = nameInput.value.trim() === '';
+            }
+        });
+
+        passwordInput.addEventListener('input', function() {
+            if (formState === 'login_password' || formState === 'login_after_registration' || formState === 'login_after_password_reset') {
+                submitButton.disabled = passwordInput.value.trim() === '';
+            }
+        });
+
+        forgotPasswordLink.addEventListener('click', (event) => {
+            event.preventDefault();
+            formState = 'forgot_password_prompt';
+            updateUIForState();
+            messageArea.style.display = 'none'; // Clear previous messages
+            messageArea.textContent = '';
+        });
+
+        changeEmailButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            formState = 'initial_email';
+            updateUIForState();
+            messageArea.style.display = 'none'; // Clear previous messages
+            messageArea.textContent = '';
+        });
+
         authForm.addEventListener('submit', async function(event) {
             event.preventDefault();
-            messageArea.style.display = 'none'; // Hide previous messages on new submission
-            messageArea.textContent = '';
-            messageArea.className = 'p-3 rounded-md text-sm text-center mb-4'; // Reset message classes
-            submitButton.disabled = true; // Disable button during processing
+            // Do not hide messageArea here if we want to preserve the "If an account exists..." message for forgot password.
+            // messageArea.style.display = 'none';
+            // messageArea.textContent = '';
+            messageArea.className = 'p-3 rounded-md text-sm text-center mb-4 border'; // Reset message classes
+            submitButton.disabled = true;
 
             const email = emailInput.value.trim().toLowerCase();
 
-            // --- State: Initial Email Check ---
             if (formState === 'initial_email') {
                 submitButton.textContent = 'Checking Email...';
-                if (!email) {
-                    showMessage('Please enter your email address.', 'error');
-                    submitButton.disabled = false;
-                    submitButton.textContent = 'Continue'; // Reset button text
-                    return;
-                }
                 try {
                     const response = await fetch('/check_email', {
                         method: 'POST',
@@ -4175,63 +5020,49 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
                     });
                     const result = await response.json();
                     if (response.ok) {
+                        cachedEmail = email; // Cache email for potential next steps
                         formState = result.exists ? 'login_password' : 'register_name';
-                        updateUIForState(); // Update UI based on new state
+                        updateUIForState();
                     } else {
                         showMessage(result.detail || 'Error checking email.', 'error');
-                        submitButton.textContent = 'Continue'; // Reset button text
+                        submitButton.textContent = 'Continue';
+                        submitButton.disabled = emailInput.value.trim() === '';
                     }
                 } catch (error) {
                     console.error('Email check error:', error);
                     showMessage('Network error checking email.', 'error');
-                    submitButton.textContent = 'Continue'; // Reset button text
-                } finally {
-                    submitButton.disabled = false; // Re-enable button
+                    submitButton.textContent = 'Continue';
+                    submitButton.disabled = emailInput.value.trim() === '';
                 }
             }
-            // --- State: Login with Password ---
-            else if (formState === 'login_password') {
+            else if (formState === 'login_password' || formState === 'login_after_registration' || formState === 'login_after_password_reset') {
                 submitButton.textContent = 'Logging In...';
                 const password = passwordInput.value;
-                if (!password) {
-                    showMessage('Please enter your password.', 'error');
-                    submitButton.disabled = false;
-                    submitButton.textContent = 'Login';
-                    return;
-                }
                 const formData = new FormData();
-                formData.append('username', email); // Endpoint expects 'username'
+                formData.append('username', email); // Server expects 'username'
                 formData.append('password', password);
                 try {
                     const response = await fetch('/token', { method: 'POST', body: formData });
                     const result = await response.json();
                     if (response.ok) {
                         showMessage('Login successful! Redirecting...', 'success');
-                        // Redirect after a short delay to show message
                         setTimeout(() => { window.location.href = '/'; }, 1500);
                     } else {
-                        showMessage(result.detail || 'Login failed. Check email or password.', 'error');
-                        submitButton.textContent = 'Login'; // Reset button text
-                        submitButton.disabled = false; // Re-enable button
+                        // Generic login failure message
+                        showMessage('Incorrect email or password.', 'error');
+                        submitButton.textContent = 'Login';
+                        submitButton.disabled = passwordInput.value.trim() === '';
                     }
                 } catch (error) {
                     console.error('Login error:', error);
                     showMessage('Network error during login.', 'error');
-                    submitButton.textContent = 'Login'; // Reset button text
-                    submitButton.disabled = false; // Re-enable button
+                    submitButton.textContent = 'Login';
+                    submitButton.disabled = passwordInput.value.trim() === '';
                 }
-                // Note: Button remains disabled on success until redirect
             }
-            // --- State: Register New User ---
             else if (formState === 'register_name') {
                 submitButton.textContent = 'Creating Account...';
                 const name = nameInput.value.trim();
-                if (!name) {
-                    showMessage('Please enter your full name.', 'error');
-                    submitButton.disabled = false;
-                    submitButton.textContent = 'Create Account & Send Password';
-                    return;
-                }
                 try {
                     const response = await fetch('/register', {
                         method: 'POST',
@@ -4240,32 +5071,24 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
                     });
                     const result = await response.json();
                     if (response.ok) {
-                        showMessage(result.message || 'Account created! Password sent to your email.', 'success');
-                        // Reset form to initial state after successful registration
-                        authForm.reset(); // Clear all fields
-                        formState = 'initial_email';
-                        updateUIForState(); // Update UI back to initial state
+                        showMessage(result.message, 'success'); // Show "Account created! Your password has been sent..."
+                        cachedEmail = email; // Email is already cached from 'initial_email' check, but good to be explicit
+                        formState = 'login_after_registration';
+                        updateUIForState();
                     } else {
                         showMessage(result.detail || 'Registration failed.', 'error');
-                        submitButton.textContent = 'Create Account & Send Password'; // Reset button text
+                        submitButton.textContent = 'Create Account & Send Password';
+                        submitButton.disabled = nameInput.value.trim() === '';
                     }
                 } catch (error) {
                     console.error('Registration error:', error);
                     showMessage('Network error during registration.', 'error');
-                    submitButton.textContent = 'Create Account & Send Password'; // Reset button text
-                } finally {
-                    submitButton.disabled = false; // Re-enable button
+                    submitButton.textContent = 'Create Account & Send Password';
+                    submitButton.disabled = nameInput.value.trim() === '';
                 }
             }
-            // --- State: Forgot Password Request ---
             else if (formState === 'forgot_password_prompt') {
                 submitButton.textContent = 'Sending Reset Email...';
-                if (!email) {
-                    showMessage('Please enter your email address.', 'error');
-                    submitButton.disabled = false;
-                    submitButton.textContent = 'Send Reset Email';
-                    return;
-                }
                 try {
                     const response = await fetch('/forgot_password', {
                         method: 'POST',
@@ -4273,32 +5096,32 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
                         body: JSON.stringify({ email: email })
                     });
                     const result = await response.json();
+                    // Always show the server's success message for forgot password for privacy
+                    showMessage(result.message, 'success');
                     if (response.ok) {
-                         // Show the generic success message from the server
-                        showMessage(result.message, 'success');
-                        // Reset form to initial state
-                        authForm.reset();
-                        formState = 'initial_email';
+                        cachedEmail = email; // Cache the email used for reset
+                        formState = 'login_after_password_reset'; // New state for this flow
                         updateUIForState();
                     } else {
-                        // Handle potential server errors (5xx) or unexpected issues
-                        showMessage(result.detail || 'Failed to process request.', 'error');
-                        submitButton.textContent = 'Send Reset Email'; // Reset button text
+                        // Even on error, the message from server (if any) is shown.
+                        // If no specific error detail, the generic success message is still shown.
+                        // Reset button text and enable based on email field.
+                        submitButton.textContent = 'Send Reset Email';
+                        submitButton.disabled = emailInput.value.trim() === '';
                     }
                 } catch (error) {
                     console.error('Forgot password error:', error);
-                    showMessage('Network error sending reset email.', 'error');
-                    submitButton.textContent = 'Send Reset Email'; // Reset button text
-                } finally {
-                    submitButton.disabled = false; // Re-enable button
+                    // Show a generic success-like message even on network error for privacy,
+                    // but log the actual error.
+                    showMessage('If an account with this email exists, a password reset email has been sent.', 'success');
+                    submitButton.textContent = 'Send Reset Email';
+                    submitButton.disabled = emailInput.value.trim() === '';
                 }
             }
         });
 
-        // --- Helper Function to Display Messages ---
         function showMessage(message, type = 'info') {
             messageArea.textContent = message;
-            // Reset classes first
             messageArea.className = 'p-3 rounded-md text-sm text-center mb-4 border';
             if (type === 'error') {
                 messageArea.classList.add('text-red-700', 'bg-red-100', 'border-red-300');
@@ -4307,12 +5130,10 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
             } else { // info
                 messageArea.classList.add('text-blue-700', 'bg-blue-100', 'border-blue-300');
             }
-            messageArea.style.display = 'block'; // Make sure it's visible
+            messageArea.style.display = 'block';
         }
 
-        // --- Initial UI Setup on Page Load ---
-        updateUIForState(); // Set initial UI based on default state ('initial_email')
-
+        updateUIForState();
     </script>
 </body>
 </html>
@@ -4352,6 +5173,7 @@ const chatForm = document.getElementById('chat-form');
 const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
 const thinkCheckbox = document.getElementById('think-checkbox');
+const stopAiButton = document.getElementById('stop-ai-button');
 
 let websocket;
 const clientId = `web-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -4366,7 +5188,6 @@ const MODE_MAYBE_START_DISPLAY_KATEX = 'MODE_MAYBE_START_DISPLAY_KATEX';
 const MODE_SEEKING_TAG = 'MODE_SEEKING_TAG';
 const MODE_INSIDE_THINK = 'MODE_INSIDE_THINK';
 const MODE_MAYBE_END_THINK = 'MODE_MAYBE_END_THINK';
-const NO_THINK_PREFIX = "\\no_think";
 const MODE_SEEKING_CODE_START_FENCE = 'MODE_SEEKING_CODE_START_FENCE';
 const MODE_SEEKING_CODE_END_FENCE = 'MODE_SEEKING_CODE_END_FENCE';
 
@@ -4398,7 +5219,8 @@ const THINK_START_TAG = '<think>';
 const THINK_END_TAG = '</think>';
 const KATEX_PLACEHOLDER_PREFIX = '%%KATEX_PLACEHOLDER_';
 const KATEX_RENDERED_ATTR = 'data-katex-rendered';
-
+const NO_THINK_PREFIX = "\\no_think"
+const THINK_PREFIX = "\\think"
 
 /**
  * Extracts the session ID from the current URL path.
@@ -4629,16 +5451,17 @@ async function fetchAndDisplaySessions() {
     }
 }
 
-/**
- * Adds a user's message to the chat history UI.
- * Displays the current user's dynamic name and strips the NO_THINK_PREFIX 
- * from the displayed text if the user typed it.
- * Uses explicit window.currentUserInfo check.
- * @param {string} text - The raw text of the user's message as typed.
- */
 function addUserMessage(text) {
-    // Log the global variable directly at the start of the function call
-    console.log(">>> addUserMessage called. window.currentUserInfo is:", window.currentUserInfo); 
+    // Ensure chatHistory and messageInput elements exist to prevent errors
+    const chatHistory = document.getElementById('chat-history'); // Re-fetch or ensure it's a reliable global
+    const messageInput = document.getElementById('message-input'); // Re-fetch or ensure it's a reliable global
+
+    if (!chatHistory) {
+        console.error("addUserMessage: chatHistory element not found.");
+        return;
+    }
+    // messageInput might be null if called from a context where it's not relevant,
+    // but usually it's good to have it for checks if needed.
 
     const messageElement = document.createElement('div');
     messageElement.classList.add('message', 'user-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-emerald-100', 'self-end', 'ml-auto');
@@ -4646,54 +5469,46 @@ function addUserMessage(text) {
 
     const senderElem = document.createElement('p');
     senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-emerald-700');
+    let userName = 'User'; // Default user name
 
-    let userName = 'User'; // Default name
-    console.log(">>> addUserMessage: Initial userName:", userName); 
-
-    // --- MODIFIED: Explicitly check window.currentUserInfo ---
+    // Check for globally available user info
     if (typeof window.currentUserInfo === 'object' && window.currentUserInfo !== null && window.currentUserInfo.name) {
-        console.log(">>> addUserMessage: Condition met. window.currentUserInfo.name is:", window.currentUserInfo.name); 
-        userName = window.currentUserInfo.name; // Assign from the global object
-        console.log(">>> addUserMessage: userName reassigned to:", userName); 
-    } else {
-        // Log details if the condition fails
-        console.warn(`[addUserMessage] Condition failed. typeof window.currentUserInfo: ${typeof window.currentUserInfo}, window.currentUserInfo value: ${JSON.stringify(window.currentUserInfo)}, has name property: ${window.currentUserInfo ? window.currentUserInfo.hasOwnProperty('name') : 'N/A'}. Displaying default 'User'.`);
+        userName = window.currentUserInfo.name;
     }
-    // --- END OF MODIFICATION ---
-
-    console.log(`>>> Before setting textContent, userName is: '${userName}'`); 
-    
-    // escapeHTML should be defined globally
-    senderElem.textContent = escapeHTML(userName); 
-    
-    console.log(`>>> After setting textContent, senderElem.textContent is: '${senderElem.textContent}'`); 
-
+    senderElem.textContent = escapeHTML(userName); // Assumes escapeHTML is defined
     messageElement.appendChild(senderElem);
 
-    // --- Message Content ---
     const contentElem = document.createElement('div');
     contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
-    let displayedText = text; 
-    if (typeof NO_THINK_PREFIX === 'string' && NO_THINK_PREFIX.length > 0 && displayedText.startsWith(NO_THINK_PREFIX)) {
-        displayedText = displayedText.substring(NO_THINK_PREFIX.length);
+    
+    let displayedText = text; // The raw text received by the function
+
+    // Strip prefixes for display purposes
+    // Check for NO_THINK_PREFIX first
+    if (typeof NO_THINK_PREFIX === 'string' && displayedText.startsWith(NO_THINK_PREFIX)) {
+         displayedText = displayedText.substring(NO_THINK_PREFIX.length);
+    } 
+    // Then check for THINK_PREFIX, in case the user somehow typed it
+    // (though the submit logic should prevent sending THINK_PREFIX if NO_THINK_PREFIX was intended)
+    else if (typeof THINK_PREFIX === 'string' && displayedText.startsWith(THINK_PREFIX)) {
+         displayedText = displayedText.substring(THINK_PREFIX.length);
     }
-    contentElem.textContent = displayedText;
+
+    contentElem.textContent = displayedText; // Display the cleaned text
     messageElement.appendChild(contentElem);
 
-    // --- Timestamp ---
     const timestampElem = document.createElement('p');
     timestampElem.classList.add('text-xs', 'text-slate-500', 'mt-1', 'text-right');
-    timestampElem.textContent = new Date().toLocaleString(); 
+    timestampElem.textContent = new Date().toLocaleString();
     messageElement.appendChild(timestampElem);
+
+    chatHistory.appendChild(messageElement);
     
-    if (chatHistory) { 
-        chatHistory.appendChild(messageElement);
+    // Ensure scrollToBottom is defined and handles potential null chatHistory
+    if (typeof scrollToBottom === 'function') {
         setTimeout(() => scrollToBottom('smooth'), 50);
-    } else {
-        console.error("[addUserMessage] chatHistory element not found.");
     }
 }
-
 
 
 
@@ -4718,11 +5533,30 @@ function addErrorMessage(text) {
    setTimeout(() => scrollToBottom('smooth'), 50);
 }
 
-function setInputDisabledState(disabled) {
-    messageInput.disabled = disabled;
-    sendButton.disabled = disabled;
-    if (thinkCheckbox) {
-        thinkCheckbox.disabled = disabled;
+// --- UI State Management ---
+function setInputDisabledState(inputsDisabled, aiResponding) {
+    if (messageInput) messageInput.disabled = inputsDisabled;
+    if (sendButton) sendButton.disabled = inputsDisabled;
+    if (thinkCheckbox) thinkCheckbox.disabled = inputsDisabled;
+
+    if (stopAiButton) {
+        if (aiResponding) {
+            stopAiButton.classList.remove('hidden');
+            stopAiButton.disabled = false;
+            // Set to default "Stop" state when becoming visible, in case it was "Stopping..."
+            stopAiButton.innerHTML = `
+                <svg class="w-5 h-5 inline-block mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1zm4 0a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                Stop`;
+            if (sendButton) sendButton.classList.add('hidden');
+        } else {
+            stopAiButton.classList.add('hidden');
+            stopAiButton.disabled = true;
+            // Reset to default "Stop" state when hidden
+            stopAiButton.innerHTML = `
+                <svg class="w-5 h-5 inline-block mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1zm4 0a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                Stop`;
+            if (sendButton) sendButton.classList.remove('hidden');
+        }
     }
 }
 
@@ -5142,30 +5976,48 @@ function renderAndReplaceKatex(isDisplay, markerId) {
 }
 
 function finalizeTurnOnErrorOrClose() {
-    console.log("[DEBUG] finalizeTurnOnErrorOrClose called.");
+    console.log("[DEBUG] finalizeTurnOnErrorOrClose called."); // Keep user's debug log
     if (currentProcessingMode === MODE_INSIDE_CODE_BLOCK && currentCodeBlockElement) {
         console.warn("Stream ended unexpectedly inside code block. Finalizing highlight.");
         try { finalizeCodeBlock(true); } catch (e) { console.error("Prism highlight error on close:", e); }
     }
+    // --- Incorporate user's KaTeX and Think finalization ---
     if (currentProcessingMode === MODE_KATEX_BUFFERING_INLINE ||
         currentProcessingMode === MODE_KATEX_BUFFERING_DISPLAY ||
         currentProcessingMode === MODE_MAYBE_START_DISPLAY_KATEX) {
         console.warn("Stream ended unexpectedly inside KaTeX block. Processing raw text.");
-        if (currentKatexMarkerId) {
+        if (currentKatexMarkerId && typeof renderAndReplaceKatex === 'function') { // Check if function exists
             renderAndReplaceKatex(currentProcessingMode === MODE_KATEX_BUFFERING_DISPLAY, currentKatexMarkerId);
             currentKatexMarkerId = null;
+        } else if (katexBuffer) { // Fallback if renderAndReplaceKatex isn't available or no marker
+            appendToAnswer((currentProcessingMode === MODE_KATEX_BUFFERING_DISPLAY ? "$$" : "$") + katexBuffer + (currentProcessingMode === MODE_KATEX_BUFFERING_DISPLAY ? "$$" : "$"));
+            katexBuffer = '';
         }
     }
-     if (currentProcessingMode === MODE_INSIDE_THINK || currentProcessingMode === MODE_MAYBE_END_THINK || currentProcessingMode === MODE_SEEKING_TAG) {
-         console.warn("Stream ended unexpectedly inside/seeking Think tags. Finishing think buffer:", thinkBuffer);
-         if (currentThinkingArea && currentThinkingArea.style.display !== 'none' && currentThinkingPreElement) {
-              appendRawTextToThinkingArea("\n--- (Stream ended unexpectedly during thinking) ---");
-         }
-     }
+    if (currentProcessingMode === MODE_INSIDE_THINK || currentProcessingMode === MODE_MAYBE_END_THINK || currentProcessingMode === MODE_SEEKING_TAG) {
+        console.warn("Stream ended unexpectedly inside/seeking Think tags. Finishing think buffer:", thinkBuffer);
+        if (currentThinkingArea && currentThinkingArea.style.display !== 'none' && currentThinkingPreElement && typeof appendRawTextToThinkingArea === 'function') {
+            appendRawTextToThinkingArea("\n--- (Stream ended unexpectedly during thinking) ---");
+        } else if (tagBuffer) { // If not in thinking mode but had a tag buffer
+            appendToAnswer(tagBuffer); // Append incomplete tag as text
+        }
+        // thinkBuffer itself is typically appended by appendRawTextToThinkingArea during streaming
+    }
+    // --- End of incorporated logic ---
 
-    formatAnswerBubbleFinal();
-    resetStreamingState();
-    setInputDisabledState(true);
+    if (typeof formatAnswerBubbleFinal === 'function') {
+        formatAnswerBubbleFinal(); 
+    }
+    if (typeof resetStreamingState === 'function') {
+        resetStreamingState();     
+    }
+    if (typeof setInputDisabledState === 'function') {
+        setInputDisabledState(false, false); // Correctly re-enables inputs and hides stop button
+    }
+    // --- Focus logic remains ---
+    if (messageInput && messageInput.offsetParent !== null) { // Check if visible
+        messageInput.focus();
+    }
 }
 
 /**
@@ -6812,180 +7664,136 @@ function createHistoricalCodeBlockDisplay(language, codeContent, turnIdSuffix, c
 }
 
 
-// At the top of your script.js (or in a shared scope)
-var currentUserInfo = null; // Declare globally, initialize to null
-
-/**
- * Fetches the current authenticated user's details from the /api/me endpoint
- * and populates the global currentUserInfo object. Includes detailed logging.
- */
+// --- User Info Initialization ---
 async function initializeCurrentUser() {
-    console.log(">>> initializeCurrentUser: Starting fetch..."); // Log start
     try {
-        const response = await fetch('/api/me'); // Call the FastAPI endpoint
-        console.log(">>> initializeCurrentUser: Fetch response status:", response.status); // Log status
-
+        const response = await fetch('/api/me');
         if (response.ok) {
             const userData = await response.json();
-            console.log(">>> initializeCurrentUser: Received userData from /api/me:", userData); // <-- Log the received data
-
-            // Check if received data has the expected 'name' property
             if (userData && userData.name) {
-                window.currentUserInfo = { // Assign to the global variable
+                window.currentUserInfo = {
                     name: userData.name,
                     email: userData.email,
                     id: userData.id
                 };
-                console.log(">>> initializeCurrentUser: Assigned to window.currentUserInfo:", window.currentUserInfo); // <-- Log after assignment
             } else {
-                console.error(">>> initializeCurrentUser: Received userData is missing 'name' property.", userData);
-                window.currentUserInfo = null; // Set to null if data is incomplete
+                window.currentUserInfo = null;
             }
-            
-        } else if (response.status === 401) { // Unauthorized
-            console.warn(">>> initializeCurrentUser: User not authenticated (401).");
-            window.currentUserInfo = null; 
         } else {
-            console.error(">>> initializeCurrentUser: Failed fetch. Status:", response.status);
             window.currentUserInfo = null;
         }
     } catch (error) {
-        console.error(">>> initializeCurrentUser: Error during fetch:", error);
-        window.currentUserInfo = null; 
+        window.currentUserInfo = null;
     }
-    console.log(">>> initializeCurrentUser: Finished."); // Log end
 }
 
-// --- REVISED DOMContentLoaded Event Listener ---
+// --- DOMContentLoaded Event Listener ---
 document.addEventListener('DOMContentLoaded', async () => {
-    console.log("[DOMContentLoaded] Event fired.");
+    await initializeCurrentUser();
 
-    // --- 1. Initialize Current User Information FIRST ---
-    await initializeCurrentUser(); 
-    console.log("[DOMContentLoaded] After initializeCurrentUser awaited. currentUserInfo:", window.currentUserInfo);
+    // const listElementCheck = document.getElementById('session-list'); // Not used here
 
-    // --- 2. Get DOM Element References ---
-    const chatHistory = document.getElementById('chat-history');
-    const chatForm = document.getElementById('chat-form');
-    const messageInput = document.getElementById('message-input');
-    const sendButton = document.getElementById('send-button');
-    const thinkCheckbox = document.getElementById('think-checkbox');
-    const listElementCheck = document.getElementById('session-list'); 
-
-    // --- 3. Initial UI State & Library Configuration ---
     if (typeof setInputDisabledState === 'function') {
-        setInputDisabledState(true); 
-    } else {
-        console.error("setInputDisabledState function is not defined.");
-        if (messageInput) messageInput.disabled = true;
-        if (sendButton) sendButton.disabled = true;
-        if (thinkCheckbox) thinkCheckbox.disabled = true;
+        setInputDisabledState(true, false); 
     }
 
     if (typeof marked !== 'undefined' && typeof marked.setOptions === 'function') {
         marked.setOptions({
             gfm: true, breaks: true, sanitize: false, smartLists: true, smartypants: false,
         });
-        console.log("marked.js configured.");
-    } else {
-        console.warn("[DOMContentLoaded] marked.js or marked.setOptions is not available.");
     }
 
-    // --- 4. Attach Chat Form Submit Event Listener ---
-    if (chatForm && messageInput) { 
-        console.log("Attaching submit listener to chat form:", chatForm);
-
+    if (chatForm && messageInput && sendButton && stopAiButton) {
         chatForm.addEventListener('submit', (event) => {
-            event.preventDefault(); 
-            console.log('Chat form submit event intercepted.');
+            event.preventDefault();
             const userMessage = messageInput.value.trim();
-            console.log('User message input:', userMessage);
-            if (!userMessage) { 
-                console.log('Empty message, returning.');
-                return; 
-            }
+            if (!userMessage) return;
             if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-                console.warn("[Submit] WebSocket not ready. State:", websocket?.readyState);
                 if (typeof addErrorMessage === 'function') addErrorMessage("Not connected to the server.");
                 return;
             }
             try {
-                if (typeof addUserMessage === 'function') {
-                     console.log('Calling addUserMessage with raw input:', userMessage);
-                     addUserMessage(userMessage); 
-                } else {
-                     console.error('addUserMessage function not found!');
-                }
+                if (typeof addUserMessage === 'function') addUserMessage(userMessage);
                 thinkingRequestedForCurrentTurn = thinkCheckbox ? thinkCheckbox.checked : false;
-                console.log('Thinking requested for next turn:', thinkingRequestedForCurrentTurn);
-                let messageToSend = userMessage;
-                if (!thinkingRequestedForCurrentTurn && typeof NO_THINK_PREFIX === 'string') {
-                    messageToSend = NO_THINK_PREFIX + userMessage;
-                    console.log('Adding NO_THINK_PREFIX for sending.');
-                } 
-                if (typeof setupNewAiTurn === 'function') {
-                     console.log('Calling setupNewAiTurn.');
-                     setupNewAiTurn();
+                let messageTextForPayload;
+                if (thinkingRequestedForCurrentTurn) {
+                    messageTextForPayload = THINK_PREFIX + userMessage.replace(NO_THINK_PREFIX, '').replace(THINK_PREFIX, '');
                 } else {
-                     console.error('setupNewAiTurn function not found!');
+                    messageTextForPayload = NO_THINK_PREFIX + userMessage.replace(NO_THINK_PREFIX, '').replace(THINK_PREFIX, '');
                 }
-                console.log('Sending message via WebSocket:', messageToSend);
-                websocket.send(messageToSend);
-                messageInput.value = ''; 
+                if (typeof setupNewAiTurn === 'function') setupNewAiTurn();
+                
+                const messagePayload = {
+                    type: "chat_message",
+                    payload: {
+                        user_input: messageTextForPayload,
+                        turn_id: currentTurnId 
+                    }
+                };
+                websocket.send(JSON.stringify(messagePayload));
+                
+                messageInput.value = '';
                 if (typeof setInputDisabledState === 'function') {
-                     console.log('Disabling input while AI responds.');
-                     setInputDisabledState(true);
-                } else {
-                     console.error('setInputDisabledState function not found!');
+                    setInputDisabledState(true, true); 
                 }
             } catch (sendError) {
-                console.error("[Submit] ERROR during message submission process:", sendError);
                 if (typeof addErrorMessage === 'function') addErrorMessage(`Failed to send message: ${sendError.message}`);
             }
         });
+
+        stopAiButton.addEventListener('click', () => {
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                if (typeof addErrorMessage === 'function') addErrorMessage("Cannot stop: Not connected.");
+                return;
+            }
+            const sessionId = (typeof getSessionIdFromPath === 'function') ? getSessionIdFromPath() : null;
+            if (!sessionId) {
+                if (typeof addErrorMessage === 'function') addErrorMessage("Cannot stop: Session ID not found.");
+                return;
+            }
+            websocket.send(JSON.stringify({
+                type: "stop_ai_stream",
+                payload: {
+                    client_id: clientId,
+                    session_id: sessionId,
+                    turn_id: currentTurnId 
+                }
+            }));
+            stopAiButton.disabled = true;
+            stopAiButton.innerHTML = `
+                <svg class="animate-spin h-5 w-5 mr-1 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Stopping...`;
+            
+            if (typeof finalizeTurnOnErrorOrClose === 'function') {
+                finalizeTurnOnErrorOrClose();
+            }
+        });
+
     } else {
         if (window.location.pathname.includes("/chat/")) {
-            console.error("CRITICAL ERROR: Chat form or message input not found.");
             if (typeof addErrorMessage === 'function') addErrorMessage("Initialization Error: Chat input components missing.");
         }
     }
 
-    // --- 5. Session List, History Loading, and WebSocket Connection ---
-    if (listElementCheck) {
-         console.log("#session-list element found.");
-         // if (typeof fetchAndDisplaySessions === 'function') { fetchAndDisplaySessions(); }
-    }
-
     const currentSessionId = (typeof getSessionIdFromPath === 'function') ? getSessionIdFromPath() : null;
-
     if (currentSessionId) {
-        console.log(`[DOMContentLoaded] Initializing for session ID: ${currentSessionId}.`);
-        if (typeof loadAndDisplayChatHistory === 'function') {
-            console.log(`Calling loadAndDisplayChatHistory for session: ${currentSessionId}`);
-            await loadAndDisplayChatHistory(currentSessionId); 
-            console.log("loadAndDisplayChatHistory finished.");
-        } else {
-            console.error('[DOMContentLoaded] loadAndDisplayChatHistory function not defined!');
-            if (typeof addErrorMessage === 'function') addErrorMessage("Error: Cannot load chat history.");
+        if (typeof loadAndDisplayChatHistory === 'function') { 
+            // await loadAndDisplayChatHistory(currentSessionId); // Assuming this function exists
         }
         if (typeof connectWebSocket === 'function') {
-            console.log("Attempting WebSocket connection.");
-            connectWebSocket(); 
+            connectWebSocket();
         } else {
-            console.error('[DOMContentLoaded] connectWebSocket function not defined!');
             if (typeof addErrorMessage === 'function') addErrorMessage("Error: Cannot connect to chat server.");
         }
     } else {
-        console.log("[DOMContentLoaded] Not on a specific chat page.");
-        if (typeof setInputDisabledState === 'function') {
-            setInputDisabledState(true);
+        if (messageInput && typeof setInputDisabledState === 'function') {
+             setInputDisabledState(true, false); 
         }
     }
-    console.log("[DOMContentLoaded] Setup complete.");
-}); // End of DOMContentLoaded listener
-
-console.log("[Script] End of script file reached. DOMContentLoaded listener attached.");
-
+});
 
 === app/static/session-choice.html ===
 <!DOCTYPE html>
@@ -7050,6 +7858,694 @@ console.log("[Script] End of script file reached. DOMContentLoaded listener atta
     </script>
 </body>
 </html>
+
+=== app/static/settings.html ===
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User Settings - Tesseracs Chat</title>
+    <link rel="stylesheet" href="/dist/input.css"> <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Styles for sidebar scrolling, consistent with other pages */
+        .sidebar-scrollable { overflow-y: auto; scrollbar-width: thin; scrollbar-color: #a0aec0 #edf2f7; }
+        .sidebar-scrollable::-webkit-scrollbar { width: 6px; }
+        .sidebar-scrollable::-webkit-scrollbar-track { background: #edf2f7; border-radius: 3px; }
+        .sidebar-scrollable::-webkit-scrollbar-thumb { background-color: #a0aec0; border-radius: 3px; border: 1px solid #edf2f7; }
+
+        /* Additional styles for the settings page content */
+        .settings-card {
+            background-color: white;
+            padding: 2rem; /* 32px */
+            border-radius: 0.5rem; /* 8px */
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            max-width: 600px;
+            width: 100%;
+        }
+        .form-input {
+            width: 100%;
+            padding: 0.75rem 1rem; /* 12px 16px */
+            border: 1px solid #d1d5db; /* Tailwind gray-300 */
+            border-radius: 0.375rem; /* 6px */
+            font-size: 0.875rem; /* 14px */
+            transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+        }
+        .form-input:focus {
+            border-color: #2563eb; /* Tailwind blue-600 */
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3); /* Tailwind blue-300 with opacity */
+            outline: none;
+        }
+        .submit-button {
+            padding: 0.75rem 1.5rem;
+            background-color: #2563eb; /* Tailwind blue-600 */
+            color: white;
+            border-radius: 0.375rem;
+            font-weight: 500;
+            font-size: 0.875rem;
+            transition: background-color 0.2s ease-in-out;
+            cursor: pointer;
+        }
+        .submit-button:hover {
+            background-color: #1d4ed8; /* Tailwind blue-700 */
+        }
+        .submit-button:disabled {
+            background-color: #9ca3af; /* Tailwind gray-400 */
+            cursor: not-allowed;
+        }
+        .message-area { /* For success/error messages */
+            padding: 0.75rem 1rem;
+            border-radius: 0.375rem;
+            text-align: center;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .message-success {
+            background-color: #d1fae5; /* Tailwind green-100 */
+            color: #065f46; /* Tailwind green-800 */
+            border: 1px solid #6ee7b7; /* Tailwind green-300 */
+        }
+        .message-error {
+            background-color: #fee2e2; /* Tailwind red-100 */
+            color: #991b1b; /* Tailwind red-800 */
+            border: 1px solid #fca5a5; /* Tailwind red-300 */
+        }
+        .section-divider {
+            margin-top: 2rem; /* 32px */
+            padding-top: 1.5rem; /* 24px */
+            border-top: 1px solid #e5e7eb; /* Tailwind gray-200 */
+        }
+    </style>
+</head>
+<body class="font-sans bg-gray-100 text-gray-800">
+
+    <div class="flex h-screen overflow-hidden">
+        <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col overflow-hidden">
+            </aside>
+
+        <main class="flex-1 flex flex-col overflow-y-auto p-6 items-center">
+            <div class="settings-card">
+                <h1 class="text-2xl font-semibold text-gray-900 mb-6 border-b pb-4">User Settings</h1>
+
+                <div id="settings-message-area" class="message-area" style="display: none;"></div>
+
+                <section id="account-settings">
+                    <h2 class="text-xl font-medium text-gray-700 mb-4">Account Settings</h2>
+
+                    <form id="update-name-form" class="space-y-4">
+                        <div>
+                            <label for="current-name" class="block text-sm font-medium text-gray-700 mb-1">Current Name</label>
+                            <input type="text" id="current-name" name="current-name" readonly
+                                   class="form-input bg-gray-100 cursor-not-allowed"
+                                   placeholder="Loading...">
+                        </div>
+                        <div>
+                            <label for="new-name" class="block text-sm font-medium text-gray-700 mb-1">New Name</label>
+                            <input type="text" id="new-name" name="new-name" required
+                                   class="form-input"
+                                   minlength="1" maxlength="100">
+                        </div>
+                        <div>
+                            <label for="current-password-for-name" class="block text-sm font-medium text-gray-700 mb-1">Current Password (to confirm name change)</label>
+                            <input type="password" id="current-password-for-name" name="current-password-for-name" required
+                                   class="form-input">
+                        </div>
+                        <div>
+                            <button type="submit" id="update-name-button" class="submit-button">
+                                Update Name
+                            </button>
+                        </div>
+                    </form>
+                    <div class="section-divider">
+                        <h3 class="text-lg font-medium text-gray-700 mb-3">Change Email</h3>
+                         <p class="text-sm text-gray-500 mb-3">
+                            Your email address is used for login and notifications.
+                            You will be logged out after changing your email.
+                        </p>
+                        <form id="update-email-form" class="space-y-4">
+                            <div>
+                                <label for="current-email" class="block text-sm font-medium text-gray-700 mb-1">Current Email</label>
+                                <input type="email" id="current-email" name="current-email" readonly
+                                       class="form-input bg-gray-100 cursor-not-allowed"
+                                       placeholder="Loading...">
+                            </div>
+                            <div>
+                                <label for="new-email" class="block text-sm font-medium text-gray-700 mb-1">New Email Address</label>
+                                <input type="email" id="new-email" name="new-email" required
+                                       class="form-input">
+                            </div>
+                            <div>
+                                <label for="current-password-for-email" class="block text-sm font-medium text-gray-700 mb-1">Current Password (to confirm email change)</label>
+                                <input type="password" id="current-password-for-email" name="current-password-for-email" required
+                                       class="form-input">
+                            </div>
+                            <div>
+                                <button type="submit" id="update-email-button" class="submit-button">
+                                    Update Email Address
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="section-divider">
+                        <h3 class="text-lg font-medium text-gray-700 mb-3">Regenerate Password</h3>
+                        <p class="text-sm text-gray-500 mb-3">
+                            This will generate a new password for your account and email it to you.
+                            You will be logged out after regenerating your password.
+                        </p>
+                        <form id="regenerate-password-form" class="space-y-4">
+                            <div>
+                                <label for="current-password-for-regen" class="block text-sm font-medium text-gray-700 mb-1">Current Password (to confirm regeneration)</label>
+                                <input type="password" id="current-password-for-regen" name="current-password-for-regen" required
+                                       class="form-input">
+                            </div>
+                            <div>
+                                <button type="submit" id="regenerate-password-button" class="submit-button">
+                                    Regenerate Password & Send Email
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                    </section>
+            </div>
+        </main>
+    </div>
+
+    <script type="module">
+        // Import sidebar loading functions from app-ui.js
+        import { loadSidebarHTML, populateSessionList } from '/static/js/app-ui.js';
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            console.log("Settings Page: DOMContentLoaded.");
+
+            // Load the sidebar
+            const sidebarLoaded = await loadSidebarHTML('/static/_sidebar.html', 'sidebar-loader-target');
+            if (sidebarLoaded) {
+                await populateSessionList('/api/sessions', 'session-list', '/chat/');
+            } else {
+                console.error("Settings Page: Sidebar loading failed.");
+            }
+
+            // --- General DOM Elements ---
+            const settingsMessageArea = document.getElementById('settings-message-area');
+
+            // Function to display messages
+            function showSettingsMessage(message, type = 'info', duration = 0) {
+                settingsMessageArea.textContent = message;
+                settingsMessageArea.className = 'message-area'; // Reset classes
+                if (type === 'success') {
+                    settingsMessageArea.classList.add('message-success');
+                } else if (type === 'error') {
+                    settingsMessageArea.classList.add('message-error');
+                } else { 
+                    settingsMessageArea.classList.add('bg-blue-100', 'text-blue-700', 'border-blue-300');
+                }
+                settingsMessageArea.style.display = 'block';
+
+                if (duration > 0) {
+                    setTimeout(() => {
+                        settingsMessageArea.style.display = 'none';
+                    }, duration);
+                }
+            }
+
+            // --- User Info Fetching ---
+            const currentNameInput = document.getElementById('current-name');
+            const currentEmailInput = document.getElementById('current-email'); // For Change Email form
+
+            async function fetchCurrentUser() {
+                try {
+                    const response = await fetch('/api/me');
+                    if (response.ok) {
+                        const userData = await response.json();
+                        if (currentNameInput) {
+                            currentNameInput.value = userData.name;
+                        }
+                        if (currentEmailInput) { // Populate current email field
+                            currentEmailInput.value = userData.email;
+                        }
+                        window.currentUserDetails = userData; 
+                    } else {
+                        console.error('Failed to fetch current user details:', response.status);
+                        if (currentNameInput) currentNameInput.value = 'Error loading name';
+                        if (currentEmailInput) currentEmailInput.value = 'Error loading email';
+                        showSettingsMessage('Could not load your current user details.', 'error');
+                    }
+                } catch (error) {
+                    console.error('Error fetching current user details:', error);
+                    if (currentNameInput) currentNameInput.value = 'Error loading name';
+                    if (currentEmailInput) currentEmailInput.value = 'Error loading email';
+                    showSettingsMessage('An error occurred while loading your details.', 'error');
+                }
+            }
+            await fetchCurrentUser(); 
+
+            // --- Update Name Functionality ---
+            const updateNameForm = document.getElementById('update-name-form');
+            const newNameInput = document.getElementById('new-name');
+            const currentPasswordForNameInput = document.getElementById('current-password-for-name');
+            const updateNameButton = document.getElementById('update-name-button');
+
+            if (updateNameForm) {
+                updateNameForm.addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    settingsMessageArea.style.display = 'none'; 
+                    updateNameButton.disabled = true;
+                    updateNameButton.textContent = 'Updating...';
+                    // ... (rest of update name logic as before) ...
+                    const newName = newNameInput.value;
+                    const currentPassword = currentPasswordForNameInput.value;
+
+                    if (!newName.trim() || !currentPassword) {
+                        showSettingsMessage('New name and current password are required.', 'error');
+                        updateNameButton.disabled = false;
+                        updateNameButton.textContent = 'Update Name';
+                        return;
+                    }
+                    try {
+                        const response = await fetch('/api/me/update-name', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                new_name: newName,
+                                current_password: currentPassword
+                            })
+                        });
+                        const result = await response.json();
+                        if (response.ok) {
+                            showSettingsMessage(result.message || 'Name updated successfully!', 'success', 3000);
+                            if (currentNameInput) currentNameInput.value = result.new_name;
+                            currentPasswordForNameInput.value = '';
+                            newNameInput.value = ''; 
+                            // No need to call fetchCurrentUser() again just for name, it's updated locally.
+                        } else {
+                            showSettingsMessage(result.detail || 'Failed to update name.', 'error');
+                        }
+                    } catch (error) {
+                        console.error('Error updating name:', error);
+                        showSettingsMessage('An error occurred. Please try again.', 'error');
+                    } finally {
+                        updateNameButton.disabled = false;
+                        updateNameButton.textContent = 'Update Name';
+                    }
+                });
+            }
+
+            // --- Update Email Functionality ---
+            const updateEmailForm = document.getElementById('update-email-form');
+            const newEmailInput = document.getElementById('new-email');
+            const currentPasswordForEmailInput = document.getElementById('current-password-for-email');
+            const updateEmailButton = document.getElementById('update-email-button');
+
+            if (updateEmailForm) {
+                updateEmailForm.addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    settingsMessageArea.style.display = 'none';
+                    updateEmailButton.disabled = true;
+                    updateEmailButton.textContent = 'Updating Email...';
+
+                    const newEmail = newEmailInput.value;
+                    const currentPassword = currentPasswordForEmailInput.value;
+
+                    if (!newEmail.trim() || !currentPassword) {
+                        showSettingsMessage('New email and current password are required.', 'error');
+                        updateEmailButton.disabled = false;
+                        updateEmailButton.textContent = 'Update Email Address';
+                        return;
+                    }
+
+                    try {
+                        const response = await fetch('/api/me/update-email', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                new_email: newEmail,
+                                current_password: currentPassword
+                            })
+                        });
+                        const result = await response.json();
+
+                        if (response.ok) {
+                            showSettingsMessage(result.message || 'Email updated. Logging out...', 'success');
+                            // Clear fields
+                            newEmailInput.value = '';
+                            currentPasswordForEmailInput.value = '';
+                            // Redirect to logout after a delay
+                            setTimeout(() => {
+                                window.location.href = '/logout';
+                            }, 4000); // 4 seconds delay
+                        } else {
+                            showSettingsMessage(result.detail || 'Failed to update email.', 'error');
+                            updateEmailButton.disabled = false;
+                            updateEmailButton.textContent = 'Update Email Address';
+                        }
+                    } catch (error) {
+                        console.error('Error updating email:', error);
+                        showSettingsMessage('An error occurred while updating your email. Please try again.', 'error');
+                        updateEmailButton.disabled = false;
+                        updateEmailButton.textContent = 'Update Email Address';
+                    }
+                    // Note: Button remains disabled on success because user will be logged out.
+                });
+            }
+
+
+            // --- Regenerate Password Functionality ---
+            const regeneratePasswordForm = document.getElementById('regenerate-password-form');
+            const currentPasswordForRegenInput = document.getElementById('current-password-for-regen');
+            const regeneratePasswordButton = document.getElementById('regenerate-password-button');
+
+            if (regeneratePasswordForm) {
+                regeneratePasswordForm.addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    settingsMessageArea.style.display = 'none';
+                    regeneratePasswordButton.disabled = true;
+                    regeneratePasswordButton.textContent = 'Regenerating...';
+                    // ... (rest of regenerate password logic as before) ...
+                    const currentPassword = currentPasswordForRegenInput.value;
+
+                    if (!currentPassword) {
+                        showSettingsMessage('Current password is required to regenerate.', 'error');
+                        regeneratePasswordButton.disabled = false;
+                        regeneratePasswordButton.textContent = 'Regenerate Password & Send Email';
+                        return;
+                    }
+                    try {
+                        const response = await fetch('/api/me/regenerate-password', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ current_password: currentPassword })
+                        });
+                        const result = await response.json();
+                        if (response.ok) {
+                            showSettingsMessage(result.message || 'Password regenerated. Check email. Logging out...', 'success');
+                            currentPasswordForRegenInput.value = '';
+                            setTimeout(() => {
+                                window.location.href = '/logout'; 
+                            }, 4000); 
+                        } else {
+                            showSettingsMessage(result.detail || 'Failed to regenerate password.', 'error');
+                            regeneratePasswordButton.disabled = false;
+                            regeneratePasswordButton.textContent = 'Regenerate Password & Send Email';
+                        }
+                    } catch (error) {
+                        console.error('Error regenerating password:', error);
+                        showSettingsMessage('An error occurred while regenerating password. Please try again.', 'error');
+                        regeneratePasswordButton.disabled = false;
+                        regeneratePasswordButton.textContent = 'Regenerate Password & Send Email';
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>
+
+
+=== app/static/email_templates/password_reset_email.html ===
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Password Reset - Tesseracs Chat</title>
+    <style>
+        body {
+            font-family: 'Inter', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333333;
+            margin: 0;
+            padding: 0;
+            background-color: #f7fafc;
+        }
+        .email-container {
+            width: 100%;
+            max-width: 600px;
+            margin: 20px auto;
+            background-color: #ffffff;
+            padding: 25px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #edf2f7;
+        }
+        .header h2 {
+            color: #2c5282;
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .content {
+            padding-top: 10px;
+        }
+        .content p {
+            margin: 18px 0;
+            font-size: 16px;
+            color: #4a5568;
+        }
+        .content strong {
+            color: #2b6cb0;
+            font-weight: 500;
+        }
+        .password-display-container {
+            margin: 25px 0;
+            text-align: center;
+        }
+        .password-label {
+            font-size: 16px;
+            color: #4a5568;
+            margin-bottom: 8px;
+            display: block;
+        }
+        .password-value {
+            background-color: #edf2f7;
+            padding: 15px 20px;
+            border-radius: 6px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.2em;
+            text-align: center;
+            color: #1a202c;
+            border: 1px solid #cbd5e0;
+            display: inline-block;
+            letter-spacing: 1px;
+            word-break: break-all;
+        }
+        .login-button-container {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .login-button {
+            display: inline-block;
+            background-color: #3182ce;
+            color: #ffffff !important;
+            padding: 14px 28px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 500;
+            transition: background-color 0.2s ease-in-out;
+        }
+        .login-button:hover {
+            background-color: #2b6cb0;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 1px solid #edf2f7;
+            font-size: 0.875em;
+            color: #718096;
+        }
+        .link {
+            color: #3182ce;
+            text-decoration: none;
+        }
+        .link:hover {
+            text-decoration: underline;
+        }
+        .url-display { /* Style for displaying the URL as text */
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9em;
+            color: #718096; /* Tailwind gray-600 */
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="header">
+            <h2>Password Reset for Tesseracs Chat</h2>
+        </div>
+        <div class="content">
+            <p>Hello {{ recipient_name }},</p>
+            <p>As requested, your password for Tesseracs Chat has been reset.</p>
+            <p>Your email: <strong>{{ email }}</strong></p>
+            <div class="password-display-container">
+                <span class="password-label">Your new password is:</span>
+                <div class="password-value">{{ password }}</div>
+            </div>
+            <p>Please use this new password to log in. You can log in here:</p>
+            <div class="login-button-container">
+                <a href="{{ login_url }}" class="login-button">Log In to Tesseracs Chat</a>
+            </div>
+            <p>If the button doesn't work, you can also <a href="{{ login_url }}" class="link">click here to log in</a> or copy and paste the following URL into your browser: <br><span class="url-display">{{ login_url }}</span></p>
+            <p>If you did not request a password reset, please contact support or secure your account immediately.</p>
+        </div>
+        <div class="footer">
+            <p>Thanks,<br>The Tesseracs Chat Team</p>
+            <p><small>This is an automated message. Please do not reply directly to this email.</small></p>
+        </div>
+    </div>
+</body>
+</html>
+
+
+=== app/static/email_templates/registration_email.html ===
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Tesseracs Chat</title>
+    <style>
+        body {
+            font-family: 'Inter', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333333;
+            margin: 0;
+            padding: 0;
+            background-color: #f7fafc; /* Tailwind gray-100 */
+        }
+        .email-container {
+            width: 100%;
+            max-width: 600px;
+            margin: 20px auto;
+            background-color: #ffffff;
+            padding: 25px;
+            border: 1px solid #e2e8f0; /* Tailwind gray-300 */
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #edf2f7; /* Tailwind gray-200 */
+        }
+        .header h2 {
+            color: #2c5282; /* Tailwind blue-800 */
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .content {
+            padding-top: 10px;
+        }
+        .content p {
+            margin: 18px 0;
+            font-size: 16px;
+            color: #4a5568; /* Tailwind gray-700 */
+        }
+        .content strong {
+            color: #2b6cb0; /* Tailwind blue-700 */
+            font-weight: 500;
+        }
+        .password-display-container {
+            margin: 25px 0;
+            text-align: center;
+        }
+        .password-label {
+            font-size: 16px;
+            color: #4a5568; /* Tailwind gray-700 */
+            margin-bottom: 8px;
+            display: block;
+        }
+        .password-value {
+            background-color: #edf2f7; /* Tailwind gray-200 */
+            padding: 15px 20px;
+            border-radius: 6px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.2em;
+            text-align: center;
+            color: #1a202c; /* Tailwind gray-900 */
+            border: 1px solid #cbd5e0; /* Tailwind gray-400 */
+            display: inline-block;
+            letter-spacing: 1px;
+            word-break: break-all;
+        }
+        .login-button-container {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .login-button {
+            display: inline-block;
+            background-color: #3182ce; /* Tailwind blue-500 */
+            color: #ffffff !important;
+            padding: 14px 28px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 500;
+            transition: background-color 0.2s ease-in-out;
+        }
+        .login-button:hover {
+            background-color: #2b6cb0; /* Tailwind blue-600 */
+        }
+        .footer {
+            text-align: center;
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 1px solid #edf2f7; /* Tailwind gray-200 */
+            font-size: 0.875em; /* text-sm */
+            color: #718096; /* Tailwind gray-600 */
+        }
+        .link {
+            color: #3182ce; /* Tailwind blue-500 */
+            text-decoration: none;
+        }
+        .link:hover {
+            text-decoration: underline;
+        }
+        .url-display { /* Style for displaying the URL as text */
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9em;
+            color: #718096; /* Tailwind gray-600 */
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="header">
+            <h2>Welcome to Tesseracs Chat, {{ recipient_name }}!</h2>
+        </div>
+        <div class="content">
+            <p>Your account has been successfully created.</p>
+            <p>Your email: <strong>{{ email }}</strong></p>
+            <div class="password-display-container">
+                <span class="password-label">Your password is:</span>
+                <div class="password-value">{{ password }}</div>
+            </div>
+            <p>Please use this password to log in. You can log in here:</p>
+            <div class="login-button-container">
+                <a href="{{ login_url }}" class="login-button">Log In to Tesseracs Chat</a>
+            </div>
+            <p>If the button doesn't work, you can also <a href="{{ login_url }}" class="link">click here to log in</a> or copy and paste the following URL into your browser: <br><span class="url-display">{{ login_url }}</span></p>
+            <p>Please keep this password secure. Currently, there is no option to change this password.</p>
+            <p>If you did not request this account, please ignore this email.</p>
+        </div>
+        <div class="footer">
+            <p>Thanks,<br>The Tesseracs Chat Team</p>
+            <p><small>This is an automated message. Please do not reply directly to this email.</small></p>
+        </div>
+    </div>
+</body>
+</html>
+
 
 === app/static/js/app-ui.js ===
 // static/js/app-ui.js
