@@ -7,10 +7,18 @@ from dotenv import load_dotenv
 # Load environment variables from a .env file if it exists
 load_dotenv()
 
+# --- Application Base URL ---
+# This is the primary public-facing URL for your application.
+# Used for generating absolute URLs in emails, etc.
+# Ensure this matches your production domain and includes the scheme (http or https).
+# It can be overridden by setting a BASE_URL environment variable.
+BASE_URL = os.getenv("BASE_URL", "http://tesseracs.com") # Default to http://tesseracs.com
+
 # --- LLM Configuration ---
 MODEL_ID = os.getenv("MODEL_ID", "qwen3:8B")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434") # This is for the Ollama service
 NO_THINK_PREFIX = "\\no_think"
+THINK_PREFIX = "\\think"
 
 # --- Docker Configuration ---
 SUPPORTED_LANGUAGES = {
@@ -78,19 +86,22 @@ MAIL_CONFIG = {
     "MAIL_USERNAME": os.getenv("MAIL_USERNAME"),
     "MAIL_PASSWORD": os.getenv("MAIL_PASSWORD"),
     "MAIL_FROM": os.getenv("MAIL_FROM"),
-    "MAIL_PORT": int(os.getenv("MAIL_PORT", 465)), # Keep 465 from last attempt
+    "MAIL_PORT": int(os.getenv("MAIL_PORT", 465)),
     "MAIL_SERVER": os.getenv("MAIL_SERVER"),
     "MAIL_FROM_NAME": os.getenv("MAIL_FROM_NAME", "Tesseracs Chat"),
-    "MAIL_STARTTLS": os.getenv("MAIL_STARTTLS", 'False').lower() in ('true', '1', 't'), # Keep False
-    "MAIL_SSL_TLS": os.getenv("MAIL_SSL_TLS", 'True').lower() in ('true', '1', 't'),    # Keep True
+    "MAIL_STARTTLS": os.getenv("MAIL_STARTTLS", 'False').lower() in ('true', '1', 't'),
+    "MAIL_SSL_TLS": os.getenv("MAIL_SSL_TLS", 'True').lower() in ('true', '1', 't'),
     "USE_CREDENTIALS": True,
-    # Read validation setting from env, default to True (secure)
     "VALIDATE_CERTS": os.getenv("MAIL_VALIDATE_CERTS", 'True').lower() in ('true', '1', 't')
 }
 
 if not all([MAIL_CONFIG["MAIL_USERNAME"], MAIL_CONFIG["MAIL_PASSWORD"], MAIL_CONFIG["MAIL_SERVER"]]):
     print("WARNING: Essential email configuration missing in .env file.")
 
-# Print validation status being used for clarity
 print(f"DEBUG config: Email certificate validation (VALIDATE_CERTS) is set to: {MAIL_CONFIG['VALIDATE_CERTS']}")
+print(f"DEBUG config: Application BASE_URL is set to: {BASE_URL}") # Added log for BASE_URL
 
+
+# --- Rate Limiting Configuration ---
+FORGOT_PASSWORD_ATTEMPT_LIMIT = int(os.getenv("FORGOT_PASSWORD_ATTEMPT_LIMIT", 3))
+FORGOT_PASSWORD_ATTEMPT_WINDOW_HOURS = int(os.getenv("FORGOT_PASSWORD_ATTEMPT_WINDOW_HOURS", 24))

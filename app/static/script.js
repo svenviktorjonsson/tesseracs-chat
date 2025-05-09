@@ -31,6 +31,7 @@ const chatForm = document.getElementById('chat-form');
 const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
 const thinkCheckbox = document.getElementById('think-checkbox');
+const stopAiButton = document.getElementById('stop-ai-button');
 
 let websocket;
 const clientId = `web-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -45,7 +46,6 @@ const MODE_MAYBE_START_DISPLAY_KATEX = 'MODE_MAYBE_START_DISPLAY_KATEX';
 const MODE_SEEKING_TAG = 'MODE_SEEKING_TAG';
 const MODE_INSIDE_THINK = 'MODE_INSIDE_THINK';
 const MODE_MAYBE_END_THINK = 'MODE_MAYBE_END_THINK';
-const NO_THINK_PREFIX = "\\no_think";
 const MODE_SEEKING_CODE_START_FENCE = 'MODE_SEEKING_CODE_START_FENCE';
 const MODE_SEEKING_CODE_END_FENCE = 'MODE_SEEKING_CODE_END_FENCE';
 
@@ -77,7 +77,8 @@ const THINK_START_TAG = '<think>';
 const THINK_END_TAG = '</think>';
 const KATEX_PLACEHOLDER_PREFIX = '%%KATEX_PLACEHOLDER_';
 const KATEX_RENDERED_ATTR = 'data-katex-rendered';
-
+const NO_THINK_PREFIX = "\\no_think"
+const THINK_PREFIX = "\\think"
 
 /**
  * Extracts the session ID from the current URL path.
@@ -308,16 +309,17 @@ async function fetchAndDisplaySessions() {
     }
 }
 
-/**
- * Adds a user's message to the chat history UI.
- * Displays the current user's dynamic name and strips the NO_THINK_PREFIX 
- * from the displayed text if the user typed it.
- * Uses explicit window.currentUserInfo check.
- * @param {string} text - The raw text of the user's message as typed.
- */
 function addUserMessage(text) {
-    // Log the global variable directly at the start of the function call
-    console.log(">>> addUserMessage called. window.currentUserInfo is:", window.currentUserInfo); 
+    // Ensure chatHistory and messageInput elements exist to prevent errors
+    const chatHistory = document.getElementById('chat-history'); // Re-fetch or ensure it's a reliable global
+    const messageInput = document.getElementById('message-input'); // Re-fetch or ensure it's a reliable global
+
+    if (!chatHistory) {
+        console.error("addUserMessage: chatHistory element not found.");
+        return;
+    }
+    // messageInput might be null if called from a context where it's not relevant,
+    // but usually it's good to have it for checks if needed.
 
     const messageElement = document.createElement('div');
     messageElement.classList.add('message', 'user-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-emerald-100', 'self-end', 'ml-auto');
@@ -325,54 +327,46 @@ function addUserMessage(text) {
 
     const senderElem = document.createElement('p');
     senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-emerald-700');
+    let userName = 'User'; // Default user name
 
-    let userName = 'User'; // Default name
-    console.log(">>> addUserMessage: Initial userName:", userName); 
-
-    // --- MODIFIED: Explicitly check window.currentUserInfo ---
+    // Check for globally available user info
     if (typeof window.currentUserInfo === 'object' && window.currentUserInfo !== null && window.currentUserInfo.name) {
-        console.log(">>> addUserMessage: Condition met. window.currentUserInfo.name is:", window.currentUserInfo.name); 
-        userName = window.currentUserInfo.name; // Assign from the global object
-        console.log(">>> addUserMessage: userName reassigned to:", userName); 
-    } else {
-        // Log details if the condition fails
-        console.warn(`[addUserMessage] Condition failed. typeof window.currentUserInfo: ${typeof window.currentUserInfo}, window.currentUserInfo value: ${JSON.stringify(window.currentUserInfo)}, has name property: ${window.currentUserInfo ? window.currentUserInfo.hasOwnProperty('name') : 'N/A'}. Displaying default 'User'.`);
+        userName = window.currentUserInfo.name;
     }
-    // --- END OF MODIFICATION ---
-
-    console.log(`>>> Before setting textContent, userName is: '${userName}'`); 
-    
-    // escapeHTML should be defined globally
-    senderElem.textContent = escapeHTML(userName); 
-    
-    console.log(`>>> After setting textContent, senderElem.textContent is: '${senderElem.textContent}'`); 
-
+    senderElem.textContent = escapeHTML(userName); // Assumes escapeHTML is defined
     messageElement.appendChild(senderElem);
 
-    // --- Message Content ---
     const contentElem = document.createElement('div');
     contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
-    let displayedText = text; 
-    if (typeof NO_THINK_PREFIX === 'string' && NO_THINK_PREFIX.length > 0 && displayedText.startsWith(NO_THINK_PREFIX)) {
-        displayedText = displayedText.substring(NO_THINK_PREFIX.length);
+    
+    let displayedText = text; // The raw text received by the function
+
+    // Strip prefixes for display purposes
+    // Check for NO_THINK_PREFIX first
+    if (typeof NO_THINK_PREFIX === 'string' && displayedText.startsWith(NO_THINK_PREFIX)) {
+         displayedText = displayedText.substring(NO_THINK_PREFIX.length);
+    } 
+    // Then check for THINK_PREFIX, in case the user somehow typed it
+    // (though the submit logic should prevent sending THINK_PREFIX if NO_THINK_PREFIX was intended)
+    else if (typeof THINK_PREFIX === 'string' && displayedText.startsWith(THINK_PREFIX)) {
+         displayedText = displayedText.substring(THINK_PREFIX.length);
     }
-    contentElem.textContent = displayedText;
+
+    contentElem.textContent = displayedText; // Display the cleaned text
     messageElement.appendChild(contentElem);
 
-    // --- Timestamp ---
     const timestampElem = document.createElement('p');
     timestampElem.classList.add('text-xs', 'text-slate-500', 'mt-1', 'text-right');
-    timestampElem.textContent = new Date().toLocaleString(); 
+    timestampElem.textContent = new Date().toLocaleString();
     messageElement.appendChild(timestampElem);
+
+    chatHistory.appendChild(messageElement);
     
-    if (chatHistory) { 
-        chatHistory.appendChild(messageElement);
+    // Ensure scrollToBottom is defined and handles potential null chatHistory
+    if (typeof scrollToBottom === 'function') {
         setTimeout(() => scrollToBottom('smooth'), 50);
-    } else {
-        console.error("[addUserMessage] chatHistory element not found.");
     }
 }
-
 
 
 
@@ -397,11 +391,30 @@ function addErrorMessage(text) {
    setTimeout(() => scrollToBottom('smooth'), 50);
 }
 
-function setInputDisabledState(disabled) {
-    messageInput.disabled = disabled;
-    sendButton.disabled = disabled;
-    if (thinkCheckbox) {
-        thinkCheckbox.disabled = disabled;
+// --- UI State Management ---
+function setInputDisabledState(inputsDisabled, aiResponding) {
+    if (messageInput) messageInput.disabled = inputsDisabled;
+    if (sendButton) sendButton.disabled = inputsDisabled;
+    if (thinkCheckbox) thinkCheckbox.disabled = inputsDisabled;
+
+    if (stopAiButton) {
+        if (aiResponding) {
+            stopAiButton.classList.remove('hidden');
+            stopAiButton.disabled = false;
+            // Set to default "Stop" state when becoming visible, in case it was "Stopping..."
+            stopAiButton.innerHTML = `
+                <svg class="w-5 h-5 inline-block mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1zm4 0a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                Stop`;
+            if (sendButton) sendButton.classList.add('hidden');
+        } else {
+            stopAiButton.classList.add('hidden');
+            stopAiButton.disabled = true;
+            // Reset to default "Stop" state when hidden
+            stopAiButton.innerHTML = `
+                <svg class="w-5 h-5 inline-block mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1zm4 0a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                Stop`;
+            if (sendButton) sendButton.classList.remove('hidden');
+        }
     }
 }
 
@@ -821,30 +834,48 @@ function renderAndReplaceKatex(isDisplay, markerId) {
 }
 
 function finalizeTurnOnErrorOrClose() {
-    console.log("[DEBUG] finalizeTurnOnErrorOrClose called.");
+    console.log("[DEBUG] finalizeTurnOnErrorOrClose called."); // Keep user's debug log
     if (currentProcessingMode === MODE_INSIDE_CODE_BLOCK && currentCodeBlockElement) {
         console.warn("Stream ended unexpectedly inside code block. Finalizing highlight.");
         try { finalizeCodeBlock(true); } catch (e) { console.error("Prism highlight error on close:", e); }
     }
+    // --- Incorporate user's KaTeX and Think finalization ---
     if (currentProcessingMode === MODE_KATEX_BUFFERING_INLINE ||
         currentProcessingMode === MODE_KATEX_BUFFERING_DISPLAY ||
         currentProcessingMode === MODE_MAYBE_START_DISPLAY_KATEX) {
         console.warn("Stream ended unexpectedly inside KaTeX block. Processing raw text.");
-        if (currentKatexMarkerId) {
+        if (currentKatexMarkerId && typeof renderAndReplaceKatex === 'function') { // Check if function exists
             renderAndReplaceKatex(currentProcessingMode === MODE_KATEX_BUFFERING_DISPLAY, currentKatexMarkerId);
             currentKatexMarkerId = null;
+        } else if (katexBuffer) { // Fallback if renderAndReplaceKatex isn't available or no marker
+            appendToAnswer((currentProcessingMode === MODE_KATEX_BUFFERING_DISPLAY ? "$$" : "$") + katexBuffer + (currentProcessingMode === MODE_KATEX_BUFFERING_DISPLAY ? "$$" : "$"));
+            katexBuffer = '';
         }
     }
-     if (currentProcessingMode === MODE_INSIDE_THINK || currentProcessingMode === MODE_MAYBE_END_THINK || currentProcessingMode === MODE_SEEKING_TAG) {
-         console.warn("Stream ended unexpectedly inside/seeking Think tags. Finishing think buffer:", thinkBuffer);
-         if (currentThinkingArea && currentThinkingArea.style.display !== 'none' && currentThinkingPreElement) {
-              appendRawTextToThinkingArea("\n--- (Stream ended unexpectedly during thinking) ---");
-         }
-     }
+    if (currentProcessingMode === MODE_INSIDE_THINK || currentProcessingMode === MODE_MAYBE_END_THINK || currentProcessingMode === MODE_SEEKING_TAG) {
+        console.warn("Stream ended unexpectedly inside/seeking Think tags. Finishing think buffer:", thinkBuffer);
+        if (currentThinkingArea && currentThinkingArea.style.display !== 'none' && currentThinkingPreElement && typeof appendRawTextToThinkingArea === 'function') {
+            appendRawTextToThinkingArea("\n--- (Stream ended unexpectedly during thinking) ---");
+        } else if (tagBuffer) { // If not in thinking mode but had a tag buffer
+            appendToAnswer(tagBuffer); // Append incomplete tag as text
+        }
+        // thinkBuffer itself is typically appended by appendRawTextToThinkingArea during streaming
+    }
+    // --- End of incorporated logic ---
 
-    formatAnswerBubbleFinal();
-    resetStreamingState();
-    setInputDisabledState(true);
+    if (typeof formatAnswerBubbleFinal === 'function') {
+        formatAnswerBubbleFinal(); 
+    }
+    if (typeof resetStreamingState === 'function') {
+        resetStreamingState();     
+    }
+    if (typeof setInputDisabledState === 'function') {
+        setInputDisabledState(false, false); // Correctly re-enables inputs and hides stop button
+    }
+    // --- Focus logic remains ---
+    if (messageInput && messageInput.offsetParent !== null) { // Check if visible
+        messageInput.focus();
+    }
 }
 
 /**
@@ -2491,176 +2522,133 @@ function createHistoricalCodeBlockDisplay(language, codeContent, turnIdSuffix, c
 }
 
 
-// At the top of your script.js (or in a shared scope)
-var currentUserInfo = null; // Declare globally, initialize to null
-
-/**
- * Fetches the current authenticated user's details from the /api/me endpoint
- * and populates the global currentUserInfo object. Includes detailed logging.
- */
+// --- User Info Initialization ---
 async function initializeCurrentUser() {
-    console.log(">>> initializeCurrentUser: Starting fetch..."); // Log start
     try {
-        const response = await fetch('/api/me'); // Call the FastAPI endpoint
-        console.log(">>> initializeCurrentUser: Fetch response status:", response.status); // Log status
-
+        const response = await fetch('/api/me');
         if (response.ok) {
             const userData = await response.json();
-            console.log(">>> initializeCurrentUser: Received userData from /api/me:", userData); // <-- Log the received data
-
-            // Check if received data has the expected 'name' property
             if (userData && userData.name) {
-                window.currentUserInfo = { // Assign to the global variable
+                window.currentUserInfo = {
                     name: userData.name,
                     email: userData.email,
                     id: userData.id
                 };
-                console.log(">>> initializeCurrentUser: Assigned to window.currentUserInfo:", window.currentUserInfo); // <-- Log after assignment
             } else {
-                console.error(">>> initializeCurrentUser: Received userData is missing 'name' property.", userData);
-                window.currentUserInfo = null; // Set to null if data is incomplete
+                window.currentUserInfo = null;
             }
-            
-        } else if (response.status === 401) { // Unauthorized
-            console.warn(">>> initializeCurrentUser: User not authenticated (401).");
-            window.currentUserInfo = null; 
         } else {
-            console.error(">>> initializeCurrentUser: Failed fetch. Status:", response.status);
             window.currentUserInfo = null;
         }
     } catch (error) {
-        console.error(">>> initializeCurrentUser: Error during fetch:", error);
-        window.currentUserInfo = null; 
+        window.currentUserInfo = null;
     }
-    console.log(">>> initializeCurrentUser: Finished."); // Log end
 }
 
-// --- REVISED DOMContentLoaded Event Listener ---
+// --- DOMContentLoaded Event Listener ---
 document.addEventListener('DOMContentLoaded', async () => {
-    console.log("[DOMContentLoaded] Event fired.");
+    await initializeCurrentUser();
 
-    // --- 1. Initialize Current User Information FIRST ---
-    await initializeCurrentUser(); 
-    console.log("[DOMContentLoaded] After initializeCurrentUser awaited. currentUserInfo:", window.currentUserInfo);
+    // const listElementCheck = document.getElementById('session-list'); // Not used here
 
-    // --- 2. Get DOM Element References ---
-    const chatHistory = document.getElementById('chat-history');
-    const chatForm = document.getElementById('chat-form');
-    const messageInput = document.getElementById('message-input');
-    const sendButton = document.getElementById('send-button');
-    const thinkCheckbox = document.getElementById('think-checkbox');
-    const listElementCheck = document.getElementById('session-list'); 
-
-    // --- 3. Initial UI State & Library Configuration ---
     if (typeof setInputDisabledState === 'function') {
-        setInputDisabledState(true); 
-    } else {
-        console.error("setInputDisabledState function is not defined.");
-        if (messageInput) messageInput.disabled = true;
-        if (sendButton) sendButton.disabled = true;
-        if (thinkCheckbox) thinkCheckbox.disabled = true;
+        setInputDisabledState(true, false); 
     }
 
     if (typeof marked !== 'undefined' && typeof marked.setOptions === 'function') {
         marked.setOptions({
             gfm: true, breaks: true, sanitize: false, smartLists: true, smartypants: false,
         });
-        console.log("marked.js configured.");
-    } else {
-        console.warn("[DOMContentLoaded] marked.js or marked.setOptions is not available.");
     }
 
-    // --- 4. Attach Chat Form Submit Event Listener ---
-    if (chatForm && messageInput) { 
-        console.log("Attaching submit listener to chat form:", chatForm);
-
+    if (chatForm && messageInput && sendButton && stopAiButton) {
         chatForm.addEventListener('submit', (event) => {
-            event.preventDefault(); 
-            console.log('Chat form submit event intercepted.');
+            event.preventDefault();
             const userMessage = messageInput.value.trim();
-            console.log('User message input:', userMessage);
-            if (!userMessage) { 
-                console.log('Empty message, returning.');
-                return; 
-            }
+            if (!userMessage) return;
             if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-                console.warn("[Submit] WebSocket not ready. State:", websocket?.readyState);
                 if (typeof addErrorMessage === 'function') addErrorMessage("Not connected to the server.");
                 return;
             }
             try {
-                if (typeof addUserMessage === 'function') {
-                     console.log('Calling addUserMessage with raw input:', userMessage);
-                     addUserMessage(userMessage); 
-                } else {
-                     console.error('addUserMessage function not found!');
-                }
+                if (typeof addUserMessage === 'function') addUserMessage(userMessage);
                 thinkingRequestedForCurrentTurn = thinkCheckbox ? thinkCheckbox.checked : false;
-                console.log('Thinking requested for next turn:', thinkingRequestedForCurrentTurn);
-                let messageToSend = userMessage;
-                if (!thinkingRequestedForCurrentTurn && typeof NO_THINK_PREFIX === 'string') {
-                    messageToSend = NO_THINK_PREFIX + userMessage;
-                    console.log('Adding NO_THINK_PREFIX for sending.');
-                } 
-                if (typeof setupNewAiTurn === 'function') {
-                     console.log('Calling setupNewAiTurn.');
-                     setupNewAiTurn();
+                let messageTextForPayload;
+                if (thinkingRequestedForCurrentTurn) {
+                    messageTextForPayload = THINK_PREFIX + userMessage.replace(NO_THINK_PREFIX, '').replace(THINK_PREFIX, '');
                 } else {
-                     console.error('setupNewAiTurn function not found!');
+                    messageTextForPayload = NO_THINK_PREFIX + userMessage.replace(NO_THINK_PREFIX, '').replace(THINK_PREFIX, '');
                 }
-                console.log('Sending message via WebSocket:', messageToSend);
-                websocket.send(messageToSend);
-                messageInput.value = ''; 
+                if (typeof setupNewAiTurn === 'function') setupNewAiTurn();
+                
+                const messagePayload = {
+                    type: "chat_message",
+                    payload: {
+                        user_input: messageTextForPayload,
+                        turn_id: currentTurnId 
+                    }
+                };
+                websocket.send(JSON.stringify(messagePayload));
+                
+                messageInput.value = '';
                 if (typeof setInputDisabledState === 'function') {
-                     console.log('Disabling input while AI responds.');
-                     setInputDisabledState(true);
-                } else {
-                     console.error('setInputDisabledState function not found!');
+                    setInputDisabledState(true, true); 
                 }
             } catch (sendError) {
-                console.error("[Submit] ERROR during message submission process:", sendError);
                 if (typeof addErrorMessage === 'function') addErrorMessage(`Failed to send message: ${sendError.message}`);
             }
         });
+
+        stopAiButton.addEventListener('click', () => {
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                if (typeof addErrorMessage === 'function') addErrorMessage("Cannot stop: Not connected.");
+                return;
+            }
+            const sessionId = (typeof getSessionIdFromPath === 'function') ? getSessionIdFromPath() : null;
+            if (!sessionId) {
+                if (typeof addErrorMessage === 'function') addErrorMessage("Cannot stop: Session ID not found.");
+                return;
+            }
+            websocket.send(JSON.stringify({
+                type: "stop_ai_stream",
+                payload: {
+                    client_id: clientId,
+                    session_id: sessionId,
+                    turn_id: currentTurnId 
+                }
+            }));
+            stopAiButton.disabled = true;
+            stopAiButton.innerHTML = `
+                <svg class="animate-spin h-5 w-5 mr-1 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Stopping...`;
+            
+            if (typeof finalizeTurnOnErrorOrClose === 'function') {
+                finalizeTurnOnErrorOrClose();
+            }
+        });
+
     } else {
         if (window.location.pathname.includes("/chat/")) {
-            console.error("CRITICAL ERROR: Chat form or message input not found.");
             if (typeof addErrorMessage === 'function') addErrorMessage("Initialization Error: Chat input components missing.");
         }
     }
 
-    // --- 5. Session List, History Loading, and WebSocket Connection ---
-    if (listElementCheck) {
-         console.log("#session-list element found.");
-         // if (typeof fetchAndDisplaySessions === 'function') { fetchAndDisplaySessions(); }
-    }
-
     const currentSessionId = (typeof getSessionIdFromPath === 'function') ? getSessionIdFromPath() : null;
-
     if (currentSessionId) {
-        console.log(`[DOMContentLoaded] Initializing for session ID: ${currentSessionId}.`);
-        if (typeof loadAndDisplayChatHistory === 'function') {
-            console.log(`Calling loadAndDisplayChatHistory for session: ${currentSessionId}`);
-            await loadAndDisplayChatHistory(currentSessionId); 
-            console.log("loadAndDisplayChatHistory finished.");
-        } else {
-            console.error('[DOMContentLoaded] loadAndDisplayChatHistory function not defined!');
-            if (typeof addErrorMessage === 'function') addErrorMessage("Error: Cannot load chat history.");
+        if (typeof loadAndDisplayChatHistory === 'function') { 
+            // await loadAndDisplayChatHistory(currentSessionId); // Assuming this function exists
         }
         if (typeof connectWebSocket === 'function') {
-            console.log("Attempting WebSocket connection.");
-            connectWebSocket(); 
+            connectWebSocket();
         } else {
-            console.error('[DOMContentLoaded] connectWebSocket function not defined!');
             if (typeof addErrorMessage === 'function') addErrorMessage("Error: Cannot connect to chat server.");
         }
     } else {
-        console.log("[DOMContentLoaded] Not on a specific chat page.");
-        if (typeof setInputDisabledState === 'function') {
-            setInputDisabledState(true);
+        if (messageInput && typeof setInputDisabledState === 'function') {
+             setInputDisabledState(true, false); 
         }
     }
-    console.log("[DOMContentLoaded] Setup complete.");
-}); // End of DOMContentLoaded listener
-
-console.log("[Script] End of script file reached. DOMContentLoaded listener attached.");
+});

@@ -4,81 +4,143 @@ from pathlib import Path
 import traceback
 from . import config # Import your config module
 
+# --- Email Configuration ---
 # Create the ConnectionConfig using settings from config.py
-# REMOVED TEMPLATE_FOLDER setting as we are not using file-based templates currently.
+# This configuration is used to connect to the email server.
 conf = ConnectionConfig(
     MAIL_USERNAME=config.MAIL_CONFIG.get("MAIL_USERNAME"),
     MAIL_PASSWORD=config.MAIL_CONFIG.get("MAIL_PASSWORD"),
     MAIL_FROM=config.MAIL_CONFIG.get("MAIL_FROM"),
-    MAIL_PORT=config.MAIL_CONFIG.get("MAIL_PORT", 587),
+    MAIL_PORT=config.MAIL_CONFIG.get("MAIL_PORT", 587), # Default to 587 if not in config
     MAIL_SERVER=config.MAIL_CONFIG.get("MAIL_SERVER"),
     MAIL_FROM_NAME=config.MAIL_CONFIG.get("MAIL_FROM_NAME"),
-    MAIL_STARTTLS=config.MAIL_CONFIG.get("MAIL_STARTTLS", True),
-    MAIL_SSL_TLS=config.MAIL_CONFIG.get("MAIL_SSL_TLS", False),
+    MAIL_STARTTLS=config.MAIL_CONFIG.get("MAIL_STARTTLS", True), # Default to True
+    MAIL_SSL_TLS=config.MAIL_CONFIG.get("MAIL_SSL_TLS", False),   # Default to False
     USE_CREDENTIALS=config.MAIL_CONFIG.get("USE_CREDENTIALS", True),
-    VALIDATE_CERTS=config.MAIL_CONFIG.get("VALIDATE_CERTS", True)
-    # TEMPLATE_FOLDER removed
+    VALIDATE_CERTS=config.MAIL_CONFIG.get("VALIDATE_CERTS", True) # Default to True
 )
 
-# Initialize FastMail instance
+# Initialize FastMail instance with the configuration
 fm = FastMail(conf)
 
-async def send_magic_link_email(
+# Define the base path for email templates
+# config.APP_DIR should point to the 'app' directory.
+EMAIL_TEMPLATES_DIR = config.APP_DIR / "static" / "email_templates"
+
+async def send_registration_password_email(
     recipient_email: str,
     recipient_name: str,
-    magic_link: str,
-    duration_minutes: int
-):
-    """Sends the magic link email asynchronously."""
-
-    # Basic check if email config seems valid before attempting
-    if not conf.MAIL_USERNAME or not conf.MAIL_PASSWORD or not conf.MAIL_SERVER:
-        print("EMAIL ERROR: Mail configuration is incomplete. Cannot send email.")
-        # In a real app, you might raise an internal error or log more formally
-        return False # Indicate failure
-
-    subject = "Your Tesseracs Chat Login Link"
-
-    # Simple HTML Body (consider using templates for more complex emails later)
-    html_body = f"""
-    <html>
-        <body>
-            <h2>Tesseracs Chat Login</h2>
-            <p>Hello {recipient_name},</p>
-            <p>Click the button below or copy the link to log in to Tesseracs Chat. This link is valid for {duration_minutes} minutes.</p>
-            <p style="text-align: center; margin: 25px 0;">
-                <a href="{magic_link}"
-                   style="background-color: #2563eb; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-size: 16px;"
-                   target="_blank">
-                   Login to Tesseracs Chat
-                </a>
-            </p>
-            <p>If the button doesn't work, copy and paste this link into your browser:</p>
-            <p><a href="{magic_link}" target="_blank">{magic_link}</a></p>
-            <p>If you didn't request this email, please ignore it.</p>
-            <hr>
-            <p><small>Sent from Tesseracs Chat</small></p>
-        </body>
-    </html>
+    generated_password: str,
+    login_url: str
+) -> bool:
     """
+    Sends the generated password to a new user using an HTML template.
+    The password sent is the user's actual password.
+    """
+    # Basic check for essential mail server configuration
+    if not conf.MAIL_FROM or not conf.MAIL_SERVER:
+        print("EMAIL ERROR: Mail configuration (MAIL_FROM, MAIL_SERVER) is incomplete. Cannot send registration password email.")
+        return False
 
+    template_path = EMAIL_TEMPLATES_DIR / "registration_email.html"
+    subject = "Welcome to Tesseracs Chat - Your Account Details"
+
+    try:
+        # Read the HTML template from file
+        with open(template_path, "r", encoding="utf-8") as f:
+            html_template = f.read()
+
+        # Replace placeholders in the template
+        # Ensure all placeholders match those in the HTML template
+        html_body = html_template.replace("{{ recipient_name }}", recipient_name)
+        html_body = html_body.replace("{{ email }}", recipient_email) # Changed from {{ recipient_email }} for consistency
+        html_body = html_body.replace("{{ password }}", generated_password)
+        html_body = html_body.replace("{{ login_url }}", login_url)
+
+    except FileNotFoundError:
+        print(f"EMAIL ERROR: Registration email template not found at {template_path}")
+        return False
+    except Exception as e:
+        print(f"EMAIL ERROR: Failed to read or process registration email template: {e}")
+        traceback.print_exc()
+        return False
+
+    # Create the email message schema
     message = MessageSchema(
         subject=subject,
         recipients=[recipient_email],
-        body=html_body, # Use body for HTML content
-        subtype="html" # Specify HTML subtype
+        body=html_body,
+        subtype="html"
     )
 
     try:
-        print(f"EMAIL: Attempting to send magic link to {recipient_email} via {conf.MAIL_SERVER}:{conf.MAIL_PORT}")
+        # Attempt to send the email
+        print(f"EMAIL: Attempting to send registration password to {recipient_email} via {conf.MAIL_SERVER}:{conf.MAIL_PORT}")
         await fm.send_message(message)
-        print(f"EMAIL: Magic link email successfully sent to {recipient_email}.")
-        return True # Indicate success
+        print(f"EMAIL: Registration password email successfully sent to {recipient_email}.")
+        return True  # Indicate success
     except Exception as e:
-        print(f"EMAIL ERROR: Failed to send magic link email to {recipient_email}")
+        # Log any errors during email sending
+        print(f"EMAIL ERROR: Failed to send registration password email to {recipient_email}")
         print(f"EMAIL ERROR DETAILS: {type(e).__name__} - {e}")
         traceback.print_exc()
-        # Depending on the error, you might want specific handling
-        # e.g., authentication errors (bad password), connection errors, etc.
         return False # Indicate failure
 
+async def send_password_reset_email(
+    recipient_email: str,
+    recipient_name: str,
+    new_password: str,
+    login_url: str
+) -> bool:
+    """
+    Sends an email containing a newly generated password after a reset request,
+    using an HTML template.
+    """
+    # Basic check for essential mail server configuration
+    if not conf.MAIL_FROM or not conf.MAIL_SERVER:
+        print("EMAIL ERROR: Mail configuration (MAIL_FROM, MAIL_SERVER) is incomplete. Cannot send password reset email.")
+        return False
+
+    template_path = EMAIL_TEMPLATES_DIR / "password_reset_email.html"
+    subject = "Your Tesseracs Chat Password Has Been Reset"
+
+    try:
+        # Read the HTML template from file
+        with open(template_path, "r", encoding="utf-8") as f:
+            html_template = f.read()
+
+        # Replace placeholders in the template
+        # Ensure all placeholders match those in the HTML template
+        html_body = html_template.replace("{{ recipient_name }}", recipient_name)
+        html_body = html_body.replace("{{ email }}", recipient_email) # Changed from {{ recipient_email }} for consistency
+        html_body = html_body.replace("{{ password }}", new_password)
+        html_body = html_body.replace("{{ login_url }}", login_url)
+
+    except FileNotFoundError:
+        print(f"EMAIL ERROR: Password reset email template not found at {template_path}")
+        return False
+    except Exception as e:
+        print(f"EMAIL ERROR: Failed to read or process password reset email template: {e}")
+        traceback.print_exc()
+        return False
+
+    # Create the email message schema
+    message = MessageSchema(
+        subject=subject,
+        recipients=[recipient_email],
+        body=html_body,
+        subtype="html"
+    )
+
+    try:
+        # Attempt to send the email
+        print(f"EMAIL: Attempting to send password reset to {recipient_email} via {conf.MAIL_SERVER}:{conf.MAIL_PORT}")
+        await fm.send_message(message)
+        print(f"EMAIL: Password reset email successfully sent to {recipient_email}.")
+        return True # Indicate success
+    except Exception as e:
+        # Log any errors during email sending
+        print(f"EMAIL ERROR: Failed to send password reset email to {recipient_email}")
+        print(f"EMAIL ERROR DETAILS: {type(e).__name__} - {e}")
+        traceback.print_exc()
+        return False # Indicate failure

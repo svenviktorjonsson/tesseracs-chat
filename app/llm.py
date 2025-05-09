@@ -59,7 +59,7 @@ def get_model() -> OllamaLLM:
 
 # Define prompt structure (can stay global)
 prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a helpful AI assistant chatting in a web interface. Answer the user's questions concisely. Always use katex for math ($...$ or $$...$$). For a literal dollar sign use \\$. When providing code, use standard markdown code blocks (e.g., ```python ... ```)."),
+    ("system", "You are a helpful AI assistant chatting in a web interface. Keep your thinking process very short! When you think only write down key information and how they relate. Answer the user's questions concisely. Always use katex for math ($...$ or $$...$$). For a literal dollar sign use \\$. When providing code, use standard markdown code blocks (e.g., ```python ... ```)."),
     MessagesPlaceholder(variable_name="history"),
     ("human", "{input}")
 ])

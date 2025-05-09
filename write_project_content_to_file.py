@@ -31,7 +31,11 @@ exclude_files = (
     'package-lock.json',
     'yarn.lock',
     'katex.min.css',
-    'katex.min.js'
+    'katex.min.js',
+    'build.js',
+    'docker_utils.js',
+    'llm.py',
+    'input.css'
     # Add other large or irrelevant files by name here
 )
 

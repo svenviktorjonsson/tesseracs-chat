@@ -86,13 +86,13 @@ def init_db():
     CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,         
-        user_id INTEGER,                 
-        sender_name TEXT,                 
+        user_id INTEGER,               
+        sender_name TEXT,               
         sender_type TEXT NOT NULL CHECK(sender_type IN ('user', 'ai', 'system', 'anon_user')), 
-        content TEXT NOT NULL,            
-        client_id_temp TEXT,             
-        turn_id INTEGER,                 
-        thinking_content TEXT,           
+        content TEXT NOT NULL,           
+        client_id_temp TEXT,           
+        turn_id INTEGER,             
+        thinking_content TEXT,         
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL 
@@ -100,16 +100,27 @@ def init_db():
     """)
     print("Ensured 'chat_messages' table exists.")
 
-    # --- ADDED TABLE for Session Memory State ---
+    # Session Memory State Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS session_memory_state (
-        session_id TEXT PRIMARY KEY,          -- Links directly to the session
-        memory_state_json TEXT NOT NULL,      -- Stores the serialized memory state (e.g., as JSON)
+        session_id TEXT PRIMARY KEY,         -- Links directly to the session
+        memory_state_json TEXT NOT NULL,     -- Stores the serialized memory state (e.g., as JSON)
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the memory was last saved
         FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
     );
     """)
     print("Ensured 'session_memory_state' table exists.")
+
+    # --- ADDED TABLE for Password Reset Attempts ---
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS password_reset_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL,                            -- The email for which the reset was attempted.
+        ip_address TEXT,                                -- Optional: IP address of the requester.
+        attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Timestamp of the attempt.
+    );
+    """)
+    print("Ensured 'password_reset_attempts' table exists.")
     # --- END OF ADDED TABLE ---
 
     # Add indexes for frequently queried columns for performance
@@ -120,9 +131,15 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_participants_session_id ON session_participants (session_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_participants_user_id ON session_participants (user_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages (session_id);")
-    # Add index for the new table's foreign key
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_memory_state_session_id ON session_memory_state (session_id);")
-    print("Ensured indexes exist.")
+    
+    # --- ADDED INDEX for Password Reset Attempts ---
+    # Index on email and timestamp for efficient querying of recent attempts.
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_attempts_email_time ON password_reset_attempts (email, attempted_at);")
+    print("Ensured 'idx_password_reset_attempts_email_time' index exists.")
+    # --- END OF ADDED INDEX ---
+
+    print("Ensured all indexes exist.")
 
     conn.commit()
     conn.close()

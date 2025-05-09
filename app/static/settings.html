@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User Settings - Tesseracs Chat</title>
+    <link rel="stylesheet" href="/dist/input.css"> <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Styles for sidebar scrolling, consistent with other pages */
+        .sidebar-scrollable { overflow-y: auto; scrollbar-width: thin; scrollbar-color: #a0aec0 #edf2f7; }
+        .sidebar-scrollable::-webkit-scrollbar { width: 6px; }
+        .sidebar-scrollable::-webkit-scrollbar-track { background: #edf2f7; border-radius: 3px; }
+        .sidebar-scrollable::-webkit-scrollbar-thumb { background-color: #a0aec0; border-radius: 3px; border: 1px solid #edf2f7; }
+
+        /* Additional styles for the settings page content */
+        .settings-card {
+            background-color: white;
+            padding: 2rem; /* 32px */
+            border-radius: 0.5rem; /* 8px */
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            max-width: 600px;
+            width: 100%;
+        }
+        .form-input {
+            width: 100%;
+            padding: 0.75rem 1rem; /* 12px 16px */
+            border: 1px solid #d1d5db; /* Tailwind gray-300 */
+            border-radius: 0.375rem; /* 6px */
+            font-size: 0.875rem; /* 14px */
+            transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+        }
+        .form-input:focus {
+            border-color: #2563eb; /* Tailwind blue-600 */
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3); /* Tailwind blue-300 with opacity */
+            outline: none;
+        }
+        .submit-button {
+            padding: 0.75rem 1.5rem;
+            background-color: #2563eb; /* Tailwind blue-600 */
+            color: white;
+            border-radius: 0.375rem;
+            font-weight: 500;
+            font-size: 0.875rem;
+            transition: background-color 0.2s ease-in-out;
+            cursor: pointer;
+        }
+        .submit-button:hover {
+            background-color: #1d4ed8; /* Tailwind blue-700 */
+        }
+        .submit-button:disabled {
+            background-color: #9ca3af; /* Tailwind gray-400 */
+            cursor: not-allowed;
+        }
+        .message-area { /* For success/error messages */
+            padding: 0.75rem 1rem;
+            border-radius: 0.375rem;
+            text-align: center;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .message-success {
+            background-color: #d1fae5; /* Tailwind green-100 */
+            color: #065f46; /* Tailwind green-800 */
+            border: 1px solid #6ee7b7; /* Tailwind green-300 */
+        }
+        .message-error {
+            background-color: #fee2e2; /* Tailwind red-100 */
+            color: #991b1b; /* Tailwind red-800 */
+            border: 1px solid #fca5a5; /* Tailwind red-300 */
+        }
+        .section-divider {
+            margin-top: 2rem; /* 32px */
+            padding-top: 1.5rem; /* 24px */
+            border-top: 1px solid #e5e7eb; /* Tailwind gray-200 */
+        }
+    </style>
+</head>
+<body class="font-sans bg-gray-100 text-gray-800">
+
+    <div class="flex h-screen overflow-hidden">
+        <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col overflow-hidden">
+            </aside>
+
+        <main class="flex-1 flex flex-col overflow-y-auto p-6 items-center">
+            <div class="settings-card">
+                <h1 class="text-2xl font-semibold text-gray-900 mb-6 border-b pb-4">User Settings</h1>
+
+                <div id="settings-message-area" class="message-area" style="display: none;"></div>
+
+                <section id="account-settings">
+                    <h2 class="text-xl font-medium text-gray-700 mb-4">Account Settings</h2>
+
+                    <form id="update-name-form" class="space-y-4">
+                        <div>
+                            <label for="current-name" class="block text-sm font-medium text-gray-700 mb-1">Current Name</label>
+                            <input type="text" id="current-name" name="current-name" readonly
+                                   class="form-input bg-gray-100 cursor-not-allowed"
+                                   placeholder="Loading...">
+                        </div>
+                        <div>
+                            <label for="new-name" class="block text-sm font-medium text-gray-700 mb-1">New Name</label>
+                            <input type="text" id="new-name" name="new-name" required
+                                   class="form-input"
+                                   minlength="1" maxlength="100">
+                        </div>
+                        <div>
+                            <label for="current-password-for-name" class="block text-sm font-medium text-gray-700 mb-1">Current Password (to confirm name change)</label>
+                            <input type="password" id="current-password-for-name" name="current-password-for-name" required
+                                   class="form-input">
+                        </div>
+                        <div>
+                            <button type="submit" id="update-name-button" class="submit-button">
+                                Update Name
+                            </button>
+                        </div>
+                    </form>
+                    <div class="section-divider">
+                        <h3 class="text-lg font-medium text-gray-700 mb-3">Change Email</h3>
+                         <p class="text-sm text-gray-500 mb-3">
+                            Your email address is used for login and notifications.
+                            You will be logged out after changing your email.
+                        </p>
+                        <form id="update-email-form" class="space-y-4">
+                            <div>
+                                <label for="current-email" class="block text-sm font-medium text-gray-700 mb-1">Current Email</label>
+                                <input type="email" id="current-email" name="current-email" readonly
+                                       class="form-input bg-gray-100 cursor-not-allowed"
+                                       placeholder="Loading...">
+                            </div>
+                            <div>
+                                <label for="new-email" class="block text-sm font-medium text-gray-700 mb-1">New Email Address</label>
+                                <input type="email" id="new-email" name="new-email" required
+                                       class="form-input">
+                            </div>
+                            <div>
+                                <label for="current-password-for-email" class="block text-sm font-medium text-gray-700 mb-1">Current Password (to confirm email change)</label>
+                                <input type="password" id="current-password-for-email" name="current-password-for-email" required
+                                       class="form-input">
+                            </div>
+                            <div>
+                                <button type="submit" id="update-email-button" class="submit-button">
+                                    Update Email Address
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="section-divider">
+                        <h3 class="text-lg font-medium text-gray-700 mb-3">Regenerate Password</h3>
+                        <p class="text-sm text-gray-500 mb-3">
+                            This will generate a new password for your account and email it to you.
+                            You will be logged out after regenerating your password.
+                        </p>
+                        <form id="regenerate-password-form" class="space-y-4">
+                            <div>
+                                <label for="current-password-for-regen" class="block text-sm font-medium text-gray-700 mb-1">Current Password (to confirm regeneration)</label>
+                                <input type="password" id="current-password-for-regen" name="current-password-for-regen" required
+                                       class="form-input">
+                            </div>
+                            <div>
+                                <button type="submit" id="regenerate-password-button" class="submit-button">
+                                    Regenerate Password & Send Email
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                    </section>
+            </div>
+        </main>
+    </div>
+
+    <script type="module">
+        // Import sidebar loading functions from app-ui.js
+        import { loadSidebarHTML, populateSessionList } from '/static/js/app-ui.js';
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            console.log("Settings Page: DOMContentLoaded.");
+
+            // Load the sidebar
+            const sidebarLoaded = await loadSidebarHTML('/static/_sidebar.html', 'sidebar-loader-target');
+            if (sidebarLoaded) {
+                await populateSessionList('/api/sessions', 'session-list', '/chat/');
+            } else {
+                console.error("Settings Page: Sidebar loading failed.");
+            }
+
+            // --- General DOM Elements ---
+            const settingsMessageArea = document.getElementById('settings-message-area');
+
+            // Function to display messages
+            function showSettingsMessage(message, type = 'info', duration = 0) {
+                settingsMessageArea.textContent = message;
+                settingsMessageArea.className = 'message-area'; // Reset classes
+                if (type === 'success') {
+                    settingsMessageArea.classList.add('message-success');
+                } else if (type === 'error') {
+                    settingsMessageArea.classList.add('message-error');
+                } else { 
+                    settingsMessageArea.classList.add('bg-blue-100', 'text-blue-700', 'border-blue-300');
+                }
+                settingsMessageArea.style.display = 'block';
+
+                if (duration > 0) {
+                    setTimeout(() => {
+                        settingsMessageArea.style.display = 'none';
+                    }, duration);
+                }
+            }
+
+            // --- User Info Fetching ---
+            const currentNameInput = document.getElementById('current-name');
+            const currentEmailInput = document.getElementById('current-email'); // For Change Email form
+
+            async function fetchCurrentUser() {
+                try {
+                    const response = await fetch('/api/me');
+                    if (response.ok) {
+                        const userData = await response.json();
+                        if (currentNameInput) {
+                            currentNameInput.value = userData.name;
+                        }
+                        if (currentEmailInput) { // Populate current email field
+                            currentEmailInput.value = userData.email;
+                        }
+                        window.currentUserDetails = userData; 
+                    } else {
+                        console.error('Failed to fetch current user details:', response.status);
+                        if (currentNameInput) currentNameInput.value = 'Error loading name';
+                        if (currentEmailInput) currentEmailInput.value = 'Error loading email';
+                        showSettingsMessage('Could not load your current user details.', 'error');
+                    }
+                } catch (error) {
+                    console.error('Error fetching current user details:', error);
+                    if (currentNameInput) currentNameInput.value = 'Error loading name';
+                    if (currentEmailInput) currentEmailInput.value = 'Error loading email';
+                    showSettingsMessage('An error occurred while loading your details.', 'error');
+                }
+            }
+            await fetchCurrentUser(); 
+
+            // --- Update Name Functionality ---
+            const updateNameForm = document.getElementById('update-name-form');
+            const newNameInput = document.getElementById('new-name');
+            const currentPasswordForNameInput = document.getElementById('current-password-for-name');
+            const updateNameButton = document.getElementById('update-name-button');
+
+            if (updateNameForm) {
+                updateNameForm.addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    settingsMessageArea.style.display = 'none'; 
+                    updateNameButton.disabled = true;
+                    updateNameButton.textContent = 'Updating...';
+                    // ... (rest of update name logic as before) ...
+                    const newName = newNameInput.value;
+                    const currentPassword = currentPasswordForNameInput.value;
+
+                    if (!newName.trim() || !currentPassword) {
+                        showSettingsMessage('New name and current password are required.', 'error');
+                        updateNameButton.disabled = false;
+                        updateNameButton.textContent = 'Update Name';
+                        return;
+                    }
+                    try {
+                        const response = await fetch('/api/me/update-name', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                new_name: newName,
+                                current_password: currentPassword
+                            })
+                        });
+                        const result = await response.json();
+                        if (response.ok) {
+                            showSettingsMessage(result.message || 'Name updated successfully!', 'success', 3000);
+                            if (currentNameInput) currentNameInput.value = result.new_name;
+                            currentPasswordForNameInput.value = '';
+                            newNameInput.value = ''; 
+                            // No need to call fetchCurrentUser() again just for name, it's updated locally.
+                        } else {
+                            showSettingsMessage(result.detail || 'Failed to update name.', 'error');
+                        }
+                    } catch (error) {
+                        console.error('Error updating name:', error);
+                        showSettingsMessage('An error occurred. Please try again.', 'error');
+                    } finally {
+                        updateNameButton.disabled = false;
+                        updateNameButton.textContent = 'Update Name';
+                    }
+                });
+            }
+
+            // --- Update Email Functionality ---
+            const updateEmailForm = document.getElementById('update-email-form');
+            const newEmailInput = document.getElementById('new-email');
+            const currentPasswordForEmailInput = document.getElementById('current-password-for-email');
+            const updateEmailButton = document.getElementById('update-email-button');
+
+            if (updateEmailForm) {
+                updateEmailForm.addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    settingsMessageArea.style.display = 'none';
+                    updateEmailButton.disabled = true;
+                    updateEmailButton.textContent = 'Updating Email...';
+
+                    const newEmail = newEmailInput.value;
+                    const currentPassword = currentPasswordForEmailInput.value;
+
+                    if (!newEmail.trim() || !currentPassword) {
+                        showSettingsMessage('New email and current password are required.', 'error');
+                        updateEmailButton.disabled = false;
+                        updateEmailButton.textContent = 'Update Email Address';
+                        return;
+                    }
+
+                    try {
+                        const response = await fetch('/api/me/update-email', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                new_email: newEmail,
+                                current_password: currentPassword
+                            })
+                        });
+                        const result = await response.json();
+
+                        if (response.ok) {
+                            showSettingsMessage(result.message || 'Email updated. Logging out...', 'success');
+                            // Clear fields
+                            newEmailInput.value = '';
+                            currentPasswordForEmailInput.value = '';
+                            // Redirect to logout after a delay
+                            setTimeout(() => {
+                                window.location.href = '/logout';
+                            }, 4000); // 4 seconds delay
+                        } else {
+                            showSettingsMessage(result.detail || 'Failed to update email.', 'error');
+                            updateEmailButton.disabled = false;
+                            updateEmailButton.textContent = 'Update Email Address';
+                        }
+                    } catch (error) {
+                        console.error('Error updating email:', error);
+                        showSettingsMessage('An error occurred while updating your email. Please try again.', 'error');
+                        updateEmailButton.disabled = false;
+                        updateEmailButton.textContent = 'Update Email Address';
+                    }
+                    // Note: Button remains disabled on success because user will be logged out.
+                });
+            }
+
+
+            // --- Regenerate Password Functionality ---
+            const regeneratePasswordForm = document.getElementById('regenerate-password-form');
+            const currentPasswordForRegenInput = document.getElementById('current-password-for-regen');
+            const regeneratePasswordButton = document.getElementById('regenerate-password-button');
+
+            if (regeneratePasswordForm) {
+                regeneratePasswordForm.addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    settingsMessageArea.style.display = 'none';
+                    regeneratePasswordButton.disabled = true;
+                    regeneratePasswordButton.textContent = 'Regenerating...';
+                    // ... (rest of regenerate password logic as before) ...
+                    const currentPassword = currentPasswordForRegenInput.value;
+
+                    if (!currentPassword) {
+                        showSettingsMessage('Current password is required to regenerate.', 'error');
+                        regeneratePasswordButton.disabled = false;
+                        regeneratePasswordButton.textContent = 'Regenerate Password & Send Email';
+                        return;
+                    }
+                    try {
+                        const response = await fetch('/api/me/regenerate-password', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ current_password: currentPassword })
+                        });
+                        const result = await response.json();
+                        if (response.ok) {
+                            showSettingsMessage(result.message || 'Password regenerated. Check email. Logging out...', 'success');
+                            currentPasswordForRegenInput.value = '';
+                            setTimeout(() => {
+                                window.location.href = '/logout'; 
+                            }, 4000); 
+                        } else {
+                            showSettingsMessage(result.detail || 'Failed to regenerate password.', 'error');
+                            regeneratePasswordButton.disabled = false;
+                            regeneratePasswordButton.textContent = 'Regenerate Password & Send Email';
+                        }
+                    } catch (error) {
+                        console.error('Error regenerating password:', error);
+                        showSettingsMessage('An error occurred while regenerating password. Please try again.', 'error');
+                        regeneratePasswordButton.disabled = false;
+                        regeneratePasswordButton.textContent = 'Regenerate Password & Send Email';
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>

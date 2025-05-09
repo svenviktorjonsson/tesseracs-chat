@@ -5,77 +5,347 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - Tesseracs Chat</title>
     <link rel="stylesheet" href="/dist/input.css">
+    <style>
+        /* Simple class to hide elements */
+        .hidden-field {
+            display: none !important; /* Use !important to ensure override if other styles conflict */
+        }
+        /* Style for the forgot password link */
+        .forgot-password-link {
+            display: block; /* Make it block to appear below the password field */
+            text-align: right;
+            font-size: 0.875rem; /* text-sm */
+            color: #4b5563; /* text-gray-600 */
+            text-decoration: none;
+            margin-top: 0.5rem; /* Add some space above the link */
+            margin-bottom: 1.25rem; /* Keep bottom margin for spacing below */
+        }
+        .forgot-password-link:hover {
+            color: #1d4ed8; /* hover:text-blue-700 */
+            text-decoration: underline;
+        }
+        /* Style for the "Change Email" button */
+        .change-email-button {
+            display: block;
+            width: auto; /* Fit content */
+            margin-top: 0.75rem; /* Space above */
+            margin-left: auto; /* Align to the right if container allows */
+            margin-right: auto; /* Center if container is flex/grid and justifies center */
+            padding: 0.5rem 1rem;
+            font-size: 0.875rem;
+            color: #4b5563; /* text-gray-600 */
+            background-color: #f3f4f6; /* Tailwind gray-100 */
+            border: 1px solid #d1d5db; /* Tailwind gray-300 */
+            border-radius: 0.375rem; /* rounded-md */
+            cursor: pointer;
+            text-align: center;
+        }
+        .change-email-button:hover {
+            background-color: #e5e7eb; /* Tailwind gray-200 */
+        }
+    </style>
 </head>
 <body class="flex flex-col justify-center items-center min-h-screen bg-gray-100 font-sans p-4">
     <div class="bg-white p-8 rounded-lg shadow-xl w-full max-w-md">
         <h1 class="text-center mb-6 text-2xl font-semibold text-gray-900">Tesseracs Chat</h1>
 
-        <div id="message-area" class="p-3 rounded-md text-sm text-center" style="display: none;"></div>
+        <div id="message-area" class="p-3 rounded-md text-sm text-center mb-4" style="display: none;"></div>
 
-        <form id="login-form" class="mt-4">
-            <div class="mb-5">
-                <label for="name" class="block mb-2 text-sm font-medium text-gray-700">Name:</label>
-                <input type="text" id="name" name="name" required autocomplete="name" class="block w-full py-2.5 px-3 border border-gray-300 rounded-md text-sm transition-colors duration-200 ease-in-out focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none">
-            </div>
+        <form id="auth-form" class="mt-4">
             <div class="mb-5">
                 <label for="email" class="block mb-2 text-sm font-medium text-gray-700">Email:</label>
                 <input type="email" id="email" name="email" required autocomplete="email" class="block w-full py-2.5 px-3 border border-gray-300 rounded-md text-sm transition-colors duration-200 ease-in-out focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none">
             </div>
-            <button type="submit" id="submit-button" class="w-full py-3 bg-blue-600 text-white rounded-md text-sm font-medium cursor-pointer transition-colors duration-200 ease-in-out hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed">Continue with Email</button>
+
+            <div id="password-field-container" class="mb-5 hidden-field">
+                <label for="password" class="block mb-2 text-sm font-medium text-gray-700">Password:</label>
+                <input type="password" id="password" name="password" autocomplete="current-password" class="block w-full py-2.5 px-3 border border-gray-300 rounded-md text-sm transition-colors duration-200 ease-in-out focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none">
+                <a href="#" id="forgot-password-link" class="forgot-password-link">Forgot Password?</a>
+            </div>
+
+            <div id="name-field-container" class="mb-5 hidden-field">
+                <label for="name" class="block mb-2 text-sm font-medium text-gray-700">Full Name:</label>
+                <input type="text" id="name" name="name" autocomplete="name" class="block w-full py-2.5 px-3 border border-gray-300 rounded-md text-sm transition-colors duration-200 ease-in-out focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none">
+            </div>
+
+            <button type="submit" id="submit-button" class="w-full py-3 bg-blue-600 text-white rounded-md text-sm font-medium cursor-pointer transition-colors duration-200 ease-in-out hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed">Continue</button>
+
+            <button type="button" id="change-email-button" class="change-email-button hidden-field">Change Email / Start Over</button>
         </form>
-        <p class="text-xs text-center mt-6 text-gray-500">
-            Enter your name and email. We'll send you a secure magic link to log in or create your account.
+
+        <p id="form-instructions" class="text-xs text-center mt-6 text-gray-500">
+            Enter your email to log in or create an account.
         </p>
     </div>
 
     <script>
-        document.getElementById('login-form').addEventListener('submit', async function(event) {
-            event.preventDefault();
-            const form = event.target;
-            const nameInput = document.getElementById('name');
-            const emailInput = document.getElementById('email');
-            const submitButton = document.getElementById('submit-button');
-            const messageArea = document.getElementById('message-area');
+        // --- DOM Element References ---
+        const authForm = document.getElementById('auth-form');
+        const emailInput = document.getElementById('email');
+        const nameInput = document.getElementById('name');
+        const passwordInput = document.getElementById('password');
+        const nameFieldContainer = document.getElementById('name-field-container');
+        const passwordFieldContainer = document.getElementById('password-field-container');
+        const submitButton = document.getElementById('submit-button');
+        const messageArea = document.getElementById('message-area');
+        const formInstructions = document.getElementById('form-instructions');
+        const forgotPasswordLink = document.getElementById('forgot-password-link');
+        const changeEmailButton = document.getElementById('change-email-button');
 
-            messageArea.style.display = 'none';
-            messageArea.textContent = '';
-            messageArea.className = 'p-3 rounded-md text-sm text-center'; // Reset classes, keep base Tailwind
-            submitButton.disabled = true;
-            submitButton.textContent = 'Processing...';
+        // --- State Management ---
+        // Possible states: 'initial_email', 'login_password', 'register_name', 'forgot_password_prompt', 'login_after_registration', 'login_after_password_reset'
+        let formState = 'initial_email';
+        let cachedEmail = ''; // Used for pre-filling email after registration or password reset
 
-            const formData = new FormData();
-            formData.append('name', nameInput.value.trim());
-            formData.append('email', emailInput.value.trim().toLowerCase());
+        // --- UI Update Function ---
+        function updateUIForState() {
+            // Reset fields visibility and requirements first
+            passwordFieldContainer.classList.add('hidden-field');
+            nameFieldContainer.classList.add('hidden-field');
+            forgotPasswordLink.classList.add('hidden-field'); // Hide by default
+            changeEmailButton.classList.add('hidden-field'); // Hide by default
 
-            try {
-                const response = await fetch('/login', {
-                    method: 'POST',
-                    body: formData
-                });
-                const result = await response.json();
+            passwordInput.required = false;
+            nameInput.required = false;
+            emailInput.readOnly = false; // Make email editable by default
+            submitButton.disabled = false; // Enable button by default, specific states will adjust
 
-                if (response.ok) {
-                    messageArea.textContent = result.message || 'Magic link sent! Please check your email.';
-                    messageArea.classList.remove('text-red-700', 'bg-red-100', 'border-red-300'); // Remove error classes if any
-                    messageArea.classList.add('text-green-700', 'bg-green-100', 'border', 'border-green-300');
-                    nameInput.value = ''; 
+            switch (formState) {
+                case 'initial_email':
                     emailInput.value = '';
-                } else {
-                    messageArea.textContent = result.detail || 'An error occurred. Please try again.';
-                    messageArea.classList.remove('text-green-700', 'bg-green-100', 'border-green-300'); // Remove success classes if any
-                    messageArea.classList.add('text-red-700', 'bg-red-100', 'border', 'border-red-300');
-                }
-            } catch (error) {
-                console.error('Login form submission error:', error);
-                messageArea.textContent = 'A network error occurred. Please try again.';
-                messageArea.classList.remove('text-green-700', 'bg-green-100', 'border-green-300');
-                messageArea.classList.add('text-red-700', 'bg-red-100', 'border', 'border-red-300');
-            } finally {
-                messageArea.style.display = 'block';
-                submitButton.disabled = false;
-                submitButton.textContent = 'Continue with Email';
+                    passwordInput.value = '';
+                    nameInput.value = '';
+                    cachedEmail = ''; // Clear cached email
+                    submitButton.textContent = 'Continue';
+                    formInstructions.textContent = 'Enter your email to log in or create an account.';
+                    submitButton.disabled = emailInput.value.trim() === '';
+                    emailInput.focus();
+                    break;
+                case 'login_password':
+                    passwordFieldContainer.classList.remove('hidden-field');
+                    forgotPasswordLink.classList.remove('hidden-field');
+                    changeEmailButton.classList.remove('hidden-field');
+                    passwordInput.required = true;
+                    emailInput.readOnly = true;
+                    submitButton.textContent = 'Login';
+                    formInstructions.textContent = 'Enter your password to log in.';
+                    passwordInput.value = '';
+                    submitButton.disabled = true; // Password field is empty
+                    passwordInput.focus();
+                    break;
+                case 'register_name':
+                    nameFieldContainer.classList.remove('hidden-field');
+                    changeEmailButton.classList.remove('hidden-field');
+                    nameInput.required = true;
+                    emailInput.readOnly = true;
+                    submitButton.textContent = 'Create Account & Send Password';
+                    formInstructions.textContent = 'This email is not registered. Enter your name to create an account. A password will be emailed to you.';
+                    nameInput.value = '';
+                    submitButton.disabled = nameInput.value.trim() === '';
+                    nameInput.focus();
+                    break;
+                case 'forgot_password_prompt':
+                    emailInput.readOnly = false;
+                    emailInput.value = ''; // Clear email for forgot password
+                    submitButton.textContent = 'Send Reset Email';
+                    formInstructions.textContent = 'Enter your email address to receive a password reset email.';
+                    changeEmailButton.classList.remove('hidden-field');
+                    submitButton.disabled = emailInput.value.trim() === '';
+                    emailInput.focus();
+                    break;
+                case 'login_after_registration':
+                case 'login_after_password_reset': // This state will share UI with login_after_registration
+                    emailInput.value = cachedEmail; // Pre-fill with cached email
+                    emailInput.readOnly = true;
+                    passwordFieldContainer.classList.remove('hidden-field');
+                    // forgotPasswordLink remains hidden for these states
+                    changeEmailButton.classList.remove('hidden-field');
+                    passwordInput.required = true;
+                    submitButton.textContent = 'Login';
+                    // Instructions are set by the submit handler based on which flow it was
+                    if (formState === 'login_after_registration') {
+                        formInstructions.textContent = 'Account created! Please check your email for the password and enter it below.';
+                    } else { // login_after_password_reset
+                        // The message area will show the "If an account exists..." message from the server.
+                        // We can add a generic instruction here or rely on the message area.
+                        formInstructions.textContent = 'Please check your email for the new password and enter it below.';
+                    }
+                    passwordInput.value = '';
+                    submitButton.disabled = true; // Password field is empty
+                    passwordInput.focus();
+                    break;
+            }
+        }
+
+        // --- Event Listeners ---
+        emailInput.addEventListener('input', function() {
+            if (formState === 'initial_email' || formState === 'forgot_password_prompt') {
+                submitButton.disabled = emailInput.value.trim() === '';
             }
         });
+
+        nameInput.addEventListener('input', function() {
+            if (formState === 'register_name') {
+                submitButton.disabled = nameInput.value.trim() === '';
+            }
+        });
+
+        passwordInput.addEventListener('input', function() {
+            if (formState === 'login_password' || formState === 'login_after_registration' || formState === 'login_after_password_reset') {
+                submitButton.disabled = passwordInput.value.trim() === '';
+            }
+        });
+
+        forgotPasswordLink.addEventListener('click', (event) => {
+            event.preventDefault();
+            formState = 'forgot_password_prompt';
+            updateUIForState();
+            messageArea.style.display = 'none'; // Clear previous messages
+            messageArea.textContent = '';
+        });
+
+        changeEmailButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            formState = 'initial_email';
+            updateUIForState();
+            messageArea.style.display = 'none'; // Clear previous messages
+            messageArea.textContent = '';
+        });
+
+        authForm.addEventListener('submit', async function(event) {
+            event.preventDefault();
+            // Do not hide messageArea here if we want to preserve the "If an account exists..." message for forgot password.
+            // messageArea.style.display = 'none';
+            // messageArea.textContent = '';
+            messageArea.className = 'p-3 rounded-md text-sm text-center mb-4 border'; // Reset message classes
+            submitButton.disabled = true;
+
+            const email = emailInput.value.trim().toLowerCase();
+
+            if (formState === 'initial_email') {
+                submitButton.textContent = 'Checking Email...';
+                try {
+                    const response = await fetch('/check_email', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: email })
+                    });
+                    const result = await response.json();
+                    if (response.ok) {
+                        cachedEmail = email; // Cache email for potential next steps
+                        formState = result.exists ? 'login_password' : 'register_name';
+                        updateUIForState();
+                    } else {
+                        showMessage(result.detail || 'Error checking email.', 'error');
+                        submitButton.textContent = 'Continue';
+                        submitButton.disabled = emailInput.value.trim() === '';
+                    }
+                } catch (error) {
+                    console.error('Email check error:', error);
+                    showMessage('Network error checking email.', 'error');
+                    submitButton.textContent = 'Continue';
+                    submitButton.disabled = emailInput.value.trim() === '';
+                }
+            }
+            else if (formState === 'login_password' || formState === 'login_after_registration' || formState === 'login_after_password_reset') {
+                submitButton.textContent = 'Logging In...';
+                const password = passwordInput.value;
+                const formData = new FormData();
+                formData.append('username', email); // Server expects 'username'
+                formData.append('password', password);
+                try {
+                    const response = await fetch('/token', { method: 'POST', body: formData });
+                    const result = await response.json();
+                    if (response.ok) {
+                        showMessage('Login successful! Redirecting...', 'success');
+                        setTimeout(() => { window.location.href = '/'; }, 1500);
+                    } else {
+                        // Generic login failure message
+                        showMessage('Incorrect email or password.', 'error');
+                        submitButton.textContent = 'Login';
+                        submitButton.disabled = passwordInput.value.trim() === '';
+                    }
+                } catch (error) {
+                    console.error('Login error:', error);
+                    showMessage('Network error during login.', 'error');
+                    submitButton.textContent = 'Login';
+                    submitButton.disabled = passwordInput.value.trim() === '';
+                }
+            }
+            else if (formState === 'register_name') {
+                submitButton.textContent = 'Creating Account...';
+                const name = nameInput.value.trim();
+                try {
+                    const response = await fetch('/register', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: email, name: name })
+                    });
+                    const result = await response.json();
+                    if (response.ok) {
+                        showMessage(result.message, 'success'); // Show "Account created! Your password has been sent..."
+                        cachedEmail = email; // Email is already cached from 'initial_email' check, but good to be explicit
+                        formState = 'login_after_registration';
+                        updateUIForState();
+                    } else {
+                        showMessage(result.detail || 'Registration failed.', 'error');
+                        submitButton.textContent = 'Create Account & Send Password';
+                        submitButton.disabled = nameInput.value.trim() === '';
+                    }
+                } catch (error) {
+                    console.error('Registration error:', error);
+                    showMessage('Network error during registration.', 'error');
+                    submitButton.textContent = 'Create Account & Send Password';
+                    submitButton.disabled = nameInput.value.trim() === '';
+                }
+            }
+            else if (formState === 'forgot_password_prompt') {
+                submitButton.textContent = 'Sending Reset Email...';
+                try {
+                    const response = await fetch('/forgot_password', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: email })
+                    });
+                    const result = await response.json();
+                    // Always show the server's success message for forgot password for privacy
+                    showMessage(result.message, 'success');
+                    if (response.ok) {
+                        cachedEmail = email; // Cache the email used for reset
+                        formState = 'login_after_password_reset'; // New state for this flow
+                        updateUIForState();
+                    } else {
+                        // Even on error, the message from server (if any) is shown.
+                        // If no specific error detail, the generic success message is still shown.
+                        // Reset button text and enable based on email field.
+                        submitButton.textContent = 'Send Reset Email';
+                        submitButton.disabled = emailInput.value.trim() === '';
+                    }
+                } catch (error) {
+                    console.error('Forgot password error:', error);
+                    // Show a generic success-like message even on network error for privacy,
+                    // but log the actual error.
+                    showMessage('If an account with this email exists, a password reset email has been sent.', 'success');
+                    submitButton.textContent = 'Send Reset Email';
+                    submitButton.disabled = emailInput.value.trim() === '';
+                }
+            }
+        });
+
+        function showMessage(message, type = 'info') {
+            messageArea.textContent = message;
+            messageArea.className = 'p-3 rounded-md text-sm text-center mb-4 border';
+            if (type === 'error') {
+                messageArea.classList.add('text-red-700', 'bg-red-100', 'border-red-300');
+            } else if (type === 'success') {
+                messageArea.classList.add('text-green-700', 'bg-green-100', 'border-green-300');
+            } else { // info
+                messageArea.classList.add('text-blue-700', 'bg-blue-100', 'border-blue-300');
+            }
+            messageArea.style.display = 'block';
+        }
+
+        updateUIForState();
     </script>
 </body>
 </html>
