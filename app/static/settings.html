@@ -4,77 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>User Settings - Tesseracs Chat</title>
-    <link rel="stylesheet" href="/dist/input.css"> <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/dist/input.css"> 
     <style>
-        /* Styles for sidebar scrolling, consistent with other pages */
+        /* Styles for sidebar scrolling, consistent with other pages, can be moved to input.css if preferred */
         .sidebar-scrollable { overflow-y: auto; scrollbar-width: thin; scrollbar-color: #a0aec0 #edf2f7; }
         .sidebar-scrollable::-webkit-scrollbar { width: 6px; }
         .sidebar-scrollable::-webkit-scrollbar-track { background: #edf2f7; border-radius: 3px; }
         .sidebar-scrollable::-webkit-scrollbar-thumb { background-color: #a0aec0; border-radius: 3px; border: 1px solid #edf2f7; }
-
-        /* Additional styles for the settings page content */
-        .settings-card {
-            background-color: white;
-            padding: 2rem; /* 32px */
-            border-radius: 0.5rem; /* 8px */
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            max-width: 600px;
-            width: 100%;
-        }
-        .form-input {
-            width: 100%;
-            padding: 0.75rem 1rem; /* 12px 16px */
-            border: 1px solid #d1d5db; /* Tailwind gray-300 */
-            border-radius: 0.375rem; /* 6px */
-            font-size: 0.875rem; /* 14px */
-            transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
-        }
-        .form-input:focus {
-            border-color: #2563eb; /* Tailwind blue-600 */
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3); /* Tailwind blue-300 with opacity */
-            outline: none;
-        }
-        .submit-button {
-            padding: 0.75rem 1.5rem;
-            background-color: #2563eb; /* Tailwind blue-600 */
-            color: white;
-            border-radius: 0.375rem;
-            font-weight: 500;
-            font-size: 0.875rem;
-            transition: background-color 0.2s ease-in-out;
-            cursor: pointer;
-        }
-        .submit-button:hover {
-            background-color: #1d4ed8; /* Tailwind blue-700 */
-        }
-        .submit-button:disabled {
-            background-color: #9ca3af; /* Tailwind gray-400 */
-            cursor: not-allowed;
-        }
-        .message-area { /* For success/error messages */
-            padding: 0.75rem 1rem;
-            border-radius: 0.375rem;
-            text-align: center;
-            margin-bottom: 1rem;
-            font-size: 0.875rem;
-        }
-        .message-success {
-            background-color: #d1fae5; /* Tailwind green-100 */
-            color: #065f46; /* Tailwind green-800 */
-            border: 1px solid #6ee7b7; /* Tailwind green-300 */
-        }
-        .message-error {
-            background-color: #fee2e2; /* Tailwind red-100 */
-            color: #991b1b; /* Tailwind red-800 */
-            border: 1px solid #fca5a5; /* Tailwind red-300 */
-        }
-        .section-divider {
-            margin-top: 2rem; /* 32px */
-            padding-top: 1.5rem; /* 24px */
-            border-top: 1px solid #e5e7eb; /* Tailwind gray-200 */
-        }
     </style>
 </head>
 <body class="font-sans bg-gray-100 text-gray-800">
@@ -84,100 +20,140 @@
             </aside>
 
         <main class="flex-1 flex flex-col overflow-y-auto p-6 items-center">
-            <div class="settings-card">
+            <div class="bg-white p-8 rounded-lg shadow-xl w-full max-w-[700px]">
                 <h1 class="text-2xl font-semibold text-gray-900 mb-6 border-b pb-4">User Settings</h1>
 
-                <div id="settings-message-area" class="message-area" style="display: none;"></div>
+                <div id="settings-message-area" class="py-3 px-4 rounded-md text-center mb-4 text-sm" style="display: none;"></div>
 
                 <section id="account-settings">
                     <h2 class="text-xl font-medium text-gray-700 mb-4">Account Settings</h2>
-
-                    <form id="update-name-form" class="space-y-4">
-                        <div>
+                    <form id="update-name-form" class="space-y-4 mb-6">
+                        <div class="mb-6"> {/* form-group equivalent */}
                             <label for="current-name" class="block text-sm font-medium text-gray-700 mb-1">Current Name</label>
-                            <input type="text" id="current-name" name="current-name" readonly
-                                   class="form-input bg-gray-100 cursor-not-allowed"
+                            <input type="text" id="current-name" name="current-name" readonly 
+                                   class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm bg-gray-100 cursor-not-allowed" 
                                    placeholder="Loading...">
                         </div>
-                        <div>
+                        <div class="mb-6">
                             <label for="new-name" class="block text-sm font-medium text-gray-700 mb-1">New Name</label>
-                            <input type="text" id="new-name" name="new-name" required
-                                   class="form-input"
+                            <input type="text" id="new-name" name="new-name" required 
+                                   class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none transition-colors duration-200 ease-in-out" 
                                    minlength="1" maxlength="100">
                         </div>
-                        <div>
+                        <div class="mb-6">
                             <label for="current-password-for-name" class="block text-sm font-medium text-gray-700 mb-1">Current Password (to confirm name change)</label>
-                            <input type="password" id="current-password-for-name" name="current-password-for-name" required
-                                   class="form-input">
+                            <input type="password" id="current-password-for-name" name="current-password-for-name" required 
+                                   class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none transition-colors duration-200 ease-in-out">
                         </div>
                         <div>
-                            <button type="submit" id="update-name-button" class="submit-button">
+                            <button type="submit" id="update-name-button" 
+                                    class="py-3 px-6 bg-blue-600 text-white rounded-md font-medium text-sm transition-colors duration-200 ease-in-out hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed">
                                 Update Name
                             </button>
                         </div>
                     </form>
-                    <div class="section-divider">
+
+                    <div class="mt-8 pt-6 border-t border-gray-200"> {/* section-divider equivalent */}
                         <h3 class="text-lg font-medium text-gray-700 mb-3">Change Email</h3>
-                         <p class="text-sm text-gray-500 mb-3">
-                            Your email address is used for login and notifications.
-                            You will be logged out after changing your email.
-                        </p>
-                        <form id="update-email-form" class="space-y-4">
-                            <div>
+                        <p class="text-sm text-gray-500 mb-3">You will be logged out after changing your email.</p>
+                        <form id="update-email-form" class="space-y-4 mb-6">
+                            <div class="mb-6">
                                 <label for="current-email" class="block text-sm font-medium text-gray-700 mb-1">Current Email</label>
-                                <input type="email" id="current-email" name="current-email" readonly
-                                       class="form-input bg-gray-100 cursor-not-allowed"
+                                <input type="email" id="current-email" name="current-email" readonly 
+                                       class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm bg-gray-100 cursor-not-allowed" 
                                        placeholder="Loading...">
                             </div>
-                            <div>
+                            <div class="mb-6">
                                 <label for="new-email" class="block text-sm font-medium text-gray-700 mb-1">New Email Address</label>
-                                <input type="email" id="new-email" name="new-email" required
-                                       class="form-input">
+                                <input type="email" id="new-email" name="new-email" required 
+                                       class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none transition-colors duration-200 ease-in-out">
                             </div>
-                            <div>
+                            <div class="mb-6">
                                 <label for="current-password-for-email" class="block text-sm font-medium text-gray-700 mb-1">Current Password (to confirm email change)</label>
-                                <input type="password" id="current-password-for-email" name="current-password-for-email" required
-                                       class="form-input">
+                                <input type="password" id="current-password-for-email" name="current-password-for-email" required 
+                                       class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none transition-colors duration-200 ease-in-out">
                             </div>
                             <div>
-                                <button type="submit" id="update-email-button" class="submit-button">
+                                <button type="submit" id="update-email-button" 
+                                        class="py-3 px-6 bg-blue-600 text-white rounded-md font-medium text-sm transition-colors duration-200 ease-in-out hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed">
                                     Update Email Address
                                 </button>
                             </div>
                         </form>
                     </div>
-                    <div class="section-divider">
+
+                    <div class="mt-8 pt-6 border-t border-gray-200"> {/* section-divider equivalent */}
                         <h3 class="text-lg font-medium text-gray-700 mb-3">Regenerate Password</h3>
-                        <p class="text-sm text-gray-500 mb-3">
-                            This will generate a new password for your account and email it to you.
-                            You will be logged out after regenerating your password.
-                        </p>
+                        <p class="text-sm text-gray-500 mb-3">A new password will be emailed to you. You will be logged out.</p>
                         <form id="regenerate-password-form" class="space-y-4">
-                            <div>
+                            <div class="mb-6">
                                 <label for="current-password-for-regen" class="block text-sm font-medium text-gray-700 mb-1">Current Password (to confirm regeneration)</label>
-                                <input type="password" id="current-password-for-regen" name="current-password-for-regen" required
-                                       class="form-input">
+                                <input type="password" id="current-password-for-regen" name="current-password-for-regen" required 
+                                       class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none transition-colors duration-200 ease-in-out">
                             </div>
                             <div>
-                                <button type="submit" id="regenerate-password-button" class="submit-button">
+                                <button type="submit" id="regenerate-password-button" 
+                                        class="py-3 px-6 bg-blue-600 text-white rounded-md font-medium text-sm transition-colors duration-200 ease-in-out hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed">
                                     Regenerate Password & Send Email
                                 </button>
                             </div>
                         </form>
                     </div>
-                    </section>
+                </section>
+
+                <section id="llm-settings" class="mt-8 pt-6 border-t border-gray-200"> {/* section-divider equivalent */}
+                    <h2 class="text-xl font-medium text-gray-700 mb-4">LLM Configuration</h2>
+                    <form id="llm-settings-form" class="space-y-4">
+                        <div class="mb-6"> {/* form-group equivalent */}
+                            <label for="llm-provider" class="block text-sm font-medium text-gray-700 mb-1">Chat Provider</label>
+                            <select id="llm-provider" name="llm-provider" 
+                                    class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none transition-colors duration-200 ease-in-out">
+                                <option value="">Loading providers...</option>
+                            </select>
+                            <p id="llm-provider-status" class="text-xs text-gray-500 mt-1"></p> {/* info-text equivalent */}
+                        </div>
+
+                        <div class="mb-6">
+                            <label for="llm-model" class="block text-sm font-medium text-gray-700 mb-1">Model</label>
+                            <select id="llm-model" name="llm-model" 
+                                    class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none transition-colors duration-200 ease-in-out">
+                                <option value="">Select a provider first</option>
+                            </select>
+                        </div>
+
+                        <div id="llm-api-key-group" class="mb-6" style="display: none;">
+                            <label for="llm-api-key" class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+                            <input type="password" id="llm-api-key" name="llm-api-key" 
+                                   class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none transition-colors duration-200 ease-in-out" 
+                                   placeholder="Enter API Key if required">
+                            <p id="llm-api-key-status" class="text-xs text-gray-500 mt-1"></p>
+                        </div>
+
+                        <div id="llm-base-url-group" class="mb-6" style="display: none;">
+                            <label for="llm-base-url" class="block text-sm font-medium text-gray-700 mb-1">Custom Base URL (Optional)</label>
+                            <input type="url" id="llm-base-url" name="llm-base-url" 
+                                   class="w-full py-3 px-4 border border-gray-300 rounded-md text-sm focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none transition-colors duration-200 ease-in-out" 
+                                   placeholder="e.g., http://localhost:1234/v1">
+                             <p class="text-xs text-gray-500 mt-1">Only for compatible providers if you use a custom endpoint.</p>
+                        </div>
+                        <div>
+                            <button type="submit" id="save-llm-settings-button" 
+                                    class="py-3 px-6 bg-blue-600 text-white rounded-md font-medium text-sm transition-colors duration-200 ease-in-out hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed">
+                                Save LLM Settings
+                            </button>
+                        </div>
+                    </form>
+                </section>
             </div>
         </main>
     </div>
 
     <script type="module">
-        // Import sidebar loading functions from app-ui.js
         import { loadSidebarHTML, populateSessionList } from '/static/js/app-ui.js';
 
         document.addEventListener('DOMContentLoaded', async () => {
             console.log("Settings Page: DOMContentLoaded.");
 
-            // Load the sidebar
             const sidebarLoaded = await loadSidebarHTML('/static/_sidebar.html', 'sidebar-loader-target');
             if (sidebarLoaded) {
                 await populateSessionList('/api/sessions', 'session-list', '/chat/');
@@ -185,103 +161,73 @@
                 console.error("Settings Page: Sidebar loading failed.");
             }
 
-            // --- General DOM Elements ---
             const settingsMessageArea = document.getElementById('settings-message-area');
 
-            // Function to display messages
             function showSettingsMessage(message, type = 'info', duration = 0) {
                 settingsMessageArea.textContent = message;
-                settingsMessageArea.className = 'message-area'; // Reset classes
+                settingsMessageArea.className = 'py-3 px-4 rounded-md text-center mb-4 text-sm'; 
                 if (type === 'success') {
-                    settingsMessageArea.classList.add('message-success');
+                    settingsMessageArea.classList.add('bg-green-100', 'text-green-800', 'border', 'border-green-300');
                 } else if (type === 'error') {
-                    settingsMessageArea.classList.add('message-error');
+                    settingsMessageArea.classList.add('bg-red-100', 'text-red-800', 'border', 'border-red-300');
                 } else { 
-                    settingsMessageArea.classList.add('bg-blue-100', 'text-blue-700', 'border-blue-300');
+                    settingsMessageArea.classList.add('bg-blue-100', 'text-blue-700', 'border', 'border-blue-300');
                 }
                 settingsMessageArea.style.display = 'block';
-
                 if (duration > 0) {
-                    setTimeout(() => {
-                        settingsMessageArea.style.display = 'none';
-                    }, duration);
+                    setTimeout(() => { settingsMessageArea.style.display = 'none'; }, duration);
                 }
             }
 
-            // --- User Info Fetching ---
             const currentNameInput = document.getElementById('current-name');
-            const currentEmailInput = document.getElementById('current-email'); // For Change Email form
-
+            const currentEmailInput = document.getElementById('current-email');
             async function fetchCurrentUser() {
                 try {
                     const response = await fetch('/api/me');
                     if (response.ok) {
                         const userData = await response.json();
-                        if (currentNameInput) {
-                            currentNameInput.value = userData.name;
-                        }
-                        if (currentEmailInput) { // Populate current email field
-                            currentEmailInput.value = userData.email;
-                        }
+                        if (currentNameInput) currentNameInput.value = userData.name;
+                        if (currentEmailInput) currentEmailInput.value = userData.email;
                         window.currentUserDetails = userData; 
                     } else {
-                        console.error('Failed to fetch current user details:', response.status);
-                        if (currentNameInput) currentNameInput.value = 'Error loading name';
-                        if (currentEmailInput) currentEmailInput.value = 'Error loading email';
                         showSettingsMessage('Could not load your current user details.', 'error');
+                        if (currentNameInput) currentNameInput.value = 'Error loading';
+                        if (currentEmailInput) currentEmailInput.value = 'Error loading';
                     }
                 } catch (error) {
-                    console.error('Error fetching current user details:', error);
-                    if (currentNameInput) currentNameInput.value = 'Error loading name';
-                    if (currentEmailInput) currentEmailInput.value = 'Error loading email';
                     showSettingsMessage('An error occurred while loading your details.', 'error');
                 }
             }
             await fetchCurrentUser(); 
 
-            // --- Update Name Functionality ---
+            // --- Account Settings Forms ---
             const updateNameForm = document.getElementById('update-name-form');
-            const newNameInput = document.getElementById('new-name');
-            const currentPasswordForNameInput = document.getElementById('current-password-for-name');
-            const updateNameButton = document.getElementById('update-name-button');
-
             if (updateNameForm) {
                 updateNameForm.addEventListener('submit', async (event) => {
                     event.preventDefault();
                     settingsMessageArea.style.display = 'none'; 
+                    const updateNameButton = document.getElementById('update-name-button');
                     updateNameButton.disabled = true;
                     updateNameButton.textContent = 'Updating...';
-                    // ... (rest of update name logic as before) ...
-                    const newName = newNameInput.value;
-                    const currentPassword = currentPasswordForNameInput.value;
+                    const newName = document.getElementById('new-name').value;
+                    const currentPassword = document.getElementById('current-password-for-name').value;
 
-                    if (!newName.trim() || !currentPassword) {
-                        showSettingsMessage('New name and current password are required.', 'error');
-                        updateNameButton.disabled = false;
-                        updateNameButton.textContent = 'Update Name';
-                        return;
-                    }
                     try {
                         const response = await fetch('/api/me/update-name', {
                             method: 'PATCH',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                new_name: newName,
-                                current_password: currentPassword
-                            })
+                            body: JSON.stringify({ new_name: newName, current_password: currentPassword })
                         });
                         const result = await response.json();
                         if (response.ok) {
                             showSettingsMessage(result.message || 'Name updated successfully!', 'success', 3000);
                             if (currentNameInput) currentNameInput.value = result.new_name;
-                            currentPasswordForNameInput.value = '';
-                            newNameInput.value = ''; 
-                            // No need to call fetchCurrentUser() again just for name, it's updated locally.
+                            document.getElementById('current-password-for-name').value = '';
+                            document.getElementById('new-name').value = ''; 
                         } else {
                             showSettingsMessage(result.detail || 'Failed to update name.', 'error');
                         }
                     } catch (error) {
-                        console.error('Error updating name:', error);
                         showSettingsMessage('An error occurred. Please try again.', 'error');
                     } finally {
                         updateNameButton.disabled = false;
@@ -289,86 +235,51 @@
                     }
                 });
             }
-
-            // --- Update Email Functionality ---
+            
             const updateEmailForm = document.getElementById('update-email-form');
-            const newEmailInput = document.getElementById('new-email');
-            const currentPasswordForEmailInput = document.getElementById('current-password-for-email');
-            const updateEmailButton = document.getElementById('update-email-button');
-
             if (updateEmailForm) {
                 updateEmailForm.addEventListener('submit', async (event) => {
                     event.preventDefault();
                     settingsMessageArea.style.display = 'none';
+                    const updateEmailButton = document.getElementById('update-email-button');
                     updateEmailButton.disabled = true;
                     updateEmailButton.textContent = 'Updating Email...';
-
-                    const newEmail = newEmailInput.value;
-                    const currentPassword = currentPasswordForEmailInput.value;
-
-                    if (!newEmail.trim() || !currentPassword) {
-                        showSettingsMessage('New email and current password are required.', 'error');
-                        updateEmailButton.disabled = false;
-                        updateEmailButton.textContent = 'Update Email Address';
-                        return;
-                    }
+                    const newEmail = document.getElementById('new-email').value;
+                    const currentPassword = document.getElementById('current-password-for-email').value;
 
                     try {
                         const response = await fetch('/api/me/update-email', {
                             method: 'PATCH',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                new_email: newEmail,
-                                current_password: currentPassword
-                            })
+                            body: JSON.stringify({ new_email: newEmail, current_password: currentPassword })
                         });
                         const result = await response.json();
-
                         if (response.ok) {
                             showSettingsMessage(result.message || 'Email updated. Logging out...', 'success');
-                            // Clear fields
-                            newEmailInput.value = '';
-                            currentPasswordForEmailInput.value = '';
-                            // Redirect to logout after a delay
-                            setTimeout(() => {
-                                window.location.href = '/logout';
-                            }, 4000); // 4 seconds delay
+                            setTimeout(() => { window.location.href = '/logout'; }, 4000);
                         } else {
                             showSettingsMessage(result.detail || 'Failed to update email.', 'error');
                             updateEmailButton.disabled = false;
                             updateEmailButton.textContent = 'Update Email Address';
                         }
                     } catch (error) {
-                        console.error('Error updating email:', error);
-                        showSettingsMessage('An error occurred while updating your email. Please try again.', 'error');
+                        showSettingsMessage('An error occurred. Please try again.', 'error');
                         updateEmailButton.disabled = false;
                         updateEmailButton.textContent = 'Update Email Address';
                     }
-                    // Note: Button remains disabled on success because user will be logged out.
                 });
             }
 
-
-            // --- Regenerate Password Functionality ---
             const regeneratePasswordForm = document.getElementById('regenerate-password-form');
-            const currentPasswordForRegenInput = document.getElementById('current-password-for-regen');
-            const regeneratePasswordButton = document.getElementById('regenerate-password-button');
-
             if (regeneratePasswordForm) {
                 regeneratePasswordForm.addEventListener('submit', async (event) => {
                     event.preventDefault();
                     settingsMessageArea.style.display = 'none';
+                    const regeneratePasswordButton = document.getElementById('regenerate-password-button');
                     regeneratePasswordButton.disabled = true;
                     regeneratePasswordButton.textContent = 'Regenerating...';
-                    // ... (rest of regenerate password logic as before) ...
-                    const currentPassword = currentPasswordForRegenInput.value;
+                    const currentPassword = document.getElementById('current-password-for-regen').value;
 
-                    if (!currentPassword) {
-                        showSettingsMessage('Current password is required to regenerate.', 'error');
-                        regeneratePasswordButton.disabled = false;
-                        regeneratePasswordButton.textContent = 'Regenerate Password & Send Email';
-                        return;
-                    }
                     try {
                         const response = await fetch('/api/me/regenerate-password', {
                             method: 'POST',
@@ -378,23 +289,202 @@
                         const result = await response.json();
                         if (response.ok) {
                             showSettingsMessage(result.message || 'Password regenerated. Check email. Logging out...', 'success');
-                            currentPasswordForRegenInput.value = '';
-                            setTimeout(() => {
-                                window.location.href = '/logout'; 
-                            }, 4000); 
+                            setTimeout(() => { window.location.href = '/logout'; }, 4000);
                         } else {
                             showSettingsMessage(result.detail || 'Failed to regenerate password.', 'error');
                             regeneratePasswordButton.disabled = false;
                             regeneratePasswordButton.textContent = 'Regenerate Password & Send Email';
                         }
                     } catch (error) {
-                        console.error('Error regenerating password:', error);
-                        showSettingsMessage('An error occurred while regenerating password. Please try again.', 'error');
+                        showSettingsMessage('An error occurred. Please try again.', 'error');
                         regeneratePasswordButton.disabled = false;
                         regeneratePasswordButton.textContent = 'Regenerate Password & Send Email';
                     }
                 });
             }
+
+            // --- LLM Settings Functionality ---
+            const llmProviderSelect = document.getElementById('llm-provider');
+            const llmModelSelect = document.getElementById('llm-model');
+            const llmApiKeyGroup = document.getElementById('llm-api-key-group');
+            const llmApiKeyInput = document.getElementById('llm-api-key');
+            const llmApiKeyStatus = document.getElementById('llm-api-key-status');
+            const llmBaseUrlGroup = document.getElementById('llm-base-url-group');
+            const llmBaseUrlInput = document.getElementById('llm-base-url');
+            const llmProviderStatus = document.getElementById('llm-provider-status');
+            const saveLLMSettingsButton = document.getElementById('save-llm-settings-button');
+            const llmSettingsForm = document.getElementById('llm-settings-form');
+
+            let availableProvidersData = [];
+
+            async function loadLLMConfigData() {
+                try {
+                    const providersResponse = await fetch('/api/llm/providers');
+                    if (!providersResponse.ok) {
+                        showSettingsMessage('Failed to load LLM providers.', 'error');
+                        llmProviderSelect.innerHTML = '<option value="">Error loading</option>';
+                        return;
+                    }
+                    availableProvidersData = await providersResponse.json();
+                    
+                    const userSettingsResponse = await fetch('/api/me/llm-settings');
+                    const currentUserLLMSettings = userSettingsResponse.ok ? await userSettingsResponse.json() : {};
+                    if (!userSettingsResponse.ok) {
+                         showSettingsMessage('Failed to load your LLM settings. Defaults may be shown.', 'error');
+                    }
+
+                    populateLLMProviders(currentUserLLMSettings.selected_llm_provider_id);
+                    llmProviderSelect.dispatchEvent(new Event('change')); 
+                    if (currentUserLLMSettings.selected_llm_provider_id && currentUserLLMSettings.selected_llm_model_id) {
+                        updateModelDropdown(currentUserLLMSettings.selected_llm_provider_id, currentUserLLMSettings.selected_llm_model_id);
+                    }
+                     updateProviderSpecificFields(currentUserLLMSettings.selected_llm_provider_id, currentUserLLMSettings);
+                } catch (error) {
+                    console.error("Error loading LLM config:", error);
+                    showSettingsMessage('Error loading LLM configuration.', 'error');
+                }
+            }
+
+            function populateLLMProviders(currentProviderId) {
+                llmProviderSelect.innerHTML = '<option value="">-- Select Provider --</option>';
+                availableProvidersData.forEach(provider => {
+                    if (provider.is_system_configured || !provider.requires_api_key || (provider.requires_api_key && !provider.is_system_configured)) {
+                        const option = document.createElement('option');
+                        option.value = provider.id;
+                        option.textContent = provider.display_name;
+                        if (provider.id === currentProviderId) {
+                            option.selected = true;
+                        }
+                        llmProviderSelect.appendChild(option);
+                    }
+                });
+            }
+
+            function updateModelDropdown(providerId, currentModelId) {
+                llmModelSelect.innerHTML = '<option value="">-- Select Model --</option>';
+                const selectedProvider = availableProvidersData.find(p => p.id === providerId);
+
+                if (selectedProvider && selectedProvider.available_models && selectedProvider.available_models.length > 0) {
+                    selectedProvider.available_models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.model_id;
+                        option.textContent = `${model.display_name} (${model.model_id.substring(0,20)}${model.model_id.length > 20 ? '...' : ''})`;
+                        if (model.model_id === currentModelId) {
+                            option.selected = true;
+                        }
+                        llmModelSelect.appendChild(option);
+                    });
+                } else if (providerId) {
+                     llmModelSelect.innerHTML = '<option value="">No models available</option>';
+                }
+            }
+
+            function updateProviderSpecificFields(providerId, userSettings = {}) {
+                const selectedProvider = availableProvidersData.find(p => p.id === providerId);
+                llmProviderStatus.textContent = '';
+                llmApiKeyStatus.textContent = '';
+                llmApiKeyInput.value = ''; 
+                llmBaseUrlInput.value = ''; 
+
+                if (selectedProvider) {
+                    if (selectedProvider.requires_api_key) {
+                        llmApiKeyGroup.style.display = 'block';
+                        if (userSettings.has_user_api_key && providerId === userSettings.selected_llm_provider_id) {
+                            llmApiKeyInput.placeholder = "API Key is set (leave empty to keep)";
+                            llmApiKeyStatus.textContent = "An API key is saved for this provider. Enter a new key to change, or leave empty to keep it. Send an empty value to clear.";
+                        } else if (selectedProvider.is_system_configured) {
+                             llmApiKeyInput.placeholder = "API Key (Optional - System key available)";
+                             llmApiKeyStatus.textContent = "A system API key is configured. You can provide your own to override it.";
+                        } else { 
+                            llmApiKeyInput.placeholder = "Enter API Key (Required)";
+                            llmApiKeyStatus.textContent = "This provider requires you to enter an API key.";
+                        }
+                    } else {
+                        llmApiKeyGroup.style.display = 'none';
+                    }
+
+                    if (selectedProvider.type === 'openai_compatible' || selectedProvider.type === 'ollama') {
+                        llmBaseUrlGroup.style.display = 'block';
+                        if (providerId === userSettings.selected_llm_provider_id && userSettings.selected_llm_base_url) {
+                           llmBaseUrlInput.value = userSettings.selected_llm_base_url;
+                        }
+                        llmBaseUrlInput.placeholder = selectedProvider.type === 'ollama' ? "e.g., http://localhost:11434 (uses system default if empty)" : "e.g., https://api.example.com/v1";
+                    } else {
+                        llmBaseUrlGroup.style.display = 'none';
+                    }
+
+                    if (selectedProvider.is_system_configured && !selectedProvider.requires_api_key) {
+                        llmProviderStatus.textContent = "System-configured and ready.";
+                    } else if (selectedProvider.is_system_configured && selectedProvider.requires_api_key) {
+                        llmProviderStatus.textContent = "System-configured (API key in ENV). You can override with your own key.";
+                    } else if (!selectedProvider.is_system_configured && selectedProvider.requires_api_key) {
+                        llmProviderStatus.textContent = "Requires your API key.";
+                    } else {
+                         llmProviderStatus.textContent = "Select a provider to see configuration options.";
+                    }
+                } else { 
+                    llmApiKeyGroup.style.display = 'none';
+                    llmBaseUrlGroup.style.display = 'none';
+                    llmProviderStatus.textContent = "Select a provider.";
+                }
+            }
+
+            llmProviderSelect.addEventListener('change', async (event) => {
+                const selectedProviderId = event.target.value;
+                let currentUserLLMSettings = {};
+                try {
+                    const userSettingsResponse = await fetch('/api/me/llm-settings');
+                    currentUserLLMSettings = userSettingsResponse.ok ? await userSettingsResponse.json() : {};
+                } catch (e) { console.error("Could not fetch user settings on provider change", e); }
+                
+                updateModelDropdown(selectedProviderId, (selectedProviderId === currentUserLLMSettings.selected_llm_provider_id) ? currentUserLLMSettings.selected_llm_model_id : null);
+                updateProviderSpecificFields(selectedProviderId, currentUserLLMSettings);
+            });
+
+            llmSettingsForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                saveLLMSettingsButton.disabled = true;
+                saveLLMSettingsButton.textContent = 'Saving...';
+                settingsMessageArea.style.display = 'none';
+
+                const providerId = llmProviderSelect.value;
+                const modelId = llmModelSelect.value;
+                const apiKey = llmApiKeyGroup.style.display !== 'none' ? llmApiKeyInput.value : undefined;
+                const baseUrl = llmBaseUrlGroup.style.display !== 'none' ? llmBaseUrlInput.value : undefined;
+
+                const payload = {
+                    selected_llm_provider_id: providerId || null,
+                    selected_llm_model_id: modelId || null,
+                };
+                if (apiKey !== undefined) { 
+                    payload.user_llm_api_key = apiKey; 
+                }
+                if (baseUrl !== undefined) { 
+                    payload.selected_llm_base_url = baseUrl || null; 
+                }
+                
+                try {
+                    const response = await fetch('/api/me/llm-settings', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const result = await response.json();
+                    if (response.ok) {
+                        showSettingsMessage('LLM settings saved successfully!', 'success', 3000);
+                        await loadLLMConfigData(); 
+                    } else {
+                        showSettingsMessage(result.detail || 'Failed to save LLM settings.', 'error');
+                    }
+                } catch (error) {
+                    console.error("Error saving LLM settings:", error);
+                    showSettingsMessage('An error occurred while saving LLM settings.', 'error');
+                } finally {
+                    saveLLMSettingsButton.disabled = false;
+                    saveLLMSettingsButton.textContent = 'Save LLM Settings';
+                }
+            });
+            await loadLLMConfigData();
         });
     </script>
 </body>

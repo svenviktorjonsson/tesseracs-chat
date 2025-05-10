@@ -3877,62 +3877,57 @@ async def get_chat_page_for_session(
     # Consider passing session_name or user_name to the template if needed
     return FileResponse(chat_html_path)
 
-
 async def handle_chat_message(
-    chain: Any,                     # Your LangChain chain
-    memory: Any,                    # The conversation memory object
+    chain: Any,                     
+    memory: Any,                    
     websocket: WebSocket,
-    client_js_id: str,              # Unique ID for the JS client instance
-    current_user: Dict[str, Any],   # Authenticated user details
-    session_id: str,                # The ID of the chat session
+    client_js_id: str,              
+    current_user: Dict[str, Any],   
+    session_id: str,                
     user_input: str,
-    turn_id: int                    # <<< NEW: The turn ID from the frontend
+    turn_id: int                    
 ):
-    """
-    Handles processing a chat message with the LLM, streaming the response,
-    and allowing the stream to be stopped.
-    """
     user_name = current_user.get('name', 'User')
     user_db_id = current_user['id']
     full_response = ""
-    thinking_content = None # Placeholder for future
+    thinking_content = None 
     
-    # --- MODIFIED: Create a unique stream ID and register for stopping ---
-    stream_id = f"{client_js_id}_{turn_id}" # Use client_js_id and frontend's turn_id
-    stop_event: asyncio.Event = None # Initialize to None
+    stream_id = f"{client_js_id}_{turn_id}" 
+    stop_event: asyncio.Event = None 
 
+    # --- Log User Message Saving ---
     db_conn_user_msg = None
     try:
-        # Save user message to DB (existing logic)
+        print(f"DB ATTEMPT: Saving user message for session {session_id}, turn {turn_id}...")
         db_conn_user_msg = database.get_db_connection()
         db_cursor_user_msg = db_conn_user_msg.cursor()
         db_cursor_user_msg.execute(
-            """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, client_id_temp)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (session_id, user_db_id, user_name, 'user', user_input, client_js_id)
+            """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, client_id_temp, turn_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, user_db_id, user_name, 'user', user_input, client_js_id, turn_id)
         )
+        print(f"DB PRE-COMMIT: User message executed for session {session_id}, turn {turn_id}.")
         db_conn_user_msg.commit()
+        print(f"DB SUCCESS: User message saved and committed for session {session_id}, turn {turn_id}.")
     except Exception as db_err:
         print(f"DB ERROR saving user message for session {session_id} (client {client_js_id}, turn {turn_id}): {db_err}")
+        traceback.print_exc() 
         if db_conn_user_msg: db_conn_user_msg.rollback()
     finally:
         if db_conn_user_msg: db_conn_user_msg.close()
 
+    # --- Main Streaming and AI Response Saving Block ---
     try:
-        # --- MODIFIED: Register stream and get stop_event ---
         stop_event = await state.register_ai_stream(stream_id)
         print(f"AI STREAM (handle_chat_message): Starting stream {stream_id} for session {session_id}")
 
-        # Stream response using the chain
         async for chunk_data in chain.astream({"input": user_input}):
-            # --- MODIFIED: Check stop_event in the loop ---
             if stop_event.is_set():
                 print(f"AI STREAM (handle_chat_message): Stop event set for stream {stream_id}. Breaking loop.")
-                break # Exit the streaming loop if stop is signaled
+                break 
 
-            # Extract content (your existing logic for handling chunk_data)
             if isinstance(chunk_data, dict):
-                chunk_str = chunk_data.get("answer", "") # Or your relevant key
+                chunk_str = chunk_data.get("answer", "") 
             else:
                 chunk_str = str(chunk_data)
 
@@ -3942,34 +3937,46 @@ async def handle_chat_message(
             await websocket.send_text(chunk_str)
             full_response += chunk_str
         
-        # --- MODIFIED: Check if loop was broken by stop_event before sending EOS ---
+        print(f"AI STREAM (handle_chat_message): Full response content after stream for turn {turn_id}: '{full_response[:200]}...'") # Log content of full_response
+
         if stop_event.is_set():
-            print(f"AI STREAM (handle_chat_message): Stream {stream_id} was stopped by signal. Not sending EOS from here, frontend will finalize.")
-            # Frontend's finalizeTurnOnErrorOrClose will handle UI. Backend might send EOS in stop_ai_stream handler.
+            print(f"AI STREAM (handle_chat_message): Stream {stream_id} was stopped by signal.")
         elif websocket.client_state == WebSocketState.CONNECTED:
-            await websocket.send_text("<EOS>") # Send End-Of-Stream marker if finished naturally
+            await websocket.send_text("<EOS>") 
             print(f"AI STREAM (handle_chat_message): Finished streaming naturally for stream {stream_id} to session {session_id}")
         
-        # Save context to memory and DB (existing logic)
+        # Save context to LangChain memory object
+        print(f"MEMORY ATTEMPT: Saving context to LangChain memory object for session {session_id}, turn {turn_id}.")
         memory.save_context({"input": user_input}, {"output": full_response})
-        if hasattr(state, 'save_memory_state_to_db'): # Check if function exists
+        print(f"MEMORY SUCCESS: Context saved to LangChain memory object for session {session_id}, turn {turn_id}.")
+
+        # Persist LangChain memory state to DB
+        if hasattr(state, 'save_memory_state_to_db'): 
+            print(f"MEMORY DB ATTEMPT: Saving memory state to DB for session {session_id}, turn {turn_id}.")
             try:
-                state.save_memory_state_to_db(session_id, memory)
+                state.save_memory_state_to_db(session_id, memory) 
+                # Success log for this is expected from state.py's save_memory_state_to_db
             except Exception as save_mem_err:
                 print(f"ERROR saving memory state to DB for session {session_id}: {save_mem_err}")
+                traceback.print_exc() 
         
+        # Save AI message to DB
         db_conn_ai_msg = None
         try:
+            print(f"DB ATTEMPT: Saving AI message for session {session_id}, turn {turn_id}.")
             db_conn_ai_msg = database.get_db_connection()
             db_cursor_ai_msg = db_conn_ai_msg.cursor()
             db_cursor_ai_msg.execute(
-                """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, thinking_content, client_id_temp)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, None, "AI", 'ai', full_response, thinking_content, client_js_id)
+                """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, thinking_content, client_id_temp, turn_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", 
+                (session_id, None, "AI", 'ai', full_response, thinking_content, client_js_id, turn_id)
             )
+            print(f"DB PRE-COMMIT: AI message executed for session {session_id}, turn {turn_id}.")
             db_conn_ai_msg.commit()
+            print(f"DB SUCCESS: AI message saved and committed for session {session_id}, turn {turn_id}.")
         except Exception as db_err:
             print(f"DB ERROR saving AI message for session {session_id} (stream {stream_id}): {db_err}")
+            traceback.print_exc() 
             if db_conn_ai_msg: db_conn_ai_msg.rollback()
         finally:
             if db_conn_ai_msg: db_conn_ai_msg.close()
@@ -3981,16 +3988,12 @@ async def handle_chat_message(
         if websocket.client_state == WebSocketState.CONNECTED:
             try:
                 await websocket.send_text(error_msg)
-                # Also send EOS after error to ensure frontend resets UI properly
                 await websocket.send_text("<EOS>")
             except Exception as send_err:
                 print(f"WS ERROR: Could not send LLM error/EOS to client {client_js_id} for stream {stream_id}: {send_err}")
     finally:
-        # --- MODIFIED: Always unregister the stream ---
-        if stream_id and stop_event: # Ensure stream_id was formed and event exists
+        if stream_id and stop_event: 
             await state.unregister_ai_stream(stream_id)
-            print(f"AI STREAM (handle_chat_message): Stream {stream_id} unregistered for session {session_id}")
-
 
 @app.websocket("/ws/{session_id_ws}/{client_js_id}")
 async def websocket_endpoint(
@@ -4189,7 +4192,6 @@ async def websocket_endpoint(
             except Exception as final_close_err: print(f"{ws_log_prefix} Error during final WebSocket close: {final_close_err}")
         print(f"{ws_log_prefix} Cleanup complete.")
 
-# --- API Routes for Sessions & Messages ---
 
 @app.patch("/api/sessions/{session_id}", response_model=Dict[str, Any], tags=["Sessions"])
 async def rename_session(
@@ -4260,41 +4262,62 @@ async def get_user_sessions(
         if conn: conn.close()
 
 
-@app.get("/api/sessions/{session_id}/messages", response_model=List[Dict[str, Any]], tags=["Messages"])
+@app.get("/api/sessions/{session_id}/messages", response_model=List[models.MessageItem], tags=["Messages"]) # Assuming models.MessageItem exists
 async def get_chat_messages_for_session(
     session_id: str = FastApiPath(..., description="The ID of the session to fetch messages for."),
     user: Dict[str, Any] = Depends(auth.get_current_active_user)
 ):
     """Fetches all messages for a session the user participates in."""
-    if not user: raise HTTPException(status_code=401, detail="Not authenticated")
-    user_id = user['id']; messages_list = []
+    if not user: raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    user_id = user['id']
+    messages_list = []
     conn = None
+    print(f"API (get_messages): Attempting to fetch messages for session {session_id}, user {user_id}.") # <<< ADDED LOG
     try:
-        conn = database.get_db_connection(); cursor = conn.cursor()
-        # Verify session exists and user is participant
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verify session exists and user is participant (existing logic)
         cursor.execute("SELECT 1 FROM sessions WHERE id = ? AND is_active = 1", (session_id,))
-        if not cursor.fetchone(): raise HTTPException(status_code=404, detail="Session not found or inactive.")
+        if not cursor.fetchone(): 
+            print(f"API (get_messages): Session {session_id} not found or inactive.") # <<< ADDED LOG
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or inactive.")
         cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user_id))
-        if not cursor.fetchone(): raise HTTPException(status_code=403, detail="Access denied to this session.")
+        if not cursor.fetchone(): 
+            print(f"API (get_messages): User {user_id} denied access to session {session_id}.") # <<< ADDED LOG
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this session.")
+        
         # Fetch messages
+        print(f"API (get_messages): Executing query for messages in session {session_id}.") # <<< ADDED LOG
         cursor.execute(
-            """SELECT id, session_id, user_id, sender_name, sender_type, content, client_id_temp, thinking_content, timestamp
-               FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC""",
+            """SELECT id, session_id, user_id, sender_name, sender_type, content, client_id_temp, thinking_content, timestamp, turn_id
+               FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC""", # Added turn_id to SELECT
             (session_id,)
         )
         rows = cursor.fetchall()
-        for row in rows: messages_list.append(dict(row))
-        # print(f"API: Fetched {len(messages_list)} messages for session {session_id} for user ID {user_id}") # Verbose
+        print(f"API (get_messages): Fetched {len(rows)} rows from DB for session {session_id}.") # <<< ADDED LOG
+        
+        for row_num, row_data in enumerate(rows):
+            # print(f"API (get_messages): Processing row {row_num + 1}: {dict(row_data)}") # Optional: log each row
+            messages_list.append(dict(row_data))
+            
+        print(f"API (get_messages): Returning {len(messages_list)} messages for session {session_id}.") # <<< ADDED LOG
         return messages_list
+        
     except sqlite3.Error as db_err:
-        print(f"API ERROR (/api/sessions/.../messages): DB error for user {user_id}, session {session_id}: {db_err}"); traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Database error fetching messages.")
-    except HTTPException as http_exc: raise http_exc
+        print(f"API ERROR (get_messages): DB error for user {user_id}, session {session_id}: {db_err}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error fetching messages.")
+    except HTTPException as http_exc: 
+        raise http_exc # Re-raise specific HTTP exceptions
     except Exception as e:
-        print(f"API ERROR (/api/sessions/.../messages): Unexpected error for user {user_id}, session {session_id}: {e}"); traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Server error fetching messages.")
+        print(f"API ERROR (get_messages): Unexpected error for user {user_id}, session {session_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server error fetching messages.")
     finally:
-        if conn: conn.close()
+        if conn: 
+            conn.close()
+            print(f"API (get_messages): DB connection closed for session {session_id}.") # <<< ADDED LOG
 
 
 @app.delete("/api/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Sessions"])
@@ -4469,27 +4492,22 @@ import asyncio
 import json
 import sqlite3
 import datetime
-from langchain.memory import ConversationBufferMemory
+from langchain.memory import ConversationBufferMemory # Ensure this import is correct for your LangChain version
 from langchain_core.messages import messages_from_dict, messages_to_dict
-from typing import Dict, Any, Optional # Added Optional
+from typing import Dict, Any, Optional
 from . import database
+import traceback # For detailed error logging
 
-# In-memory storage for client-specific conversation memory
+# In-memory cache for client-specific conversation memory
 client_memory: Dict[str, ConversationBufferMemory] = {}
 
-# --- MODIFIED: Global state for WebSocket Connections and Running Containers (from your original temp.py) ---
-# This was for Docker code execution, ensure it's still relevant or adapt as needed.
-# For AI stream stopping, we'll add a new structure.
-running_containers: Dict[str, Dict[str, Any]] = {} # For Docker code execution
-running_containers_lock = asyncio.Lock() # Lock for running_containers
+# For managing Docker code execution containers (if still used, otherwise can be removed if Docker utils are separate)
+running_containers: Dict[str, Dict[str, Any]] = {} 
+running_containers_lock = asyncio.Lock()
 
-# --- ADDED: For managing active AI streaming tasks ---
-# Stores asyncio.Event objects for active AI streams, keyed by a unique stream ID (e.g., f"{client_js_id}_{turn_id}")
-# Each event, when set, signals the corresponding AI stream to stop.
+# For managing active AI streaming tasks to allow stopping them
 active_ai_streams: Dict[str, asyncio.Event] = {}
 active_ai_streams_lock = asyncio.Lock() # Lock for safe concurrent access to active_ai_streams
-# --- END OF ADDED ---
-
 
 def get_memory_for_client(session_id: str) -> ConversationBufferMemory:
     """
@@ -4498,6 +4516,7 @@ def get_memory_for_client(session_id: str) -> ConversationBufferMemory:
     """
     global client_memory
     if session_id in client_memory:
+        # Return from in-memory cache if available
         return client_memory[session_id]
 
     # Attempt to load from database
@@ -4518,29 +4537,33 @@ def get_memory_for_client(session_id: str) -> ConversationBufferMemory:
                     # Create a new memory instance
                     memory_instance = ConversationBufferMemory(
                         return_messages=True, 
-                        memory_key="history"
+                        memory_key="history" # Default memory key for ConversationBufferMemory
                     )
                     # Load messages into the new instance
                     loaded_messages = messages_from_dict(memory_data_list)
                     memory_instance.chat_memory.messages = loaded_messages
                     
-                    client_memory[session_id] = memory_instance
+                    client_memory[session_id] = memory_instance # Store in cache
                     print(f"STATE: Memory loaded from DB for session {session_id}")
                     return memory_instance
                 else:
+                    # Log if the stored JSON is not in the expected list format
                     print(f"STATE WARNING: Memory data for session {session_id} is not a list. Creating new memory.")
             except (json.JSONDecodeError, TypeError, Exception) as e:
-                # Catch TypeError if messages_from_dict fails, or other errors
-                print(f"STATE ERROR: Failed to load/parse memory for session {session_id} from DB: {e}. Creating new memory.")
-                # Fall through to create new memory
+                # Catch errors during JSON loading or message reconstruction
+                print(f"STATE ERROR: Failed to load/parse memory for session {session_id} from DB: {e}")
+                traceback.print_exc() # Log full traceback for debugging
+                # Fall through to create new memory if parsing fails
     except sqlite3.Error as db_err:
+        # Catch database errors during the query
         print(f"STATE DB ERROR: Could not query session_memory_state for session {session_id}: {db_err}")
-        # Fall through to create new memory
+        traceback.print_exc() # Log full traceback
+        # Fall through to create new memory if DB query fails
     finally:
         if conn:
             conn.close()
 
-    # If not found in cache or DB, or if loading failed, create new memory
+    # If not found in cache or DB, or if loading failed, create and cache new memory
     print(f"STATE: Creating new memory for session {session_id}")
     new_memory = ConversationBufferMemory(return_messages=True, memory_key="history")
     client_memory[session_id] = new_memory
@@ -4549,22 +4572,26 @@ def get_memory_for_client(session_id: str) -> ConversationBufferMemory:
 def save_memory_state_to_db(session_id: str, memory: Optional[ConversationBufferMemory]):
     """
     Saves the current state of the ConversationBufferMemory to the database for a given session_id.
+    Includes detailed logging for debugging.
     """
     if not memory:
-        print(f"STATE WARNING: Attempted to save null memory for session {session_id}. Skipping.")
+        print(f"STATE WARNING (save_memory): Attempted to save null memory for session {session_id}. Skipping.")
         return
 
     conn = None
+    print(f"STATE ATTEMPT (save_memory): Saving memory state to DB for session {session_id}.")
     try:
-        # Get messages from memory and convert to a list of dictionaries
+        # Get messages from LangChain memory object
         messages = memory.chat_memory.messages
-        memory_state_list = messages_to_dict(messages) # Should return List[Dict[str, Any]]
-        memory_state_json = json.dumps(memory_state_list) # Serialize the list of dicts
+        # Convert messages to a list of dictionaries suitable for JSON serialization
+        memory_state_list = messages_to_dict(messages) 
+        memory_state_json = json.dumps(memory_state_list) # Serialize the list to a JSON string
         
         current_time_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         conn = database.get_db_connection()
         cursor = conn.cursor()
+        print(f"STATE PRE-EXECUTE (save_memory): About to execute INSERT OR REPLACE for session {session_id}.")
         cursor.execute(
             """
             INSERT OR REPLACE INTO session_memory_state 
@@ -4573,16 +4600,28 @@ def save_memory_state_to_db(session_id: str, memory: Optional[ConversationBuffer
             """,
             (session_id, memory_state_json, current_time_utc)
         )
+        print(f"STATE POST-EXECUTE (save_memory): SQL executed for session {session_id}.")
         conn.commit()
-        # print(f"STATE: Memory saved to DB for session {session_id}") # Can be verbose
-    except (json.JSONDecodeError, sqlite3.Error, Exception) as e:
-        # Catch potential errors during serialization or DB operation
-        print(f"STATE ERROR: Failed to save memory state to DB for session {session_id}: {e}")
+        print(f"STATE SUCCESS (save_memory): Memory saved and committed to DB for session {session_id}.")
+    except json.JSONDecodeError as json_err: 
+        print(f"STATE JSON ERROR (save_memory): Failed to serialize memory for session {session_id}: {json_err}")
+        traceback.print_exc()
+        if conn:
+            conn.rollback()
+    except sqlite3.Error as db_err: 
+        print(f"STATE DB ERROR (save_memory): Failed to save memory state to DB for session {session_id}: {db_err}")
+        traceback.print_exc()
+        if conn:
+            conn.rollback()
+    except Exception as e: 
+        print(f"STATE UNEXPECTED ERROR (save_memory): Failed to save memory state for session {session_id}: {e}")
+        traceback.print_exc()
         if conn:
             conn.rollback()
     finally:
         if conn:
             conn.close()
+            print(f"STATE FINALLY (save_memory): DB connection closed for session {session_id}.")
 
 def remove_memory_for_client(session_id: str):
     """Removes memory for a specific session_id from the in-memory cache."""
@@ -4591,15 +4630,13 @@ def remove_memory_for_client(session_id: str):
         del client_memory[session_id]
         print(f"STATE: Memory removed from cache for session {session_id}")
 
-# --- ADDED: Functions to manage AI stream stop events ---
+# --- Functions to manage AI stream stop events ---
 async def register_ai_stream(stream_id: str) -> asyncio.Event:
     """
     Registers a new AI stream and returns an event to signal its stopping.
     """
     async with active_ai_streams_lock:
         if stream_id in active_ai_streams:
-            # This case should ideally be handled (e.g., stop previous before starting new)
-            # or ensure stream_ids are unique enough (e.g., include a UUID).
             print(f"STATE WARNING: Stream ID {stream_id} already registered. Overwriting stop event.")
         stop_event = asyncio.Event()
         active_ai_streams[stream_id] = stop_event
@@ -4617,9 +4654,10 @@ async def unregister_ai_stream(stream_id: str):
         else:
             print(f"STATE WARNING: Attempted to unregister non-existent AI stream {stream_id}.")
 
-async def signal_stop_ai_stream(stream_id: str):
+async def signal_stop_ai_stream(stream_id: str) -> bool:
     """
     Sets the stop event for a given AI stream ID, if it exists.
+    Returns True if signaled, False otherwise.
     """
     async with active_ai_streams_lock:
         stop_event = active_ai_streams.get(stream_id)
@@ -4630,7 +4668,6 @@ async def signal_stop_ai_stream(stream_id: str):
         else:
             print(f"STATE WARNING: Attempted to signal stop for non-existent AI stream {stream_id}.")
             return False
-# --- END OF ADDED ---
 
 
 === app/utils.py ===
@@ -5369,87 +5406,8 @@ function setCursorPosition(parentElement, offset) {
     parentElement.focus();
 }
 
-/**
- * Fetches the list of user sessions from the API and displays them in the sidebar.
- */
-async function fetchAndDisplaySessions() {
-    console.log("[fetchAndDisplaySessions] Function called."); // Log: Start of function
 
-    const sessionListElement = document.getElementById('session-list');
-    const chatSessionTitle = document.getElementById('chat-session-title');
 
-    if (!sessionListElement) {
-        console.log("[fetchAndDisplaySessions] Session list element (#session-list) not found. Exiting.");
-        return;
-    }
-
-    console.log("[fetchAndDisplaySessions] Setting loading state.");
-    sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">Loading sessions...</li>';
-
-    try {
-        console.log("[fetchAndDisplaySessions] Making fetch request to /api/sessions...");
-        const response = await fetch('/api/sessions');
-        console.log(`[fetchAndDisplaySessions] Fetch response status: ${response.status}`); // Log: Response status
-
-        if (!response.ok) {
-            let errorDetail = `HTTP error ${response.status}`;
-            try {
-                const errorJson = await response.json();
-                errorDetail = errorJson.detail || errorDetail;
-            } catch (e) { /* Ignore */ }
-            console.error(`[fetchAndDisplaySessions] Error fetching sessions: ${errorDetail}`);
-            sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
-            return;
-        }
-
-        const sessions = await response.json();
-        console.log("[fetchAndDisplaySessions] Received sessions:", sessions); // Log: The received data
-
-        sessionListElement.innerHTML = ''; // Clear loading/error
-
-        if (sessions.length === 0) {
-            console.log("[fetchAndDisplaySessions] No sessions found. Displaying message.");
-            sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">No sessions yet</li>';
-        } else {
-            console.log(`[fetchAndDisplaySessions] Processing ${sessions.length} sessions...`);
-            const activeSessionId = getSessionIdFromPath(); // Assumes getSessionIdFromPath() exists and works
-            console.log(`[fetchAndDisplaySessions] Current active session ID from path: ${activeSessionId}`);
-
-            sessions.forEach((session, index) => {
-                // console.log(`[fetchAndDisplaySessions] Adding session ${index + 1}: ID=${session.id}, Name=${session.name}`); // Optional: Log each session
-                const li = document.createElement('li');
-                const a = document.createElement('a');
-                a.href = `/chat/${session.id}`;
-                a.classList.add('block', 'px-3', 'py-2', 'rounded-md', 'text-sm', 'text-gray-300', 'hover:bg-gray-700', 'hover:text-white', 'truncate');
-
-                if (session.id === activeSessionId) {
-                    // console.log(`[fetchAndDisplaySessions] Highlighting active session: ${session.id}`);
-                    a.classList.add('bg-gray-900', 'text-white');
-                    a.setAttribute('aria-current', 'page');
-                    if (chatSessionTitle) {
-                        chatSessionTitle.textContent = session.name || `Chat Session ${session.id.substring(0, 4)}`;
-                    }
-                }
-
-                a.textContent = session.name || `Session ${session.id.substring(0, 8)}`;
-                a.title = session.name || `Session ${session.id}`;
-
-                // Placeholder for Rename/Delete buttons
-                // const iconsSpan = document.createElement('span');
-                // iconsSpan.innerHTML = `...`;
-                // a.appendChild(iconsSpan);
-
-                li.appendChild(a);
-                sessionListElement.appendChild(li);
-            });
-            console.log("[fetchAndDisplaySessions] Finished processing sessions.");
-        }
-
-    } catch (error) {
-        console.error("[fetchAndDisplaySessions] Failed to fetch or display sessions:", error);
-        sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
-    }
-}
 
 function addUserMessage(text) {
     // Ensure chatHistory and messageInput elements exist to prevent errors
@@ -5560,10 +5518,7 @@ function setInputDisabledState(inputsDisabled, aiResponding) {
     }
 }
 
-/**
- * Sets up the DOM structure for a new turn from the AI, including thinking area,
- * answer bubble (with sender name), and code blocks area.
- */
+
 function setupNewAiTurn() {
     currentTurnId++;
     codeBlockCounterThisTurn = 0;
@@ -5656,16 +5611,6 @@ function setupNewAiTurn() {
     console.log(`[setupNewAiTurn] Finished setup for Turn ID: ${currentTurnId}.`);
 }
 
-// You'll also need to adjust `appendToAnswer` and `formatAnswerBubbleFinal`
-// to target the `liveContentDiv` within `currentAnswerElement` for the actual message content,
-// instead of `currentAnswerElement` directly, to keep the sender name and future timestamp separate.
-
-// Example adjustment for appendToAnswer (conceptual):
-// Original: currentAnswerElement.appendChild(node);
-// New: const targetContentArea = currentAnswerElement.querySelector('.live-ai-content-area');
-//      if (targetContentArea) targetContentArea.appendChild(node); else currentAnswerElement.appendChild(node);
-// Similar logic for text nodes and for formatAnswerBubbleFinal's innerHTML operations.
-
 
 function appendRawTextToThinkingArea(text) {
     if (text && text.trim().length > 0) {
@@ -5726,10 +5671,7 @@ function appendCodeReference() {
     }
 }
 
-/**
- * Finalizes the AI answer bubble content with Markdown and KaTeX processing.
- * Targets the specific content div within the answer bubble.
- */
+
 function formatAnswerBubbleFinal() {
     if (!currentAnswerElement) {
         console.warn("[formatAnswerBubbleFinal] Skipping: currentAnswerElement is null.");
@@ -5867,7 +5809,6 @@ function formatAnswerBubbleFinal() {
     lastAppendedNode = null; // Reset for the next stream
     // firstAnswerTokenReceived remains true.
 }
-
 
 function resetStreamingState() {
     // console.log("[DEBUG] Resetting streaming state.");
@@ -6020,11 +5961,6 @@ function finalizeTurnOnErrorOrClose() {
     }
 }
 
-/**
- * Creates the DOM structure for a new, live code block being streamed.
- * Hides the run button for unsupported languages.
- * @param {string} language - The language specified after the opening ``` fence.
- */
 function createCodeBlockStructure(language) {
     if (!currentCodeBlocksArea) {
         console.error("createCodeBlockStructure: Code blocks area is null!");
@@ -6315,11 +6251,7 @@ function addCodeOutput(outputPreElement, streamType, text) {
     outputPreElement.scrollTop = outputPreElement.scrollHeight;
 }
 
-/**
- * Appends text content to the currently active code block element 
- * and triggers debounced syntax highlighting.
- * @param {string} text - The text chunk to append.
- */
+
 function appendToCodeBlock(text) {
     // Ensure we have a target code element to append to
     if (currentCodeBlockElement) {
@@ -6353,12 +6285,7 @@ function appendToCodeBlock(text) {
     }
 }
 
-/**
- * Appends text or a DOM node to the current AI's answer area.
- * Targets the specific content div within the answer bubble.
- * @param {string | null} text - Text to append.
- * @param {Node | null} node - DOM node to append.
- */
+
 function appendToAnswer(text = null, node = null) {
     if (!currentAnswerElement) {
         console.error("[appendToAnswer] currentAnswerElement is null. Cannot append.");
@@ -6445,12 +6372,6 @@ function appendToAnswer(text = null, node = null) {
 }
 
 
-/**
- * Finalizes the currently active code block, performing a final, 
- * non-debounced syntax highlight to ensure completeness.
- * Resets code block streaming state variables.
- * @param {boolean} isTruncated - Indicates if the stream ended unexpectedly (e.g., via EOS).
- */
 function finalizeCodeBlock(isTruncated = false) {
     // Check if there is an active code block element being processed
     if (currentCodeBlockElement) {
@@ -6502,7 +6423,6 @@ function finalizeCodeBlock(isTruncated = false) {
     // fenceBuffer should also be reset if it's tracked globally and related
     // fenceBuffer = ''; 
 }
-
 
 function resetAllCodeButtonsOnErrorOrClose() {
     console.log("Resetting all code run/stop buttons and statuses due to connection issue.");
@@ -7036,11 +6956,6 @@ function connectWebSocket() {
     }
 }
 
-// --- Utility Functions --- 
-// (debounce function)
-// (throttle function defined above)
-
-// Throttled function for highlighting the streaming code block
 let throttledStreamHighlight = throttle(() => {
     // Optional: Keep logs to verify throttling
     console.log(">>> throttledStreamHighlight: Attempting highlight..."); 
@@ -7066,34 +6981,6 @@ let throttledStreamHighlight = throttle(() => {
 // Throttle limit in milliseconds (e.g., run at most once every 250ms)
 }, 250); // Adjust limit as needed (e.g., 200-500ms) 
 
-// --- End Utility Functions ---
-
-let debouncedStreamHighlight = debounce(() => {
-    // --- ADDED LOGGING ---
-    console.log(">>> debouncedStreamHighlight: Fired!"); 
-    console.log(`>>> debouncedStreamHighlight: currentProcessingMode = ${currentProcessingMode}`);
-    console.log(">>> debouncedStreamHighlight: currentCodeBlockElement =", currentCodeBlockElement);
-    // --- END OF ADDED LOGGING ---
-
-    // Check if we are currently inside a code block being streamed
-    if (currentCodeBlockElement && currentProcessingMode === MODE_INSIDE_CODE_BLOCK) {
-        console.log(">>> debouncedStreamHighlight: Conditions met. Attempting highlight."); // Log attempt
-        try {
-            // Check if Prism and highlightElement are available
-            if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-                console.log(">>> debouncedStreamHighlight: Prism.highlightElement found. Calling..."); // Log before call
-                Prism.highlightElement(currentCodeBlockElement);
-                console.log(">>> debouncedStreamHighlight: Prism.highlightElement call completed."); // Log after call
-            } else {
-                console.warn(">>> debouncedStreamHighlight: Prism.js or Prism.highlightElement not available!");
-            }
-        } catch (e) {
-            console.error(">>> debouncedStreamHighlight: Error during highlight:", e, currentCodeBlockElement);
-        }
-    } else {
-         console.log(">>> debouncedStreamHighlight: Conditions NOT met. Skipping highlight."); 
-    }
-}, 300); // Keep your debounce delay (e.g., 300ms)
 
 // Helper function to escape HTML to prevent XSS where markdown is not intended.
 function escapeHTML(str) {
@@ -7106,15 +6993,7 @@ function escapeHTML(str) {
         .replace(/'/g, '&#039;');
 }
 
-/**
- * Renders a single message object (from history) into the chat history UI.
- * Handles user, system, and AI messages, including complex rendering for AI messages
- * (thinking area, code blocks, KaTeX, and Markdown).
- * Strips NO_THINK_PREFIX from historical user messages.
- * @param {object} msg - The message object from the database.
- * @param {HTMLElement} chatHistoryDiv - The main chat history container element.
- * @param {boolean} isHistory - Flag indicating if the message is from loaded history.
- */
+
 function renderSingleMessage(msg, chatHistoryDiv, isHistory = false) {
     // Ensure essential parameters and libraries are available
     if (!chatHistoryDiv || !msg) {
@@ -7388,12 +7267,6 @@ function renderSingleMessage(msg, chatHistoryDiv, isHistory = false) {
 }
 
 
-
-
-/**
- * Fetches chat history for the current session and displays it.
- * @param {string} sessionId - The ID of the current chat session.
- */
 async function loadAndDisplayChatHistory(sessionId) {
     const chatHistoryDiv = document.getElementById('chat-history');
     if (!chatHistoryDiv) {
@@ -7439,17 +7312,6 @@ async function loadAndDisplayChatHistory(sessionId) {
 }
 
 
-
-/**
- * Creates and appends a display structure for a historical code block,
- * making the code editable, re-highlighting on input, and hiding the
- * run button for unsupported languages.
- * @param {string} language - The language of the code.
- * @param {string} codeContent - The actual code string.
- * @param {string} turnIdSuffix - A unique suffix for element IDs within this historical turn.
- * @param {number} codeBlockIndex - The 1-based index of this code block within the AI turn.
- * @param {HTMLElement} codeBlocksAreaElement - The parent DOM element to append this code block to.
- */
 function createHistoricalCodeBlockDisplay(language, codeContent, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement) {
     // Ensure the target area for code blocks exists
     if (!codeBlocksAreaElement) {
@@ -7664,7 +7526,6 @@ function createHistoricalCodeBlockDisplay(language, codeContent, turnIdSuffix, c
 }
 
 
-// --- User Info Initialization ---
 async function initializeCurrentUser() {
     try {
         const response = await fetch('/api/me');
@@ -7687,11 +7548,150 @@ async function initializeCurrentUser() {
     }
 }
 
-// --- DOMContentLoaded Event Listener ---
+async function fetchAndDisplaySessions() {
+    // This function should be defined in your script.js
+    const sessionListElement = document.getElementById('session-list');
+    const chatSessionTitle = document.getElementById('chat-session-title'); // If you use this to update title
+
+    if (!sessionListElement) {
+        console.error("[fetchAndDisplaySessions] Session list element (#session-list) not found.");
+        return;
+    }
+
+    sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">Loading sessions...</li>';
+
+    try {
+        const response = await fetch('/api/sessions');
+        if (!response.ok) {
+            let errorDetail = `HTTP error ${response.status}`;
+            try {
+                const errorJson = await response.json();
+                errorDetail = errorJson.detail || errorDetail;
+            } catch (e) { /* Ignore JSON parsing error if response is not JSON */ }
+            console.error(`[fetchAndDisplaySessions] Error fetching sessions: ${errorDetail}`);
+            sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
+            return;
+        }
+
+        const sessions = await response.json();
+        sessionListElement.innerHTML = ''; 
+
+        if (sessions.length === 0) {
+            sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">No sessions yet. Click "New Chat".</li>';
+        } else {
+            const activeSessionId = getSessionIdFromPath(); 
+
+            sessions.forEach((session) => {
+                if (!session.id || typeof session.name === 'undefined') { // Check if name is undefined, allow empty string
+                    console.warn('Session object is missing id or name:', session);
+                    return;
+                }
+
+                const listItem = document.createElement('li');
+                // Added group for group-hover effects on the delete button
+                listItem.className = 'flex items-center justify-between pr-2 group hover:bg-gray-700 rounded-md'; 
+
+                const link = document.createElement('a');
+                // Ensure chatPageBaseUrl is defined or use a fixed prefix like /chat/
+                const chatPageBaseUrl = '/chat/'; 
+                const base = chatPageBaseUrl.endsWith('/') ? chatPageBaseUrl : chatPageBaseUrl + '/';
+                link.href = `${base}${session.id}`;
+                
+                // Make link take up available space, truncate text
+                link.className = 'block pl-3 pr-1 py-2 text-gray-300 group-hover:text-white rounded-l-md text-sm truncate flex-grow';
+                
+                let lastActiveDisplay = "Never";
+                if (session.last_active) {
+                    try {
+                        lastActiveDisplay = new Date(session.last_active).toLocaleString();
+                    } catch (e) {
+                        lastActiveDisplay = session.last_active; 
+                    }
+                }
+                link.title = `${session.name || `Session ${session.id.substring(0,4)}...`}\nLast active: ${lastActiveDisplay}`;
+                link.textContent = session.name || `Session ${session.id.substring(0, 8)}`;
+                
+                if (session.id === activeSessionId) {
+                    link.classList.add('bg-gray-900', 'text-white', 'font-semibold');
+                    listItem.classList.remove('hover:bg-gray-700'); // Remove general hover if active
+                    listItem.classList.add('bg-gray-900'); // Highlight the whole li item
+                    if (chatSessionTitle) {
+                        chatSessionTitle.textContent = session.name || `Chat Session ${session.id.substring(0, 4)}`;
+                    }
+                }
+
+                // --- ADDED DELETE BUTTON ---
+                const deleteButton = document.createElement('button');
+                deleteButton.innerHTML = '&#x2715;'; // Cross mark (X)
+                // Styling for visibility on hover of the list item (group-hover)
+                deleteButton.className = 'ml-2 p-1 text-gray-500 hover:text-red-400 focus:outline-none rounded-full hover:bg-gray-600 transition-colors duration-150 ease-in-out text-xs opacity-0 group-hover:opacity-100 focus:opacity-100 flex-shrink-0';
+                deleteButton.title = `Delete session: ${session.name || 'Unnamed Session'}`;
+                
+                deleteButton.onclick = (event) => {
+                    event.stopPropagation(); // Prevent navigating to the session link
+                    event.preventDefault();   // Prevent any default button action
+                    // Call a handler function, passing necessary info
+                    handleDeleteSession(session.id, session.name || `Session ${session.id.substring(0,8)}`);
+                };
+                // --- END OF ADDED DELETE BUTTON ---
+
+                listItem.appendChild(link);
+                listItem.appendChild(deleteButton); // Append the delete button
+                sessionListElement.appendChild(listItem);
+            });
+        }
+    } catch (error) {
+        console.error("[fetchAndDisplaySessions] Failed to fetch or display sessions:", error);
+        sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
+    }
+}
+
+async function handleDeleteSession(sessionId, sessionName) {
+    // This function should be defined in your script.js
+    if (!window.confirm(`Are you sure you want to delete the session "${sessionName}"? This action cannot be undone.`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/sessions/${sessionId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json'
+                // Add authorization headers if your API requires them
+            }
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: "Failed to delete session. Server error." }));
+            console.error(`Failed to delete session ${sessionId}. Status: ${response.status}`, errorData);
+            if(typeof addErrorMessage === 'function') addErrorMessage(`Error deleting session: ${errorData.detail || response.statusText}`);
+            else alert(`Error deleting session: ${errorData.detail || response.statusText}`);
+            return;
+        }
+
+        // Session deleted successfully
+        console.log(`Session ${sessionId} successfully deleted.`);
+        
+        // If the currently viewed session was deleted, redirect to home/dashboard
+        const currentPathSessionId = getSessionIdFromPath();
+        if (currentPathSessionId === sessionId) {
+            window.location.href = '/'; // Redirect to the session choice page
+        } else {
+            // Otherwise, just refresh the session list
+            if (typeof fetchAndDisplaySessions === 'function') {
+                await fetchAndDisplaySessions();
+            }
+        }
+    } catch (error) {
+        console.error('Error during delete session request:', error);
+        if(typeof addErrorMessage === 'function') addErrorMessage('An error occurred while trying to delete the session.');
+        else alert('An error occurred while trying to delete the session. Please check the console.');
+    }
+}
+
+
 document.addEventListener('DOMContentLoaded', async () => {
     await initializeCurrentUser();
-
-    // const listElementCheck = document.getElementById('session-list'); // Not used here
 
     if (typeof setInputDisabledState === 'function') {
         setInputDisabledState(true, false); 
@@ -7702,6 +7702,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             gfm: true, breaks: true, sanitize: false, smartLists: true, smartypants: false,
         });
     }
+
+    if (typeof fetchAndDisplaySessions === 'function') {
+        await fetchAndDisplaySessions();
+    }
+
 
     if (chatForm && messageInput && sendButton && stopAiButton) {
         chatForm.addEventListener('submit', (event) => {
@@ -7760,15 +7765,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }));
             stopAiButton.disabled = true;
-            stopAiButton.innerHTML = `
-                <svg class="animate-spin h-5 w-5 mr-1 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Stopping...`;
+            // The text/icon will be reset by finalizeTurnOnErrorOrClose -> setInputDisabledState
             
             if (typeof finalizeTurnOnErrorOrClose === 'function') {
-                finalizeTurnOnErrorOrClose();
+                finalizeTurnOnErrorOrClose(); 
             }
         });
 
@@ -7781,7 +7781,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const currentSessionId = (typeof getSessionIdFromPath === 'function') ? getSessionIdFromPath() : null;
     if (currentSessionId) {
         if (typeof loadAndDisplayChatHistory === 'function') { 
-            // await loadAndDisplayChatHistory(currentSessionId); // Assuming this function exists
+            await loadAndDisplayChatHistory(currentSessionId); 
         }
         if (typeof connectWebSocket === 'function') {
             connectWebSocket();

@@ -1,6 +1,35 @@
 # app/models.py
-from pydantic import BaseModel, Field, EmailStr, StringConstraints # Removed constr, Added StringConstraints
-from typing import Optional, List, Dict, Any, Pattern, Annotated # Added Annotated
+from pydantic import BaseModel, Field, EmailStr, StringConstraints, HttpUrl # Added HttpUrl
+from typing import Optional, List, Dict, Any, Annotated # Removed Pattern, not used
+
+# --- LLM Provider and Model Information Models (for API response) ---
+class LLMAvailableModel(BaseModel):
+    model_id: str
+    display_name: str
+    context_window: Optional[int] = None
+
+class LLMProviderDetail(BaseModel):
+    id: str 
+    display_name: str
+    type: str 
+    is_system_configured: bool 
+    requires_api_key: bool 
+    needs_api_key_config_for_user: bool 
+    available_models: List[LLMAvailableModel]
+
+# --- User LLM Settings Models ---
+class UserLLMSettingsResponse(BaseModel):
+    selected_llm_provider_id: Optional[str] = None
+    selected_llm_model_id: Optional[str] = None
+    has_user_api_key: bool = False 
+    selected_llm_base_url: Optional[HttpUrl] = None # Use HttpUrl for validation
+
+class UserLLMSettingsUpdateRequest(BaseModel):
+    selected_llm_provider_id: Optional[str] = Field(None, description="ID of the selected LLM provider (e.g., 'ollama_local').")
+    selected_llm_model_id: Optional[str] = Field(None, description="ID of the selected model (e.g., 'qwen2:7b-instruct-q4_K_M').")
+    user_llm_api_key: Optional[str] = Field(None, description="User-provided API key. Will be encrypted. Send empty string or null to clear.") # min_length removed to allow empty string for clearing
+    selected_llm_base_url: Optional[HttpUrl] = Field(None, description="User-defined base URL for the selected provider, if applicable. Send empty string or null to clear.")
+
 
 # --- Authentication & User Models ---
 class Token(BaseModel):
@@ -24,7 +53,6 @@ class EmailCheckResponse(BaseModel):
 
 class RegistrationRequest(BaseModel):
     email: EmailStr
-    # Using Annotated with StringConstraints for Pydantic V2
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 
 class RegistrationResponse(BaseModel):
@@ -37,9 +65,8 @@ class ForgotPasswordResponse(BaseModel):
     message: str
 
 class UpdateNameRequest(BaseModel):
-    # Correct Pydantic V2 way to apply string constraints
     new_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
-    current_password: str = Field(..., min_length=1) # min_length for string fields is fine with Field
+    current_password: str = Field(..., min_length=1) 
 
 class UpdateNameResponse(BaseModel):
     message: str
@@ -49,47 +76,41 @@ class RegeneratePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1, description="The user's current password for verification.")
 
 class RegeneratePasswordResponse(BaseModel):
-    message: str # e.g., "Password regenerated successfully. An email has been sent with your new password. You will now be logged out."
+    message: str 
 
-# --- ADDED: Models for Update Email (User Settings) ---
 class UpdateEmailRequest(BaseModel):
-    new_email: EmailStr # Ensures the new email is in a valid format.
+    new_email: EmailStr 
     current_password: str = Field(..., min_length=1, description="The user's current password for verification.")
 
 class UpdateEmailResponse(BaseModel):
-    message: str # e.g., "Email updated successfully. You will now be logged out."
+    message: str 
     new_email: EmailStr
-# --- END OF ADDED Models ---
 
 
-# --- Session & Message Models (from app/main.py context) ---
+# --- Session & Message Models ---
 class SessionUpdateRequest(BaseModel):
-    # Correct Pydantic V2 way for name field here as well
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 
-# If you have Pydantic models for session lists or message lists, they would go here too.
-# For example, if you decide to type the response for /api/sessions:
 class SessionListItem(BaseModel):
     id: str
-    name: Optional[str] = None # Name can be None initially
-    last_active: Optional[str] = None # Or datetime, adjust as per your DB/API response
+    name: Optional[str] = None 
+    last_active: Optional[str] = None 
 
-class SessionListResponse(BaseModel): # Example, not currently used in main.py
+class SessionListResponse(BaseModel): 
     sessions: List[SessionListItem]
 
-# Example for /api/sessions/{session_id}/messages response items
-class MessageItem(BaseModel): # Example, not currently used in main.py
+class MessageItem(BaseModel): 
     id: int
     session_id: str
     user_id: Optional[int] = None
     sender_name: Optional[str] = None
-    sender_type: str # 'user', 'ai', 'system', 'anon_user'
+    sender_type: str 
     content: str
     client_id_temp: Optional[str] = None
     thinking_content: Optional[str] = None
-    timestamp: str # Or datetime
+    timestamp: str 
+    turn_id: Optional[int] = None # Added turn_id as it's in your DB and API response for messages
 
-class MessageListResponse(BaseModel): # Example, not currently used in main.py
+class MessageListResponse(BaseModel): 
     messages: List[MessageItem]
 
-# Add any other Pydantic models your application uses or will use.
