@@ -11,7 +11,7 @@
 @tailwind utilities;
 /* ----------------------------------- */
 
-/* --- General Styles & Scrollbar --- */
+/* --- General Styles & Custom Scrollbars --- */
 html, body {
     height: 100%;
     margin: 0;
@@ -36,6 +36,27 @@ html, body {
 #chat-history::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 10px; }
 #chat-history::-webkit-scrollbar-thumb { background: #888; border-radius: 10px; }
 #chat-history::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* Custom scrollbar for sidebar (and other scrollable elements if needed) */
+/* Note: Adjust theme('colors.gray.XXX') if your project uses different gray shades or names */
+.sidebar-scrollable {
+    overflow-y: auto;
+    scrollbar-width: thin; /* For Firefox */
+    scrollbar-color: theme('colors.gray.400') theme('colors.gray.200'); /* For Firefox */
+}
+.sidebar-scrollable::-webkit-scrollbar {
+    width: 6px;
+}
+.sidebar-scrollable::-webkit-scrollbar-track {
+    background: theme('colors.gray.200');
+    border-radius: 3px;
+}
+.sidebar-scrollable::-webkit-scrollbar-thumb {
+    background-color: theme('colors.gray.400');
+    border-radius: 3px;
+    border: 1px solid theme('colors.gray.200');
+}
+/* ----------------------------------- */
 
 /* --- Message Styling --- */
 .message {
@@ -172,10 +193,10 @@ html, body {
     display: flex;
     align-items: center;
     background-color: #e5e7eb; /* Tailwind gray-200 (Unified Style) */
-    padding: 0.25rem 0.5rem;    /* Unified Style */
-    font-size: 0.8em;          /* Unified Style */
-    color: #4b5563;            /* Unified Style (Gray-600) */
-    gap: 0.625rem;             /* Unified Style (10px) */
+    padding: 0.25rem 0.5rem;      /* Unified Style */
+    font-size: 0.8em;             /* Unified Style */
+    color: #4b5563;               /* Unified Style (Gray-600) */
+    gap: 0.625rem;                /* Unified Style (10px) */
 }
 
 /* Specific adjustment for Output Header spacing */
@@ -332,8 +353,8 @@ html, body {
 /* Output Console Container */
 .code-output-console {
     background-color: #1f2937; /* Dark background */
-    color: #f3f4f6;            /* Light text */
-    padding: 0;                /* No padding on container */
+    color: #f3f4f6;           /* Light text */
+    padding: 0;               /* No padding on container */
     border: 1px solid #4b5563; /* Darker border */
     border-top: none !important;/* No top border */
     max-height: 250px;
@@ -362,8 +383,8 @@ html, body {
 
 /* --- Hide/Show Functionality --- */
 .code-block-container > pre.hidden, /* Hides code input pre */
-.code-output-console.hidden,        /* Hides output console div */
-.code-output-header.hidden          /* Hides output header */
+.code-output-console.hidden,       /* Hides output console div */
+.code-output-header.hidden         /* Hides output header */
  { display: none !important; }
 
 

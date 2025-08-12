@@ -80,11 +80,23 @@ const KATEX_RENDERED_ATTR = 'data-katex-rendered';
 const NO_THINK_PREFIX = "\\no_think"
 const THINK_PREFIX = "\\think"
 
-/**
- * Extracts the session ID from the current URL path.
- * Assumes URL is like /chat/SESSION_ID/...
- * Returns the session ID string or null if not found or invalid.
- */
+
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            // Does this cookie string begin with the name we want?
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
 function getSessionIdFromPath() {
     const pathName = window.location.pathname; // Get the path part of the URL (e.g., "/chat/some-session-id")
     const pathParts = pathName.split('/');    // Split the path by "/"
@@ -108,7 +120,6 @@ function getSessionIdFromPath() {
     return null; // Return null if the path doesn't match the expected structure
 }
 
-// --- Utility Functions ---
 
 function scrollToBottom(behavior = 'auto') {
     const isNearBottom = chatHistory.scrollHeight - chatHistory.scrollTop - chatHistory.clientHeight < 100;
@@ -119,8 +130,6 @@ function scrollToBottom(behavior = 'auto') {
     }
 }
 
-// --- Utility Functions --- 
-// (debounce function is here)
 
 function throttle(func, limit) {
     let lastFunc;
@@ -145,8 +154,6 @@ function throttle(func, limit) {
     };
   }
   
-  // (debouncedStreamHighlight definition will be replaced next)
-  // (Rest of your utility functions)
 
 function debounce(func, wait) {
     let timeout;
@@ -228,8 +235,6 @@ function setCursorPosition(parentElement, offset) {
 }
 
 
-
-
 function addUserMessage(text) {
     // Ensure chatHistory and messageInput elements exist to prevent errors
     const chatHistory = document.getElementById('chat-history'); // Re-fetch or ensure it's a reliable global
@@ -248,9 +253,8 @@ function addUserMessage(text) {
 
     const senderElem = document.createElement('p');
     senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-emerald-700');
-    let userName = 'User'; // Default user name
+    let userName = 'User';
 
-    // Check for globally available user info
     if (typeof window.currentUserInfo === 'object' && window.currentUserInfo !== null && window.currentUserInfo.name) {
         userName = window.currentUserInfo.name;
     }
@@ -260,15 +264,11 @@ function addUserMessage(text) {
     const contentElem = document.createElement('div');
     contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
     
-    let displayedText = text; // The raw text received by the function
+    let displayedText = text;
 
-    // Strip prefixes for display purposes
-    // Check for NO_THINK_PREFIX first
     if (typeof NO_THINK_PREFIX === 'string' && displayedText.startsWith(NO_THINK_PREFIX)) {
          displayedText = displayedText.substring(NO_THINK_PREFIX.length);
-    } 
-    // Then check for THINK_PREFIX, in case the user somehow typed it
-    // (though the submit logic should prevent sending THINK_PREFIX if NO_THINK_PREFIX was intended)
+    }
     else if (typeof THINK_PREFIX === 'string' && displayedText.startsWith(THINK_PREFIX)) {
          displayedText = displayedText.substring(THINK_PREFIX.length);
     }
@@ -283,13 +283,10 @@ function addUserMessage(text) {
 
     chatHistory.appendChild(messageElement);
     
-    // Ensure scrollToBottom is defined and handles potential null chatHistory
     if (typeof scrollToBottom === 'function') {
         setTimeout(() => scrollToBottom('smooth'), 50);
     }
 }
-
-
 
 
 function addSystemMessage(text) {
@@ -312,7 +309,6 @@ function addErrorMessage(text) {
    setTimeout(() => scrollToBottom('smooth'), 50);
 }
 
-// --- UI State Management ---
 function setInputDisabledState(inputsDisabled, aiResponding) {
     if (messageInput) messageInput.disabled = inputsDisabled;
     if (sendButton) sendButton.disabled = inputsDisabled;
@@ -338,7 +334,6 @@ function setInputDisabledState(inputsDisabled, aiResponding) {
         }
     }
 }
-
 
 function setupNewAiTurn() {
     currentTurnId++;
@@ -432,7 +427,6 @@ function setupNewAiTurn() {
     console.log(`[setupNewAiTurn] Finished setup for Turn ID: ${currentTurnId}.`);
 }
 
-
 function appendRawTextToThinkingArea(text) {
     if (text && text.trim().length > 0) {
         // console.log(`[appendRawTextToThinkingArea] Received non-empty raw think text: "${text}" (length: ${text?.length})`);
@@ -491,7 +485,6 @@ function appendCodeReference() {
         console.warn("appendCodeReference called but codeBlockCounterThisTurn is 0.");
     }
 }
-
 
 function formatAnswerBubbleFinal() {
     if (!currentAnswerElement) {
@@ -1106,7 +1099,6 @@ function appendToCodeBlock(text) {
     }
 }
 
-
 function appendToAnswer(text = null, node = null) {
     if (!currentAnswerElement) {
         console.error("[appendToAnswer] currentAnswerElement is null. Cannot append.");
@@ -1191,7 +1183,6 @@ function appendToAnswer(text = null, node = null) {
         }
     }
 }
-
 
 function finalizeCodeBlock(isTruncated = false) {
     // Check if there is an active code block element being processed
@@ -2126,7 +2117,7 @@ async function loadAndDisplayChatHistory(sessionId) {
         }
         console.log(`Successfully loaded ${messages.length} messages for session ${sessionId}.`);
 
-    } catch (error) {
+    } catch (error){
         console.error(`Failed to fetch or display chat history for session ${sessionId}:`, error);
         chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An unexpected error occurred while loading history. Check console.</p>`;
     }
@@ -2369,147 +2360,6 @@ async function initializeCurrentUser() {
     }
 }
 
-async function fetchAndDisplaySessions() {
-    // This function should be defined in your script.js
-    const sessionListElement = document.getElementById('session-list');
-    const chatSessionTitle = document.getElementById('chat-session-title'); // If you use this to update title
-
-    if (!sessionListElement) {
-        console.error("[fetchAndDisplaySessions] Session list element (#session-list) not found.");
-        return;
-    }
-
-    sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">Loading sessions...</li>';
-
-    try {
-        const response = await fetch('/api/sessions');
-        if (!response.ok) {
-            let errorDetail = `HTTP error ${response.status}`;
-            try {
-                const errorJson = await response.json();
-                errorDetail = errorJson.detail || errorDetail;
-            } catch (e) { /* Ignore JSON parsing error if response is not JSON */ }
-            console.error(`[fetchAndDisplaySessions] Error fetching sessions: ${errorDetail}`);
-            sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
-            return;
-        }
-
-        const sessions = await response.json();
-        sessionListElement.innerHTML = ''; 
-
-        if (sessions.length === 0) {
-            sessionListElement.innerHTML = '<li class="px-3 py-1 text-gray-400 italic text-sm">No sessions yet. Click "New Chat".</li>';
-        } else {
-            const activeSessionId = getSessionIdFromPath(); 
-
-            sessions.forEach((session) => {
-                if (!session.id || typeof session.name === 'undefined') { // Check if name is undefined, allow empty string
-                    console.warn('Session object is missing id or name:', session);
-                    return;
-                }
-
-                const listItem = document.createElement('li');
-                // Added group for group-hover effects on the delete button
-                listItem.className = 'flex items-center justify-between pr-2 group hover:bg-gray-700 rounded-md'; 
-
-                const link = document.createElement('a');
-                // Ensure chatPageBaseUrl is defined or use a fixed prefix like /chat/
-                const chatPageBaseUrl = '/chat/'; 
-                const base = chatPageBaseUrl.endsWith('/') ? chatPageBaseUrl : chatPageBaseUrl + '/';
-                link.href = `${base}${session.id}`;
-                
-                // Make link take up available space, truncate text
-                link.className = 'block pl-3 pr-1 py-2 text-gray-300 group-hover:text-white rounded-l-md text-sm truncate flex-grow';
-                
-                let lastActiveDisplay = "Never";
-                if (session.last_active) {
-                    try {
-                        lastActiveDisplay = new Date(session.last_active).toLocaleString();
-                    } catch (e) {
-                        lastActiveDisplay = session.last_active; 
-                    }
-                }
-                link.title = `${session.name || `Session ${session.id.substring(0,4)}...`}\nLast active: ${lastActiveDisplay}`;
-                link.textContent = session.name || `Session ${session.id.substring(0, 8)}`;
-                
-                if (session.id === activeSessionId) {
-                    link.classList.add('bg-gray-900', 'text-white', 'font-semibold');
-                    listItem.classList.remove('hover:bg-gray-700'); // Remove general hover if active
-                    listItem.classList.add('bg-gray-900'); // Highlight the whole li item
-                    if (chatSessionTitle) {
-                        chatSessionTitle.textContent = session.name || `Chat Session ${session.id.substring(0, 4)}`;
-                    }
-                }
-
-                // --- ADDED DELETE BUTTON ---
-                const deleteButton = document.createElement('button');
-                deleteButton.innerHTML = '&#x2715;'; // Cross mark (X)
-                // Styling for visibility on hover of the list item (group-hover)
-                deleteButton.className = 'ml-2 p-1 text-gray-500 hover:text-red-400 focus:outline-none rounded-full hover:bg-gray-600 transition-colors duration-150 ease-in-out text-xs opacity-0 group-hover:opacity-100 focus:opacity-100 flex-shrink-0';
-                deleteButton.title = `Delete session: ${session.name || 'Unnamed Session'}`;
-                
-                deleteButton.onclick = (event) => {
-                    event.stopPropagation(); // Prevent navigating to the session link
-                    event.preventDefault();   // Prevent any default button action
-                    // Call a handler function, passing necessary info
-                    handleDeleteSession(session.id, session.name || `Session ${session.id.substring(0,8)}`);
-                };
-                // --- END OF ADDED DELETE BUTTON ---
-
-                listItem.appendChild(link);
-                listItem.appendChild(deleteButton); // Append the delete button
-                sessionListElement.appendChild(listItem);
-            });
-        }
-    } catch (error) {
-        console.error("[fetchAndDisplaySessions] Failed to fetch or display sessions:", error);
-        sessionListElement.innerHTML = `<li class="px-3 py-1 text-red-400 italic text-sm">Error loading sessions</li>`;
-    }
-}
-
-async function handleDeleteSession(sessionId, sessionName) {
-    // This function should be defined in your script.js
-    if (!window.confirm(`Are you sure you want to delete the session "${sessionName}"? This action cannot be undone.`)) {
-        return;
-    }
-
-    try {
-        const response = await fetch(`/api/sessions/${sessionId}`, {
-            method: 'DELETE',
-            headers: {
-                'Content-Type': 'application/json'
-                // Add authorization headers if your API requires them
-            }
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ detail: "Failed to delete session. Server error." }));
-            console.error(`Failed to delete session ${sessionId}. Status: ${response.status}`, errorData);
-            if(typeof addErrorMessage === 'function') addErrorMessage(`Error deleting session: ${errorData.detail || response.statusText}`);
-            else alert(`Error deleting session: ${errorData.detail || response.statusText}`);
-            return;
-        }
-
-        // Session deleted successfully
-        console.log(`Session ${sessionId} successfully deleted.`);
-        
-        // If the currently viewed session was deleted, redirect to home/dashboard
-        const currentPathSessionId = getSessionIdFromPath();
-        if (currentPathSessionId === sessionId) {
-            window.location.href = '/'; // Redirect to the session choice page
-        } else {
-            // Otherwise, just refresh the session list
-            if (typeof fetchAndDisplaySessions === 'function') {
-                await fetchAndDisplaySessions();
-            }
-        }
-    } catch (error) {
-        console.error('Error during delete session request:', error);
-        if(typeof addErrorMessage === 'function') addErrorMessage('An error occurred while trying to delete the session.');
-        else alert('An error occurred while trying to delete the session. Please check the console.');
-    }
-}
-
 
 document.addEventListener('DOMContentLoaded', async () => {
     await initializeCurrentUser();
@@ -2522,10 +2372,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         marked.setOptions({
             gfm: true, breaks: true, sanitize: false, smartLists: true, smartypants: false,
         });
-    }
-
-    if (typeof fetchAndDisplaySessions === 'function') {
-        await fetchAndDisplaySessions();
     }
 
 

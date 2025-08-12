@@ -389,24 +389,17 @@ async def stop_docker_container(code_block_id: str):
             print(f"Stream task for {code_block_id} cancelled successfully.")
             pass # Expected outcome
 
-    # 2. Stop the Docker container (run blocking calls in executor)
+    # 2. Forcefully terminate (kill) the Docker container
     if container_obj:
         try:
-            print(f"Stopping container {container_obj.short_id} ({code_block_id})...")
-            # container.stop() is blocking
-            await loop.run_in_executor(None, lambda: container_obj.stop(timeout=5))
-            print(f"Container {container_obj.short_id} stopped.")
-        except Exception as stop_err:
-            # If stop fails (e.g., timeout), attempt to kill the container
-            print(f"Error stopping container {container_obj.short_id}, attempting kill: {stop_err}")
-            try:
-                # container.kill() is blocking
-                await loop.run_in_executor(None, container_obj.kill)
-                print(f"Container {container_obj.short_id} killed.")
-            except Exception as kill_err:
-                # Ignore "No such container" error if already gone, log others
-                 if "No such container" not in str(kill_err):
-                     print(f"Error killing container {container_obj.short_id}: {kill_err}")
+            print(f"Forcefully terminating container {container_obj.short_id} ({code_block_id})...")
+            # container.kill() is a blocking call, run in executor
+            await loop.run_in_executor(None, container_obj.kill)
+            print(f"Container {container_obj.short_id} killed.")
+        except Exception as kill_err:
+            # Ignore "No such container" error if already gone, log others
+            if "No such container" not in str(kill_err):
+                print(f"Error killing container {container_obj.short_id}: {kill_err}")
 
         # 3. Remove the Docker container (run blocking call in executor)
         try:
@@ -420,17 +413,16 @@ async def stop_docker_container(code_block_id: str):
 
     # 4. Send final "stopped by user" message if WebSocket is still valid
     if websocket: # Check if websocket reference exists
-         try:
-             await send_ws_message(websocket, "code_finished", {
-                 "code_block_id": code_block_id,
-                 "exit_code": -1, # Indicate abnormal termination
-                 "error": "Execution stopped by user."
-             })
-         except Exception as send_err:
-              print(f"Error sending stop confirmation for {code_block_id}: {send_err}")
+        try:
+            await send_ws_message(websocket, "code_finished", {
+                "code_block_id": code_block_id,
+                "exit_code": -1, # Indicate abnormal termination
+                "error": "Execution stopped by user."
+            })
+        except Exception as send_err:
+            print(f"Error sending stop confirmation for {code_block_id}: {send_err}")
     else:
-         print(f"Cannot send stop confirmation for {code_block_id}, WebSocket reference lost.")
-
+        print(f"Cannot send stop confirmation for {code_block_id}, WebSocket reference lost.")
 
 # --- Client Disconnect Cleanup ---
 

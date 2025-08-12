@@ -5,83 +5,69 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - Tesseracs Chat</title>
     <link rel="stylesheet" href="/dist/input.css">
-    <style>
-        /* Simple class to hide elements */
-        .hidden-field {
-            display: none !important; /* Use !important to ensure override if other styles conflict */
-        }
-        /* Style for the forgot password link */
-        .forgot-password-link {
-            display: block; /* Make it block to appear below the password field */
-            text-align: right;
-            font-size: 0.875rem; /* text-sm */
-            color: #4b5563; /* text-gray-600 */
-            text-decoration: none;
-            margin-top: 0.5rem; /* Add some space above the link */
-            margin-bottom: 1.25rem; /* Keep bottom margin for spacing below */
-        }
-        .forgot-password-link:hover {
-            color: #1d4ed8; /* hover:text-blue-700 */
-            text-decoration: underline;
-        }
-        /* Style for the "Change Email" button */
-        .change-email-button {
-            display: block;
-            width: auto; /* Fit content */
-            margin-top: 0.75rem; /* Space above */
-            margin-left: auto; /* Align to the right if container allows */
-            margin-right: auto; /* Center if container is flex/grid and justifies center */
-            padding: 0.5rem 1rem;
-            font-size: 0.875rem;
-            color: #4b5563; /* text-gray-600 */
-            background-color: #f3f4f6; /* Tailwind gray-100 */
-            border: 1px solid #d1d5db; /* Tailwind gray-300 */
-            border-radius: 0.375rem; /* rounded-md */
-            cursor: pointer;
-            text-align: center;
-        }
-        .change-email-button:hover {
-            background-color: #e5e7eb; /* Tailwind gray-200 */
-        }
-    </style>
+    <script id="csrf-token-script">
+      // This placeholder is replaced by the server with the actual raw CSRF token.
+      window.csrfTokenRaw = "%%CSRF_TOKEN_RAW%%"; 
+    </script>
+    <script>
+      // Early diagnostic log to check if the CSRF token is injected correctly by the server.
+      console.log('JS EARLY DIAGNOSTIC (immediately after csrf-token-script): window.csrfTokenRaw =', "'" + window.csrfTokenRaw + "'", "(Type:", typeof window.csrfTokenRaw + ")");
+    </script>
 </head>
 <body class="flex flex-col justify-center items-center min-h-screen bg-gray-100 font-sans p-4">
     <div class="bg-white p-8 rounded-lg shadow-xl w-full max-w-md">
         <h1 class="text-center mb-6 text-2xl font-semibold text-gray-900">Tesseracs Chat</h1>
-
         <div id="message-area" class="p-3 rounded-md text-sm text-center mb-4" style="display: none;"></div>
-
+        
         <form id="auth-form" class="mt-4">
+            <input type="hidden" name="csrf_token" id="csrf_token_form_field">
+            
             <div class="mb-5">
                 <label for="email" class="block mb-2 text-sm font-medium text-gray-700">Email:</label>
-                <input type="email" id="email" name="email" required autocomplete="email" class="block w-full py-2.5 px-3 border border-gray-300 rounded-md text-sm transition-colors duration-200 ease-in-out focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none">
+                <input type="email" id="email" name="username" required autocomplete="username" class="block w-full py-2.5 px-3 border border-gray-300 rounded-md text-sm transition-colors duration-200 ease-in-out focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none">
             </div>
-
-            <div id="password-field-container" class="mb-5 hidden-field">
+            
+            <div id="password-field-container" class="mb-5 hidden">
                 <label for="password" class="block mb-2 text-sm font-medium text-gray-700">Password:</label>
                 <input type="password" id="password" name="password" autocomplete="current-password" class="block w-full py-2.5 px-3 border border-gray-300 rounded-md text-sm transition-colors duration-200 ease-in-out focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none">
-                <a href="#" id="forgot-password-link" class="forgot-password-link">Forgot Password?</a>
+                <a href="#" id="forgot-password-link" class="block text-right text-sm text-gray-600 no-underline mt-2 mb-5 hover:text-blue-700 hover:underline hidden">Forgot Password?</a>
             </div>
-
-            <div id="name-field-container" class="mb-5 hidden-field">
+            
+            <div id="name-field-container" class="mb-5 hidden">
                 <label for="name" class="block mb-2 text-sm font-medium text-gray-700">Full Name:</label>
                 <input type="text" id="name" name="name" autocomplete="name" class="block w-full py-2.5 px-3 border border-gray-300 rounded-md text-sm transition-colors duration-200 ease-in-out focus:border-blue-600 focus:ring-2 focus:ring-blue-300 focus:outline-none">
             </div>
-
+            
             <button type="submit" id="submit-button" class="w-full py-3 bg-blue-600 text-white rounded-md text-sm font-medium cursor-pointer transition-colors duration-200 ease-in-out hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed">Continue</button>
-
-            <button type="button" id="change-email-button" class="change-email-button hidden-field">Change Email / Start Over</button>
+            <button type="button" id="change-email-button" class="block w-auto mt-3 mx-auto py-2 px-4 text-sm text-gray-600 bg-gray-100 border border-gray-300 rounded-md cursor-pointer text-center hover:bg-gray-200 hidden">Change Email / Start Over</button>
         </form>
-
+        
         <p id="form-instructions" class="text-xs text-center mt-6 text-gray-500">
             Enter your email to log in or create an account.
         </p>
     </div>
 
     <script>
-        // --- DOM Element References ---
+        // Utility function to get a cookie by name. Used for diagnostics or specific needs,
+        // but CSRF token for AJAX is primarily handled via window.csrfTokenRaw.
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+        // DOM element references
         const authForm = document.getElementById('auth-form');
-        const emailInput = document.getElementById('email');
+        const emailInput = document.getElementById('email'); 
         const nameInput = document.getElementById('name');
         const passwordInput = document.getElementById('password');
         const nameFieldContainer = document.getElementById('name-field-container');
@@ -91,260 +77,347 @@
         const formInstructions = document.getElementById('form-instructions');
         const forgotPasswordLink = document.getElementById('forgot-password-link');
         const changeEmailButton = document.getElementById('change-email-button');
+        const csrfTokenFormField = document.getElementById('csrf_token_form_field'); // Hidden input for CSRF token in form
+        
+        // Placeholder string that the server is supposed to replace with the actual CSRF token.
+        const CSRF_ORIGINAL_PLACEHOLDER = ['%', '%CSRF_TOKEN_RAW%', '%'].join('');
 
-        // --- State Management ---
-        // Possible states: 'initial_email', 'login_password', 'register_name', 'forgot_password_prompt', 'login_after_registration', 'login_after_password_reset'
-        let formState = 'initial_email';
-        let cachedEmail = ''; // Used for pre-filling email after registration or password reset
+        let formState = 'initial_email'; // Manages the current state of the login/registration form
+        let cachedEmail = ''; // Stores the email after it's been checked
 
-        // --- UI Update Function ---
+        // Log the initial CSRF token value when the main script runs.
+        console.log('JS MAIN SCRIPT: window.csrfTokenRaw at script start =', "'" + window.csrfTokenRaw + "'", "(Type:", typeof window.csrfTokenRaw + ")");
+        console.log('JS MAIN SCRIPT: CSRF_ORIGINAL_PLACEHOLDER =', "'" + CSRF_ORIGINAL_PLACEHOLDER + "'");
+
+        /**
+         * Updates the UI elements (input fields, buttons, instructions) based on the current formState.
+         */
         function updateUIForState() {
-            // Reset fields visibility and requirements first
-            passwordFieldContainer.classList.add('hidden-field');
-            nameFieldContainer.classList.add('hidden-field');
-            forgotPasswordLink.classList.add('hidden-field'); // Hide by default
-            changeEmailButton.classList.add('hidden-field'); // Hide by default
+            // Hide all optional sections by default; specific states will unhide them.
+            passwordFieldContainer.classList.add('hidden');
+            nameFieldContainer.classList.add('hidden');
+            forgotPasswordLink.classList.add('hidden');
+            changeEmailButton.classList.add('hidden');
 
+            // Reset 'required' attributes; states will set them if needed.
             passwordInput.required = false;
             nameInput.required = false;
-            emailInput.readOnly = false; // Make email editable by default
-            submitButton.disabled = false; // Enable button by default, specific states will adjust
+            emailInput.readOnly = false; // Email input is generally editable unless a state locks it.
+            submitButton.disabled = false; // Submit button is enabled by default.
 
+            // **MODIFICATION**: messageArea is NOT hidden here by default.
+            // It will be hidden explicitly by states that require a clean slate (e.g., 'initial_email').
+            // Otherwise, messages shown by showMessage() will persist into the new state.
+
+            // Populate the hidden CSRF token field if window.csrfTokenRaw is valid.
+            const tokenValue = window.csrfTokenRaw;
+            const isTokenValid = tokenValue && typeof tokenValue === 'string' && tokenValue !== CSRF_ORIGINAL_PLACEHOLDER && tokenValue.trim() !== "";
+
+            if (isTokenValid) {
+                csrfTokenFormField.value = tokenValue;
+            } else {
+                csrfTokenFormField.value = ""; // Ensure field is empty if token is invalid.
+                console.warn("JS WARN (updateUIForState): window.csrfTokenRaw ('" + tokenValue + "') is not a valid token for form field. Hidden CSRF field set to empty. Is it the original placeholder?", tokenValue === CSRF_ORIGINAL_PLACEHOLDER);
+            }
+
+            // Configure UI based on the current state
             switch (formState) {
                 case 'initial_email':
-                    emailInput.value = '';
+                    emailInput.value = ''; 
                     passwordInput.value = '';
                     nameInput.value = '';
-                    cachedEmail = ''; // Clear cached email
+                    cachedEmail = '';
                     submitButton.textContent = 'Continue';
                     formInstructions.textContent = 'Enter your email to log in or create an account.';
-                    submitButton.disabled = emailInput.value.trim() === '';
+                    submitButton.disabled = emailInput.value.trim() === ''; // Disable if email is empty
                     emailInput.focus();
+                    messageArea.style.display = 'none'; // Explicitly hide message area for this clean state
                     break;
                 case 'login_password':
-                    passwordFieldContainer.classList.remove('hidden-field');
-                    forgotPasswordLink.classList.remove('hidden-field');
-                    changeEmailButton.classList.remove('hidden-field');
+                    passwordFieldContainer.classList.remove('hidden');
+                    forgotPasswordLink.classList.remove('hidden');
+                    changeEmailButton.classList.remove('hidden');
                     passwordInput.required = true;
-                    emailInput.readOnly = true;
+                    emailInput.readOnly = true; 
+                    emailInput.value = cachedEmail; 
                     submitButton.textContent = 'Login';
                     formInstructions.textContent = 'Enter your password to log in.';
-                    passwordInput.value = '';
-                    submitButton.disabled = true; // Password field is empty
+                    passwordInput.value = ''; 
+                    submitButton.disabled = true; // Disable until password input
                     passwordInput.focus();
+                    // messageArea might still be visible from a previous action if not explicitly hidden
                     break;
                 case 'register_name':
-                    nameFieldContainer.classList.remove('hidden-field');
-                    changeEmailButton.classList.remove('hidden-field');
+                    nameFieldContainer.classList.remove('hidden');
+                    changeEmailButton.classList.remove('hidden');
                     nameInput.required = true;
-                    emailInput.readOnly = true;
+                    emailInput.readOnly = true; 
+                    emailInput.value = cachedEmail; 
                     submitButton.textContent = 'Create Account & Send Password';
                     formInstructions.textContent = 'This email is not registered. Enter your name to create an account. A password will be emailed to you.';
                     nameInput.value = '';
-                    submitButton.disabled = nameInput.value.trim() === '';
+                    submitButton.disabled = nameInput.value.trim() === ''; // Disable if name is empty
                     nameInput.focus();
+                    // messageArea might still be visible (e.g. if an error occurred before reaching this state)
                     break;
                 case 'forgot_password_prompt':
-                    emailInput.readOnly = false;
-                    emailInput.value = ''; // Clear email for forgot password
+                    emailInput.readOnly = false; 
+                    emailInput.value = cachedEmail || ''; 
+                    passwordInput.value = '';
+                    nameInput.value = '';
                     submitButton.textContent = 'Send Reset Email';
                     formInstructions.textContent = 'Enter your email address to receive a password reset email.';
-                    changeEmailButton.classList.remove('hidden-field');
+                    changeEmailButton.classList.remove('hidden'); 
                     submitButton.disabled = emailInput.value.trim() === '';
                     emailInput.focus();
+                    // messageArea might be visible from a previous action
                     break;
                 case 'login_after_registration':
-                case 'login_after_password_reset': // This state will share UI with login_after_registration
-                    emailInput.value = cachedEmail; // Pre-fill with cached email
+                case 'login_after_password_reset':
+                    emailInput.value = cachedEmail; 
                     emailInput.readOnly = true;
-                    passwordFieldContainer.classList.remove('hidden-field');
-                    // forgotPasswordLink remains hidden for these states
-                    changeEmailButton.classList.remove('hidden-field');
+                    passwordFieldContainer.classList.remove('hidden');
+                    changeEmailButton.classList.remove('hidden');
                     passwordInput.required = true;
                     submitButton.textContent = 'Login';
-                    // Instructions are set by the submit handler based on which flow it was
                     if (formState === 'login_after_registration') {
+                        // The success message from registration (via showMessage) should still be visible here.
                         formInstructions.textContent = 'Account created! Please check your email for the password and enter it below.';
-                    } else { // login_after_password_reset
-                        // The message area will show the "If an account exists..." message from the server.
-                        // We can add a generic instruction here or rely on the message area.
+                    } else { 
+                        // The success message from password reset (via showMessage) should still be visible.
                         formInstructions.textContent = 'Please check your email for the new password and enter it below.';
                     }
                     passwordInput.value = '';
-                    submitButton.disabled = true; // Password field is empty
+                    submitButton.disabled = true; // Disable until password input
                     passwordInput.focus();
                     break;
             }
         }
 
-        // --- Event Listeners ---
+        // Event listeners to enable/disable submit button based on input
         emailInput.addEventListener('input', function() {
             if (formState === 'initial_email' || formState === 'forgot_password_prompt') {
                 submitButton.disabled = emailInput.value.trim() === '';
             }
         });
-
         nameInput.addEventListener('input', function() {
             if (formState === 'register_name') {
                 submitButton.disabled = nameInput.value.trim() === '';
             }
         });
-
         passwordInput.addEventListener('input', function() {
             if (formState === 'login_password' || formState === 'login_after_registration' || formState === 'login_after_password_reset') {
                 submitButton.disabled = passwordInput.value.trim() === '';
             }
         });
 
+        // Event listener for "Forgot Password?" link
         forgotPasswordLink.addEventListener('click', (event) => {
             event.preventDefault();
             formState = 'forgot_password_prompt';
             updateUIForState();
-            messageArea.style.display = 'none'; // Clear previous messages
-            messageArea.textContent = '';
+            messageArea.style.display = 'none'; // Clear previous messages when switching to forgot password
         });
 
+        // Event listener for "Change Email / Start Over" button
         changeEmailButton.addEventListener('click', (event) => {
             event.preventDefault();
             formState = 'initial_email';
-            updateUIForState();
-            messageArea.style.display = 'none'; // Clear previous messages
-            messageArea.textContent = '';
+            updateUIForState(); // This will hide messageArea as per 'initial_email' state
         });
 
+        /**
+         * Handles form submission for all states (email check, login, registration, forgot password).
+         */
         authForm.addEventListener('submit', async function(event) {
-            event.preventDefault();
-            // Do not hide messageArea here if we want to preserve the "If an account exists..." message for forgot password.
-            // messageArea.style.display = 'none';
-            // messageArea.textContent = '';
-            messageArea.className = 'p-3 rounded-md text-sm text-center mb-4 border'; // Reset message classes
-            submitButton.disabled = true;
+            event.preventDefault(); // Prevent default form submission
+            messageArea.className = 'p-3 rounded-md text-sm text-center mb-4 border'; // Reset message area classes
+            submitButton.disabled = true; // Disable submit button during processing
 
-            const email = emailInput.value.trim().toLowerCase();
+            const emailForLogic = emailInput.value.trim().toLowerCase();
+            const currentRawCsrfToken = window.csrfTokenRaw; 
+            
+            console.log('JS LOG (Submit Start): currentRawCsrfToken value is:', "'" + currentRawCsrfToken + "'", "(Type:", typeof currentRawCsrfToken + ")");
+            const isTokenTheOriginalPlaceholder = currentRawCsrfToken === CSRF_ORIGINAL_PLACEHOLDER;
+            console.log('JS LOG (Submit Start): Is currentRawCsrfToken the original placeholder?', isTokenTheOriginalPlaceholder);
+            
+            const headers = { 
+                // Content-Type is set per request type below (JSON or FormData)
+            };
 
+            // Set X-CSRF-Token header if the token is valid and not the placeholder.
+            if (typeof currentRawCsrfToken === 'string' && !isTokenTheOriginalPlaceholder && currentRawCsrfToken.trim() !== "") {
+                headers['X-CSRF-Token'] = currentRawCsrfToken;
+            } else {
+                console.warn('JS WARN (Submit): X-CSRF-Token header will NOT be set or will be problematic. currentRawCsrfToken:', "'" + currentRawCsrfToken + "'. Is it original placeholder?", isTokenTheOriginalPlaceholder);
+                // If CSRF token is missing/invalid, for critical operations, we might stop here.
+                // For now, proceeding and letting server handle it, but this is a potential failure point.
+            }
+
+            // --- State: Initial Email Check ---
             if (formState === 'initial_email') {
                 submitButton.textContent = 'Checking Email...';
+                headers['Content-Type'] = 'application/json';
                 try {
                     const response = await fetch('/check_email', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email: email })
+                        headers: headers,
+                        body: JSON.stringify({ email: emailForLogic })
                     });
                     const result = await response.json();
                     if (response.ok) {
-                        cachedEmail = email; // Cache email for potential next steps
+                        cachedEmail = emailForLogic; 
                         formState = result.exists ? 'login_password' : 'register_name';
-                        updateUIForState();
+                        updateUIForState(); 
+                        // No explicit message shown here by showMessage, state instructions will guide.
                     } else {
-                        showMessage(result.detail || 'Error checking email.', 'error');
-                        submitButton.textContent = 'Continue';
-                        submitButton.disabled = emailInput.value.trim() === '';
+                        showMessage(result, 'error'); 
+                        submitButton.textContent = 'Continue'; 
+                        submitButton.disabled = emailInput.value.trim() === ''; 
                     }
                 } catch (error) {
                     console.error('Email check error:', error);
-                    showMessage('Network error checking email.', 'error');
+                    showMessage('Network error or server issue checking email. Please try again.', 'error');
                     submitButton.textContent = 'Continue';
                     submitButton.disabled = emailInput.value.trim() === '';
                 }
-            }
+            } 
+            // --- State: Login (Password Submission) ---
             else if (formState === 'login_password' || formState === 'login_after_registration' || formState === 'login_after_password_reset') {
                 submitButton.textContent = 'Logging In...';
-                const password = passwordInput.value;
-                const formData = new FormData();
-                formData.append('username', email); // Server expects 'username'
-                formData.append('password', password);
+                const formData = new FormData(authForm); 
+                // formData will include email (name="username"), password, and csrf_token (from hidden input)
+                // csrfTokenFormField.value is set by updateUIForState()
+                console.log('JS LOG (Submit /token): FormData csrf_token field value being sent:', "'" + csrfTokenFormField.value + "'");
+                
+                // The `headers` object already contains X-CSRF-Token if currentRawCsrfToken was valid.
+                // For FormData, fetch sets Content-Type automatically.
                 try {
-                    const response = await fetch('/token', { method: 'POST', body: formData });
-                    const result = await response.json();
+                    const response = await fetch('/token', { 
+                        method: 'POST', 
+                        headers: headers, // Send X-CSRF-Token header
+                        body: formData    // Body is FormData
+                    });
+                    const result = await response.json(); 
                     if (response.ok) {
                         showMessage('Login successful! Redirecting...', 'success');
-                        setTimeout(() => { window.location.href = '/'; }, 1500);
+                        setTimeout(() => { window.location.href = '/'; }, 1500); // Redirect to dashboard/main page
                     } else {
-                        // Generic login failure message
-                        showMessage('Incorrect email or password.', 'error');
+                        showMessage(result, 'error'); 
                         submitButton.textContent = 'Login';
                         submitButton.disabled = passwordInput.value.trim() === '';
                     }
-                } catch (error) {
+                } catch (error) { 
                     console.error('Login error:', error);
-                    showMessage('Network error during login.', 'error');
+                    showMessage('Network error or server issue during login. Please try again.', 'error');
                     submitButton.textContent = 'Login';
                     submitButton.disabled = passwordInput.value.trim() === '';
                 }
             }
+            // --- State: Registration (Name Submission) ---
             else if (formState === 'register_name') {
                 submitButton.textContent = 'Creating Account...';
+                headers['Content-Type'] = 'application/json';
                 const name = nameInput.value.trim();
                 try {
                     const response = await fetch('/register', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email: email, name: name })
+                        headers: headers,
+                        body: JSON.stringify({ email: emailForLogic, name: name }) 
                     });
-                    const result = await response.json();
+                    const result = await response.json(); // Expects models.RegistrationResponse
                     if (response.ok) {
-                        showMessage(result.message, 'success'); // Show "Account created! Your password has been sent..."
-                        cachedEmail = email; // Email is already cached from 'initial_email' check, but good to be explicit
+                        // `result.message` contains the success string from the server
+                        showMessage(result.message, 'success'); // This will show the green banner
                         formState = 'login_after_registration';
-                        updateUIForState();
+                        updateUIForState(); // This will set up the form for password entry
+                                            // The success message from showMessage() should remain visible.
                     } else {
-                        showMessage(result.detail || 'Registration failed.', 'error');
+                        showMessage(result, 'error'); // `result` would be like {"detail": "error message"}
                         submitButton.textContent = 'Create Account & Send Password';
                         submitButton.disabled = nameInput.value.trim() === '';
                     }
                 } catch (error) {
                     console.error('Registration error:', error);
-                    showMessage('Network error during registration.', 'error');
+                    showMessage('Network error or server issue during registration. Please try again.', 'error');
                     submitButton.textContent = 'Create Account & Send Password';
                     submitButton.disabled = nameInput.value.trim() === '';
                 }
             }
+            // --- State: Forgot Password ---
             else if (formState === 'forgot_password_prompt') {
                 submitButton.textContent = 'Sending Reset Email...';
+                headers['Content-Type'] = 'application/json';
                 try {
                     const response = await fetch('/forgot_password', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email: email })
+                        headers: headers,
+                        body: JSON.stringify({ email: emailForLogic })
                     });
-                    const result = await response.json();
-                    // Always show the server's success message for forgot password for privacy
-                    showMessage(result.message, 'success');
+                    const result = await response.json(); // Expects models.ForgotPasswordResponse
+                    showMessage(result.message, response.ok ? 'success' : 'error'); 
                     if (response.ok) {
-                        cachedEmail = email; // Cache the email used for reset
-                        formState = 'login_after_password_reset'; // New state for this flow
-                        updateUIForState();
+                        cachedEmail = emailForLogic; 
+                        formState = 'login_after_password_reset';
+                        updateUIForState(); // Sets up form for new password entry
+                                            // The success message from showMessage() should remain.
                     } else {
-                        // Even on error, the message from server (if any) is shown.
-                        // If no specific error detail, the generic success message is still shown.
-                        // Reset button text and enable based on email field.
                         submitButton.textContent = 'Send Reset Email';
                         submitButton.disabled = emailInput.value.trim() === '';
                     }
                 } catch (error) {
                     console.error('Forgot password error:', error);
-                    // Show a generic success-like message even on network error for privacy,
-                    // but log the actual error.
-                    showMessage('If an account with this email exists, a password reset email has been sent.', 'success');
+                    // Provide a generic message for security (don't confirm/deny email existence based on network error)
+                    showMessage('A network error occurred. If an account with this email exists, a password reset email may have been sent.', 'error');
                     submitButton.textContent = 'Send Reset Email';
                     submitButton.disabled = emailInput.value.trim() === '';
                 }
             }
         });
 
-        function showMessage(message, type = 'info') {
-            messageArea.textContent = message;
-            messageArea.className = 'p-3 rounded-md text-sm text-center mb-4 border';
+        /**
+         * Displays a message (error, success, info) in the messageArea.
+         * @param {string|object} messageData - The message string or an error object from the server.
+         * @param {string} type - 'info', 'success', or 'error'.
+         */
+        function showMessage(messageData, type = 'info') { 
+            let displayMessage = "An unexpected error occurred.";
+            if (typeof messageData === 'string') {
+                displayMessage = messageData;
+            } else if (typeof messageData === 'object' && messageData !== null) {
+                // Handle FastAPI HTTPException detail structure
+                if (messageData.detail) {
+                    if (typeof messageData.detail === 'string') {
+                        displayMessage = messageData.detail;
+                    } else if (Array.isArray(messageData.detail) && messageData.detail.length > 0) {
+                        // Handle Pydantic validation error arrays
+                        displayMessage = messageData.detail.map(err => {
+                            let loc = err.loc ? err.loc.join('.') : 'field';
+                            return `${loc}: ${err.msg}`;
+                        }).join('; ');
+                    } else {
+                        displayMessage = JSON.stringify(messageData.detail); // Fallback for other detail structures
+                    }
+                } else if (messageData.message) { // Handle custom success messages like {"message": "..."}
+                     displayMessage = messageData.message;
+                } else {
+                    displayMessage = JSON.stringify(messageData); // Fallback for other object structures
+                }
+            }
+            
+            messageArea.textContent = displayMessage;
+            messageArea.className = 'p-3 rounded-md text-sm text-center mb-4 border'; // Reset base classes
             if (type === 'error') {
                 messageArea.classList.add('text-red-700', 'bg-red-100', 'border-red-300');
             } else if (type === 'success') {
                 messageArea.classList.add('text-green-700', 'bg-green-100', 'border-green-300');
-            } else { // info
+            } else { // 'info' or default
                 messageArea.classList.add('text-blue-700', 'bg-blue-100', 'border-blue-300');
             }
-            messageArea.style.display = 'block';
+            messageArea.style.display = 'block'; // Make the message area visible
         }
 
+        // Initialize the UI to the default state when the page loads.
         updateUIForState();
     </script>
 </body>

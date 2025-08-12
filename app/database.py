@@ -10,26 +10,32 @@ import datetime # For timestamps
 # Assuming this file is app/database.py
 APP_DIR = Path(__file__).parent
 PROJECT_ROOT = APP_DIR.parent
-DATABASE_NAME = "tesseracs_chat.db"
-DATABASE_PATH = PROJECT_ROOT / DATABASE_NAME
+DATABASE_NAME = "tesseracs_chat.db" # Name of the SQLite database file
+DATABASE_PATH = PROJECT_ROOT / DATABASE_NAME # Full path to the database file
 
 def get_db_connection():
-    """Establishes a connection to the SQLite database."""
-    # print(f"Attempting to connect to database at: {DATABASE_PATH}") # Uncomment for debugging
+    """
+    Establishes a connection to the SQLite database.
+    Enables row_factory for column access by name and foreign key constraints.
+    """
+    # print(f"Attempting to connect to database at: {DATABASE_PATH}") # Uncomment for debugging path issues
     conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row # Access columns by name
-    # Enable foreign key constraints for this connection
-    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.row_factory = sqlite3.Row # Allows accessing columns by name (e.g., row['email'])
+    conn.execute("PRAGMA foreign_keys = ON;") # Enforce foreign key constraints for this connection
     return conn
 
 def init_db():
-    """Initializes the database schema if it doesn't exist and adds new columns if needed."""
+    """
+    Initializes the database schema.
+    Creates tables if they don't exist and attempts to add missing columns
+    to existing tables to support schema evolution.
+    """
     print(f"Initializing database schema at {DATABASE_PATH}...")
     conn = get_db_connection()
     cursor = conn.cursor()
 
     # --- Users Table ---
-    # Create table if it doesn't exist, including all columns (original + new)
+    # Defines user accounts, their credentials, and LLM preferences.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,11 +43,12 @@ def init_db():
         email TEXT UNIQUE NOT NULL,
         password_hash TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Added for tracking updates
         is_active BOOLEAN DEFAULT TRUE NOT NULL,
-        selected_llm_provider_id TEXT,      -- User's chosen LLM provider
-        selected_llm_model_id TEXT,         -- User's chosen LLM model
-        user_llm_api_key_encrypted TEXT,    -- User's encrypted API key for their chosen provider
-        selected_llm_base_url TEXT          -- User's custom base URL for compatible providers
+        selected_llm_provider_id TEXT,      -- User's chosen LLM provider ID
+        selected_llm_model_id TEXT,         -- User's chosen LLM model ID for the selected provider
+        user_llm_api_key_encrypted TEXT,    -- User's encrypted API key (if they provide their own)
+        selected_llm_base_url TEXT          -- User's custom base URL for compatible LLM providers (e.g., OpenAI-compatible servers)
     );
     """)
     print("Ensured 'users' table exists.")
@@ -51,108 +58,130 @@ def init_db():
         "selected_llm_provider_id": "TEXT",
         "selected_llm_model_id": "TEXT",
         "user_llm_api_key_encrypted": "TEXT",
-        "selected_llm_base_url": "TEXT"
+        "selected_llm_base_url": "TEXT",
+        "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP" # Ensure updated_at can be added
     }
     cursor.execute("PRAGMA table_info(users)")
-    existing_columns = [col[1] for col in cursor.fetchall()]
+    existing_user_columns = [col[1] for col in cursor.fetchall()]
 
-    for col_name, col_type in user_table_columns_to_add.items():
-        if col_name not in existing_columns:
+    for col_name, col_definition in user_table_columns_to_add.items():
+        if col_name not in existing_user_columns:
             try:
-                cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+                cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_definition}")
                 print(f"Added '{col_name}' column to 'users' table.")
             except sqlite3.OperationalError as e:
-                # This might happen if the column was added in a previous partial run but schema wasn't fully committed
-                # Or if there's a schema mismatch. For simple ADD COLUMN, it's usually safe.
-                print(f"Could not add column {col_name} to users: {e}. It might already exist or there's a schema issue.")
-
+                print(f"Could not add column '{col_name}' to 'users' table: {e}. It might already exist or there's a schema issue.")
 
     # --- Auth Tokens Table ---
+    # Stores various authentication tokens (e.g., session tokens, password reset tokens).
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS auth_tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        token_hash TEXT UNIQUE NOT NULL,
-        token_type TEXT NOT NULL CHECK(token_type IN ('magic_login', 'session', 'password_reset')),
-        expires_at TIMESTAMP NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        used_at TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        user_id INTEGER NOT NULL,                   -- Foreign key to the users table
+        token_hash TEXT UNIQUE NOT NULL,            -- Hashed value of the token
+        token_type TEXT NOT NULL CHECK(token_type IN ('magic_login', 'session', 'password_reset')), -- Type of token
+        expires_at TIMESTAMP NOT NULL,              -- Expiration timestamp for the token
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the token was created
+        used_at TIMESTAMP,                          -- When the token was used (if applicable, e.g., for one-time tokens)
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE -- If a user is deleted, their tokens are also deleted
     );
     """)
     print("Ensured 'auth_tokens' table exists.")
 
     # --- Sessions Table ---
+    # Represents individual chat sessions.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        host_user_id INTEGER NOT NULL,
-        name TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        is_active BOOLEAN DEFAULT TRUE NOT NULL,
-        FOREIGN KEY (host_user_id) REFERENCES users (id) ON DELETE CASCADE
+        id TEXT PRIMARY KEY,                        -- Unique ID for the session (e.g., UUID)
+        host_user_id INTEGER NOT NULL,              -- User who created/hosts the session
+        name TEXT,                                  -- User-defined or auto-generated name for the session
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the session was created
+        last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the session was last accessed or had activity
+        is_active BOOLEAN DEFAULT TRUE NOT NULL,    -- Whether the session is currently active or soft-deleted
+        FOREIGN KEY (host_user_id) REFERENCES users (id) ON DELETE CASCADE -- If host user is deleted, their sessions are deleted
     );
     """)
     print("Ensured 'sessions' table exists.")
 
     # --- Session Participants Table ---
+    # Manages which users are part of which sessions (for multi-user scenarios, or just the host).
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS session_participants (
-        session_id TEXT NOT NULL,
-        user_id INTEGER NOT NULL,
-        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (session_id, user_id),
-        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
-        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        session_id TEXT NOT NULL,                   -- Foreign key to the sessions table
+        user_id INTEGER NOT NULL,                   -- Foreign key to the users table
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the user joined the session
+        PRIMARY KEY (session_id, user_id),          -- Composite primary key
+        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE, -- If session is deleted, participation records are deleted
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE      -- If user is deleted, their participation records are deleted
     );
     """)
     print("Ensured 'session_participants' table exists.")
 
     # --- Chat Messages Table ---
+    # Stores all messages within chat sessions.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,       -- Links to the session
-        user_id INTEGER,                -- Links to the user who sent it (NULL for AI/system)
-        sender_name TEXT,               -- Display name of the sender (User's name, "AI", "System")
+        session_id TEXT NOT NULL,                   -- Foreign key to the sessions table
+        user_id INTEGER,                            -- Foreign key to users table (NULL if AI/system message)
+        sender_name TEXT,                           -- Display name of the sender (e.g., user's name, "AI")
         sender_type TEXT NOT NULL CHECK(sender_type IN ('user', 'ai', 'system', 'anon_user')), -- Type of sender
-        content TEXT NOT NULL,          -- The actual message content (Markdown, text)
-        client_id_temp TEXT,            -- Temporary ID from client for optimistic updates (optional)
-        turn_id INTEGER,                -- To group user message and AI response
-        thinking_content TEXT,          -- AI's "thinking" process, if any
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
-        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL -- If user is deleted, message remains but user_id is NULL
+        content TEXT NOT NULL,                      -- The actual message content
+        client_id_temp TEXT,                        -- Optional temporary ID from client for optimistic UI updates
+        turn_id INTEGER,                            -- Groups related user and AI messages in a conversational turn
+        thinking_content TEXT,                      -- Stores AI's "thinking" process or intermediate thoughts
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the message was recorded
+        model_provider_id TEXT,                     -- For AI messages: which LLM provider was used
+        model_id TEXT,                              -- For AI messages: which specific LLM model was used
+        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE, -- If session is deleted, its messages are deleted
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL    -- If user is deleted, messages remain but user_id becomes NULL
     );
     """)
     print("Ensured 'chat_messages' table exists.")
 
+    # Add new columns to 'chat_messages' if they don't exist
+    chat_messages_columns_to_add = {
+        "model_provider_id": "TEXT",
+        "model_id": "TEXT"
+    }
+    cursor.execute("PRAGMA table_info(chat_messages)")
+    existing_chat_columns = [col[1] for col in cursor.fetchall()]
+
+    for col_name, col_type in chat_messages_columns_to_add.items():
+        if col_name not in existing_chat_columns:
+            try:
+                cursor.execute(f"ALTER TABLE chat_messages ADD COLUMN {col_name} {col_type}")
+                print(f"Added '{col_name}' column to 'chat_messages' table.")
+            except sqlite3.OperationalError as e:
+                print(f"Could not add column '{col_name}' to 'chat_messages' table: {e}. It might already exist.")
+
     # --- Session Memory State Table ---
+    # Stores serialized conversation memory for LLMs, allowing sessions to be resumed with context.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS session_memory_state (
-        session_id TEXT PRIMARY KEY,        -- Links directly to the session
-        memory_state_json TEXT NOT NULL,    -- Stores the serialized memory state (e.g., as JSON)
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the memory was last saved
-        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
+        session_id TEXT PRIMARY KEY,                -- Foreign key to the sessions table
+        memory_state_json TEXT NOT NULL,            -- Serialized memory state (e.g., JSON string)
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When this memory state was last updated
+        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE -- If session is deleted, its memory state is deleted
     );
     """)
     print("Ensured 'session_memory_state' table exists.")
 
     # --- Password Reset Attempts Table ---
+    # Logs attempts to reset passwords, useful for rate limiting and security auditing.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS password_reset_attempts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT NOT NULL,                -- The email for which the reset was attempted.
-        ip_address TEXT,                    -- Optional: IP address of the requester.
-        attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Timestamp of the attempt.
+        email TEXT NOT NULL,                        -- Email for which the reset was attempted
+        ip_address TEXT,                            -- Optional: IP address of the requester
+        attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Timestamp of the reset attempt
     );
     """)
     print("Ensured 'password_reset_attempts' table exists.")
 
-
     # --- Indexes for Performance ---
-    # Original indexes
+    # These indexes help speed up common queries.
+    print("Ensuring database indexes exist...")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_auth_tokens_token_hash ON auth_tokens (token_hash);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_id ON auth_tokens (user_id);")
@@ -160,28 +189,38 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_participants_session_id ON session_participants (session_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_participants_user_id ON session_participants (user_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages (session_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_timestamp ON chat_messages (timestamp);") # For ordering messages
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_memory_state_session_id ON session_memory_state (session_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_attempts_email_time ON password_reset_attempts (email, attempted_at);")
     print("Ensured all indexes exist.")
 
-    conn.commit()
+    conn.commit() # Save all schema changes
     conn.close()
     print("Database initialization process complete.")
 
+# --- Utility Functions ---
+
 def hash_value(value: str) -> str:
-    """Hashes a string value (e.g., password or token) using SHA256."""
+    """
+    Hashes a string value (e.g., for storing tokens securely) using SHA256.
+    """
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
 
 def generate_secure_token(length: int = 32) -> str:
-    """Generates a cryptographically secure URL-safe token."""
+    """
+    Generates a cryptographically secure, URL-safe text string.
+    Useful for session tokens, password reset tokens, etc.
+    """
     return secrets.token_urlsafe(length)
 
-# You can run this file directly to initialize the database:
-# python -m app.database
+# This allows the script to be run directly to initialize the database
+# e.g., `python -m app.database` from the project root directory.
 if __name__ == "__main__":
-    print(f"Running database script directly. CWD: {Path.cwd()}")
-    print(f"Project Root should be: {PROJECT_ROOT}")
+    print(f"Running database script directly. Current Working Directory: {Path.cwd()}")
+    print(f"Project Root (expected): {PROJECT_ROOT}")
     print(f"Database will be created/checked at: {DATABASE_PATH}")
-    # Ensure the parent directory for the database exists
+    
+    # Ensure the parent directory for the database file exists before trying to create/connect to it
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    
     init_db()

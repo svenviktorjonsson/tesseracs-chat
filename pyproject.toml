@@ -31,15 +31,13 @@ python-multipart = "^0.0.20"
 fastapi-mail = "^1.4.2"
 certifi = "^2025.4.26"
 pydantic = "^2.11.4"
-passlib = {extras = ["bcrypt"], version = "*"}
 langchain-openai = "^0.3.16"
 langchain-anthropic = "^0.3.13"
 langchain-google-genai = "^2.1.4"
 cryptography = ">=43.0,<44.0"
-bcrypt = "^4.3.0"
-
-[tool.poetry.scripts]
-app = "app.main:start_server" # Command to run the app
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+bcrypt = "==4.0.1"
+fastapi-csrf-protect = "^1.0.3"
 
 [build-system]
 requires = ["poetry-core"]

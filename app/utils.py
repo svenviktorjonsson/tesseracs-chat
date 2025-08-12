@@ -1,8 +1,30 @@
 # app/utils.py
-import json
-import traceback
+
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.websockets import WebSocketState
+import re
+import html
+
+def escape_html(s: str) -> str:
+    """
+    Escapes a string for safe inclusion in HTML, preventing XSS.
+    """
+    if not isinstance(s, str):
+        s = str(s) # Ensure it's a string
+    return html.escape(s)
+
+def is_valid_email(email: str) -> bool:
+    """
+    Validates an email address.
+    (This is a basic example, consider a more robust library for production)
+    """
+    if not email:
+        return False
+    # Basic regex for email validation
+    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    if re.match(pattern, email):
+        return True
+    return False
 
 async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict):
     """Safely sends a JSON message over the WebSocket."""

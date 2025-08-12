@@ -5,7 +5,10 @@
   "main": "temp.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "node build.js"
+    "build": "node build.js",
+    "watch:css": "tailwindcss -i ./app/static/input.css -o ./app/static/dist/input.css --watch",
+    "watch:js": "esbuild app/static/script.js --bundle --outfile=app/static/dist/script.js --watch",
+    "dev": "concurrently \"npm:watch:*\""
   },
   "repository": {
     "type": "git",
@@ -21,6 +24,7 @@
   "homepage": "https://github.com/svenviktorjonsson/tesseracs-chat#readme",
   "devDependencies": {
     "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.0",
     "esbuild": "^0.25.4",
     "esbuild-style-plugin": "^1.6.3",
     "postcss": "^8.5.3",

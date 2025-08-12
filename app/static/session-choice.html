@@ -8,22 +8,41 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <script id="csrf-token-script-page-session-choice">
+      // This placeholder will be replaced by the server with the actual raw CSRF token.
+      window.csrfTokenRaw = "%%CSRF_TOKEN_RAW%%";
+    </script>
+    <script>
+      // Optional immediate diagnostic client-side to verify token injection
+      if (typeof window.csrfTokenRaw !== 'undefined' && window.csrfTokenRaw !== "%%CSRF_TOKEN_RAW%%") {
+        console.log('SESSION CHOICE PAGE JS (after csrf-token-script): window.csrfTokenRaw is available.');
+      } else {
+        console.warn('SESSION CHOICE PAGE JS (after csrf-token-script): window.csrfTokenRaw IS STILL THE PLACEHOLDER "%%CSRF_TOKEN_RAW%%" OR UNDEFINED. Value:', window.csrfTokenRaw);
+      }
+    </script>    
     <style>
-        .sidebar-scrollable { overflow-y: auto; scrollbar-width: thin; scrollbar-color: #a0aec0 #edf2f7; }
+        .sidebar-scrollable { overflow-y: auto; scrollbar-width: thin; scrollbar-color: #a0aec0 #edf2f7; } /* Tailwind gray-400 and gray-200 */
         .sidebar-scrollable::-webkit-scrollbar { width: 6px; }
-        .sidebar-scrollable::-webkit-scrollbar-track { background: #edf2f7; border-radius: 3px; }
-        .sidebar-scrollable::-webkit-scrollbar-thumb { background-color: #a0aec0; border-radius: 3px; border: 1px solid #edf2f7; }
+        .sidebar-scrollable::-webkit-scrollbar-track { background: #edf2f7; border-radius: 3px; } /* Tailwind gray-200 */
+        .sidebar-scrollable::-webkit-scrollbar-thumb { background-color: #a0aec0; border-radius: 3px; border: 1px solid #edf2f7; } /* Tailwind gray-400 and gray-200 */
+        /* Ensure body and html take full height for the flex container */
+        html, body {
+            height: 100%;
+            margin: 0;
+            font-family: 'Inter', sans-serif; /* Use Inter font */
+        }
     </style>
 </head>
-<body class="font-sans bg-gray-100 text-gray-800">
+<body class="bg-gray-100 text-gray-800">
 
     <div class="flex h-screen overflow-hidden">
-        <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col overflow-hidden">
+        <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col overflow-hidden shrink-0">
             </aside>
 
         <main id="session-choice-content" class="flex-1 flex flex-col p-6 overflow-y-auto items-center justify-center">
             <div class="bg-white p-8 rounded-lg shadow-xl text-center max-w-lg">
-                <h1 class="text-3xl font-bold text-gray-800 mb-4">Welcome to Tesseracs Chat!</h1>
+                <h1 class="text-3xl font-bold text-gray-800 mb-4">Welcome to Tesseracs Chat, [User Name]!</h1>
                 <p class="text-gray-600 mb-6">
                     Select an existing session from the sidebar to continue your conversations,
                     or click "New Chat" in the sidebar to start a fresh one.
@@ -43,20 +62,31 @@
     </div>
 
     <script type="module">
-        import { loadSidebarHTML, populateSessionList } from '/static/js/app-ui.js';
+        import { loadSidebarHTML, populateSessionList } from '/static/js/app-ui.js'; // Ensure setupSidebarCSRF is called within/after loadSidebarHTML
 
         document.addEventListener('DOMContentLoaded', async () => {
             console.log("Session Choice Page (Welcome Page): DOMContentLoaded. Attempting to load UI components.");
+            const sidebarContainer = document.getElementById('sidebar-loader-target');
+            if (!sidebarContainer) {
+                console.error("Session Choice Page: Sidebar container 'sidebar-loader-target' not found!");
+                return;
+            }
             
             const sidebarLoaded = await loadSidebarHTML('/static/_sidebar.html', 'sidebar-loader-target');
             
             if (sidebarLoaded) {
-                // Use '/chat/' as the base URL, so links become /chat/SESSION_ID
-                await populateSessionList('/api/sessions', 'session-list', '/chat/');
+                // The setupSidebarCSRF() call should ideally be part of loadSidebarHTML's success logic
+                // or called immediately after if loadSidebarHTML is synchronous in its DOM update.
+                const sessionListElement = document.getElementById('session-list');
+                 if (sessionListElement) {
+                    await populateSessionList('/api/sessions', 'session-list', '/chat/');
+                } else {
+                    console.error("Session Choice Page: Session list element 'session-list' not found after sidebar load.");
+                }
             } else {
-                console.error("Session Choice Page: Sidebar loading failed, session list will not be populated by app-ui.js.");
+                console.error("Session Choice Page: Sidebar loading failed. Session list will not be populated.");
             }
         });
     </script>
-</body>
+    </body>
 </html>
