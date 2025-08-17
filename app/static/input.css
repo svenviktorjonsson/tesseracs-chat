@@ -22,23 +22,15 @@ html, body {
 #chat-history {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem; /* Use rem for scalable padding */
+    padding: 1rem;
     display: flex;
     flex-direction: column;
-    background-color: #ffffff; /* White background for chat area */
+    background-color: #ffffff;
     box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
-    margin: 1rem; /* Add margin around the chat history */
-    border-radius: 0.5rem; /* Rounded corners */
+    margin: 1rem;
+    border-radius: 0.5rem;
 }
 
-/* Custom scrollbar for chat history */
-#chat-history::-webkit-scrollbar { width: 8px; }
-#chat-history::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 10px; }
-#chat-history::-webkit-scrollbar-thumb { background: #888; border-radius: 10px; }
-#chat-history::-webkit-scrollbar-thumb:hover { background: #555; }
-
-/* Custom scrollbar for sidebar (and other scrollable elements if needed) */
-/* Note: Adjust theme('colors.gray.XXX') if your project uses different gray shades or names */
 .sidebar-scrollable {
     overflow-y: auto;
     scrollbar-width: thin; /* For Firefox */
@@ -58,60 +50,84 @@ html, body {
 }
 /* ----------------------------------- */
 
+
+/* Style for the AI Stop Generation button */
+#stop-ai-button {
+    background-color: #ef4444; /* red-500 */
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    font-weight: bold;
+    transition: background-color 0.15s ease-in-out;
+    margin-left: 0.5rem;
+}
+#stop-ai-button:hover {
+    background-color: #dc2626; /* red-600 */
+}
+#stop-ai-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Utility class (already present in Tailwind but good to have explicit) */
+.hidden {
+    display: none !important;
+}
+/* ----------------------------------- */
+
+
 /* --- Message Styling --- */
+/* (All the other styles from your original input.css remain here) */
 .message {
-    padding: 0.5rem 0.75rem; /* Use rem */
+    padding: 0.5rem 0.75rem;
     margin-bottom: 0.5rem;
     border-radius: 0.5rem;
     max-width: 90%;
     word-wrap: break-word;
-    line-height: 1.5; /* Improve readability */
+    line-height: 1.5;
 }
 
 .user-message {
     background-color: #dbeafe; /* Tailwind blue-100 */
     align-self: flex-end;
     margin-left: auto;
-    white-space: pre-wrap; /* Preserve user whitespace */
+    white-space: pre-wrap;
 }
 
-/* Container for a full AI turn (thinking + bubble + code blocks) */
 .ai-turn-container {
     display: flex;
     flex-direction: column;
-    align-items: flex-start; /* Align items to the left */
-    width: 100%; /* Take full width to allow max-width on children */
-    margin-bottom: 0.5rem; /* Consistent spacing */
+    align-items: flex-start;
+    width: 100%;
+    margin-bottom: 0.5rem;
 }
 
 .ai-message {
     background-color: #e5e7eb; /* Tailwind gray-200 */
     align-self: flex-start;
     margin-right: auto;
-    max-width: 90%; /* Limit width */
-    padding: 0.5rem 0.75rem; /* Added padding for consistency */
-    border-radius: 0.5rem; /* Added radius for consistency */
+    max-width: 90%;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
 }
 
-/* Styling for Markdown elements rendered inside .ai-message */
 .ai-message p { margin-bottom: 0.5em; }
 .ai-message p:last-child { margin-bottom: 0; }
 .ai-message ul, .ai-message ol { margin-left: 1.5em; margin-top: 0.5em; margin-bottom: 0.5em; }
 .ai-message li { margin-bottom: 0.25em; }
 .ai-message blockquote { border-left: 3px solid #ccc; padding-left: 0.8em; margin-left: 0; margin-top: 0.5em; margin-bottom: 0.5em; color: #555; }
-.ai-message code { /* Inline code */
+.ai-message code {
     background-color: rgba(0, 0, 0, 0.06);
     padding: 0.1em 0.3em;
     border-radius: 3px;
     font-family: monospace;
     font-size: 0.9em;
 }
-/* Avoid double background for code elements within Prism blocks */
 .ai-message pre[class*="language-"] code {
     background-color: transparent;
     padding: 0;
     border-radius: 0;
-    font-size: inherit; /* Inherit size from pre */
+    font-size: inherit;
 }
 .ai-message a { color: #007bff; text-decoration: underline; }
 .ai-message a:hover { color: #0056b3; }
@@ -120,18 +136,17 @@ html, body {
 .ai-message th, .ai-message td { border: 1px solid #ccc; padding: 0.3em 0.6em; text-align: left; }
 .ai-message th { background-color: #f2f2f2; font-weight: bold; }
 
-/* Code reference style in the main bubble */
 .code-reference {
     font-family: monospace;
-    background-color: rgba(0, 0, 0, 0.08); /* Light gray background */
-    padding: 1px 5px; /* Small padding */
-    border-radius: 4px; /* Rounded corners */
-    font-size: 0.85em; /* Slightly smaller font */
-    white-space: nowrap; /* Prevent breaking */
-    margin: 0 2px; /* Add slight spacing around it */
+    background-color: rgba(0, 0, 0, 0.08);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    white-space: nowrap;
+    margin: 0 2px;
 }
 
-/* --- Loading/Thinking Indicators --- */
+/* (The rest of your file continues unchanged) */
 .loading-dots { display: inline-block; }
 .loading-dots::after {
     display: inline-block; position: relative; left: 1px;
@@ -141,8 +156,6 @@ html, body {
 @keyframes ellipsis {
     0% { content: "."; } 33% { content: ".."; } 66% { content: "..."; }
 }
-
-/* --- Thinking Area Styling --- */
 .thinking-area {
     width: 100%; max-width: 90%; margin-bottom: 4px;
     align-self: flex-start; font-size: 0.9em;
@@ -160,7 +173,7 @@ html, body {
 .thinking-summary:hover { background-color: #d0d0d0; }
 .thinking-summary::-webkit-details-marker { display: none; }
 .thinking-summary .dots { display: inline-block; margin-left: 4px; }
-.thinking-summary .dots::after { /* Uses ellipsis animation defined above */
+.thinking-summary .dots::after {
     display: inline-block; position: relative; left: 1px;
     animation: ellipsis 1.5s infinite; content: ".";
     width: 1.5em; text-align: left; vertical-align: bottom;
@@ -171,108 +184,93 @@ html, body {
     white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word;
     max-height: 200px; overflow-y: auto;
 }
-
-/* --- Code Block Area --- */
 .code-blocks-area {
-    width: 100%; /* Allow blocks to take full width */
-    max-width: 90%; /* Match AI bubble width */
-    align-self: flex-start; /* Align with AI bubble */
-    margin-top: 0.5rem; /* Space above code blocks */
+    width: 100%;
+    max-width: 90%;
+    align-self: flex-start;
+    margin-top: 0.5rem;
 }
-
 .code-block-container {
-    margin-bottom: 0.75rem; /* Space between code blocks */
-    border-radius: 0.375rem; /* 6px - Applied to the whole container */
-    overflow: hidden; /* Crucial: clips children to the container's radius */
+    margin-bottom: 0.75rem;
+    border-radius: 0.375rem;
+    overflow: hidden;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 
-/* --- Unified Code Block Header Styles --- */
 .code-block-header,
 .code-output-header {
     display: flex;
     align-items: center;
-    background-color: #e5e7eb; /* Tailwind gray-200 (Unified Style) */
-    padding: 0.25rem 0.5rem;      /* Unified Style */
-    font-size: 0.8em;             /* Unified Style */
-    color: #4b5563;               /* Unified Style (Gray-600) */
-    gap: 0.625rem;                /* Unified Style (10px) */
+    background-color: #e5e7eb;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8em;
+    color: #4b5563;
+    gap: 0.625rem;
+    border-top-left-radius: 0.375rem;
+    border-top-right-radius: 0.375rem;
 }
 
-/* Specific adjustment for Output Header spacing */
 .code-output-header {
-    margin-top: 0.25rem; /* Keep space above output header */
-    /* border-top: none; /* Ensure no top border if previously added */
+    margin-top: 0.25rem;
 }
 
-/* --- Header Content Alignment --- */
-
-/* Buttons Div (Shared) */
+.code-output-header {
+    margin-top: 0.25rem;
+}
 .code-block-buttons,
-.output-header-buttons { /* Combined selector */
+.output-header-buttons {
     display: flex;
     align-items: center;
-    gap: 0.375rem; /* 6px */
+    gap: 0.375rem;
     flex-shrink: 0;
 }
-
-/* Title (Shared Properties) */
 .code-block-title,
-.output-header-title { /* Combined selector */
+.output-header-title {
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
-
-/* Code Header Title Specifics */
 .code-block-title {
-    flex-shrink: 1; /* Allow title to shrink if needed */
-    flex-grow: 1; /* Allow title to grow */
+    flex-shrink: 1;
+    flex-grow: 1;
     text-align: left;
 }
-
-/* Output Header Title Specifics */
 .output-header-title {
-    flex-shrink: 0; /* Don't let title shrink */
-    margin-right: 0.625rem; /* Space after title, before status */
+    flex-shrink: 0;
+    margin-right: 0.625rem;
 }
 
-/* Placeholder for alignment in Output Header */
+
 .output-header-button-placeholder {
     display: inline-block;
     width: 24px;
     height: 24px;
     flex-shrink: 0;
 }
-
-/* Status Span (Only in Output Header) */
 .code-status-span {
-    margin-left: auto; /* Pushes this element to the far right */
+    margin-left: auto;
     text-align: right;
     font-style: italic;
-    font-size: 0.9em; /* Relative to header font-size */
+    font-size: 0.9em;
     padding: 0 0.3125rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: #6b7280; /* Default Idle color */
-    flex-shrink: 0; /* Prevent status from shrinking */
+    color: #6b7280;
+    flex-shrink: 0;
 }
 .code-status-span.running, .code-status-span.stopping { color: #ca8a04; font-weight: 500; }
 .code-status-span.success { color: #16a34a; font-weight: 500; }
 .code-status-span.error, .code-status-span.stopped { color: #dc2626; font-weight: 500; }
-
-
-/* --- Code Block Action Buttons (Shared Base Style) --- */
 .code-action-btn {
-    background-color: #d1d5db; /* Tailwind gray-300 */
-    color: #4b5563; /* Gray-600 */
+    background-color: #d1d5db;
+    color: #4b5563;
     border: none;
-    padding: 0.1875rem 0.4375rem; /* 3px 7px */
-    border-radius: 0.25rem; /* 4px */
+    padding: 0.1875rem 0.4375rem;
+    border-radius: 0.25rem;
     cursor: pointer;
-    font-size: 0.9em; /* Relative to header font-size */
+    font-size: 0.9em;
     line-height: 1.2;
     transition: background-color 0.2s ease, color 0.2s ease;
     display: inline-flex;
@@ -283,11 +281,7 @@ html, body {
 .code-action-btn:hover { background-color: #9ca3af; color: #1f2937; }
 .code-action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .code-action-btn.copied { background-color: #16a34a; color: white; }
-
-/* --- Button Style Override for Output Header (Ensures consistency) --- */
-/* This rule overrides browser defaults/resets for buttons specifically in the output header */
 .code-output-header .code-action-btn {
-    /* Re-apply key styles from .code-action-btn to ensure they take precedence */
     background-color: #d1d5db;
     color: #4b5563;
     border: none;
@@ -303,16 +297,11 @@ html, body {
     white-space: nowrap;
 }
 .code-output-header .code-action-btn:hover {
-     background-color: #9ca3af;
-     color: #1f2937;
+    background-color: #9ca3af;
+    color: #1f2937;
 }
-/* Add other states (:disabled, .copied) if needed for output header specifically */
-/* e.g., .code-output-header .code-action-btn.copied { ... } */
-
-
-/* Specific Run/Stop Button Styling (Only in Code Header) */
-.run-code-btn { /* This class is only applied in the code header */
-    padding: 4px; width: 24px; height: 24px; font-size: 1em; /* Relative to header font-size */
+.run-code-btn {
+    padding: 4px; width: 24px; height: 24px; font-size: 1em;
     background-color: transparent !important; border: none !important;
     color: #9ca3af; transition: color 0.2s ease;
 }
@@ -324,71 +313,53 @@ html, body {
 .run-code-btn[data-status="stopping"] { color: #f59e0b; cursor: wait; animation: spin 1s linear infinite; }
 .run-code-btn[data-status="stopping"]:hover { color: #d97706; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-/* --- Code Area & Output Console --- */
-
-/* Style for the <pre> containing the code input */
-.code-block-container > pre[class*="language-"] { /* More specific selector */
+.code-block-container > pre[class*="language-"] {
     margin: 0;
-    border: 1px solid #d1d5db; /* Lighter border for code input */
+    border: 1px solid #d1d5db;
     border-top: none;
-    border-bottom: none !important; /* Remove bottom border if output follows */
+    border-bottom: none !important;
     overflow: hidden;
-    /* Background comes from Prism theme */
 }
-
-/* Style for the editable code element itself */
 .code-block-container > pre[class*="language-"] > code[class*="language-"] {
     outline: none;
     white-space: pre-wrap !important;
     word-wrap: break-word !important;
     display: block;
     min-height: 1.5em;
-    padding: 0.5em; /* Padding inside code input */
+    padding: 0.5em;
 }
 .code-block-container > pre[class*="language-"] > code[class*="language-"]:focus {
-    background-color: rgba(0, 0, 0, 0.03); /* Slight focus indicator */
+    background-color: rgba(0, 0, 0, 0.03);
 }
-
-/* Output Console Container */
 .code-output-console {
-    background-color: #1f2937; /* Dark background */
-    color: #f3f4f6;           /* Light text */
-    padding: 0;               /* No padding on container */
-    border: 1px solid #4b5563; /* Darker border */
-    border-top: none !important;/* No top border */
+    background-color: #1f2937;
+    color: #f3f4f6;
+    padding: 0;
+    border: 1px solid #4b5563;
+    border-top: none !important;
     max-height: 250px;
     overflow-y: auto;
     font-family: monospace;
-    font-size: 0.85em;         /* Slightly smaller than code input */
+    font-size: 0.85em;
     line-height: 1.4;
 }
-
-/* Style for the <pre> inside the Output Console */
 .code-output-console pre {
     margin: 0;
     white-space: pre-wrap;
     word-wrap: break-word;
     color: inherit;
-    border: none !important; /* Explicitly remove border */
-    padding: 0.5rem;         /* Padding for the output text */
-    background-color: transparent; /* Use parent's background */
+    border: none !important;
+    padding: 0.5rem;
+    background-color: transparent;
     outline: none !important;
 }
-
-/* Styles for the output text spans */
 .code-output-console span { display: inline; white-space: pre-wrap; }
 .code-output-console span.stdout-output { color: #ffffff; }
-.code-output-console span.stderr-output { color: #f87171; } /* Lighter Red */
-
-/* --- Hide/Show Functionality --- */
-.code-block-container > pre.hidden, /* Hides code input pre */
-.code-output-console.hidden,       /* Hides output console div */
-.code-output-header.hidden         /* Hides output header */
+.code-output-console span.stderr-output { color: #f87171; }
+.code-block-container > pre.hidden,
+.code-output-console.hidden,
+.code-output-header.hidden
  { display: none !important; }
-
-
-/* --- Footer & Input --- */
 footer { padding: 1rem; background-color: #e5e7eb; border-top: 1px solid #d1d5db; }
 #chat-form { display: flex; align-items: center; gap: 0.5rem; }
 .think-checkbox-container { display: flex; align-items: center; font-size: 0.9em; color: #4b5563; }
@@ -406,8 +377,6 @@ footer { padding: 1rem; background-color: #e5e7eb; border-top: 1px solid #d1d5db
 }
 #send-button:hover { background-color: #1d4ed8; }
 #send-button:disabled { opacity: 0.6; cursor: not-allowed; }
-
-/* --- Error/System Messages --- */
 .error-message {
     background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca;
     align-self: flex-start; margin-right: auto; padding: 0.5rem 0.75rem;
@@ -418,15 +387,6 @@ footer { padding: 1rem; background-color: #e5e7eb; border-top: 1px solid #d1d5db
     width: 100%; text-align: center; font-size: 0.875rem; color: #6b7280;
     font-style: italic; margin: 0.25rem 0;
 }
-
-/* --- KaTeX Specific Styling --- */
 span[data-katex-rendered="true"] .katex-display { margin: 0.5em 0; overflow-x: auto; overflow-y: hidden; padding: 0.2em 0; }
 span[data-katex-rendered="true"] .katex { line-height: normal; vertical-align: baseline; font-size: 1em; }
 .katex-error { color: #cc0000; background-color: #fdd; border: 1px solid #cc0000; padding: 2px 4px; border-radius: 3px; }
-
-/* --- Utility --- */
-.hidden { display: none !important; }
-
-/* Add Prism.js theme styles separately */
-/* Link to a theme in your HTML or include the theme CSS rules here */
-/* e.g., @import url('path/to/prism-theme.css'); */

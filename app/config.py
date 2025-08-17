@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from typing import Optional, List, Dict, Any
+import json
 
 # Load environment variables from a .env file if it exists
 load_dotenv()
@@ -54,12 +55,12 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "api_key_env_var": "GOOGLE_API_KEY", # User's original: None, changed to GOOGLE_API_KEY to align with get_provider_config usage
         "available_models": [
             {
-                "model_id": "gemini-2.5-pro-preview-05-06", # User's original model ID
+                "model_id": "gemini-2.5-pro", # User's original model ID
                 "display_name": "Gemini 2.5 Pro", 
                 "context_window": 1048576 
             },
             {
-                "model_id": "gemini-2.5-flash-preview-04-17", # User's original model ID
+                "model_id": "gemini-2.5-flash", # User's original model ID
                 "display_name": "Gemini 2.5 Flash", 
                 "context_window": 1048576 
             }
@@ -73,8 +74,8 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "api_key_env_var": "ANTHROPIC_API_KEY", # User's original: None, changed to ANTHROPIC_API_KEY
         "available_models": [
             {
-                "model_id": "claude-3-7-sonnet-20250219", # User's original model ID
-                "display_name": "Claude 3.7 Sonnet", 
+                "model_id": "claude-sonnet-4-20250514", # User's original model ID
+                "display_name": "Claude 4.0 Sonnet", 
                 "context_window": 200000 
             }
         ],
@@ -86,8 +87,8 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "api_key_env_var": "OPENAI_COMPATIBLE_API_KEY", # User's original: None, changed to OPENAI_COMPATIBLE_API_KEY
         "available_models": [
             {
-                "model_id": "o4-mini", # User's original model ID
-                "display_name": "o4 mini (OpenAI Compatible)",
+                "model_id": "gpt-4o-2024-08-06", 
+                "display_name": "GPT 4o",
                 "context_window": 128000
             }
         ],
@@ -161,20 +162,6 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 NO_THINK_PREFIX = "\\no_think"
 THINK_PREFIX = "\\think"
 
-# --- Docker Configuration ---
-SUPPORTED_LANGUAGES = {
-    "python": {"image": "python:3.11-slim", "filename": "script.py", "command": ["python", "-u", "/app/script.py"]},
-    "javascript": {"image": "node:18-alpine", "filename": "script.js", "command": ["node", "/app/script.js"]},
-    "cpp": {"image": "gcc:latest", "filename": "script.cpp", "command": ["sh", "-c", "g++ /app/script.cpp -o /app/output_executable && exec /app/output_executable"]},
-    "csharp": {"image": "mcr.microsoft.com/dotnet/sdk:latest", "filename": "Script.cs", "command": ["sh", "-c", "cd /app && dotnet new console --force -o . > /dev/null && cp Script.cs Program.cs && rm Script.cs && exec dotnet run"]},
-    "typescript": {"image": "node:18-alpine", "filename": "script.ts", "command": ["sh", "-c", "npm install -g typescript > /dev/null 2>&1 && tsc --module commonjs /app/script.ts && exec node /app/script.js"]},
-    "java": {"image": "openjdk:17-jdk-slim", "filename": "Main.java", "command": ["sh", "-c", "javac /app/Main.java && exec java -cp /app Main"]},
-    "go": {"image": "golang:1.21-alpine", "filename": "script.go", "command": ["go", "run", "/app/script.go"]},
-    "rust": {"image": "rust:1-slim", "filename": "main.rs", "command": ["sh", "-c", "cd /app && rustc main.rs -o main_executable && exec ./main_executable"]}
-}
-
-DOCKER_TIMEOUT_SECONDS = int(os.getenv("DOCKER_TIMEOUT_SECONDS", 30))
-DOCKER_MEM_LIMIT = os.getenv("DOCKER_MEM_LIMIT", "128m")
 
 # --- Static Files Configuration ---
 APP_DIR = Path(__file__).resolve().parent 
@@ -197,6 +184,21 @@ else:
     if not STATIC_DIR or not STATIC_DIR.is_dir(): 
         print(f"CRITICAL ERROR: Static directory not found. Checked standard locations relative to {APP_DIR}, {PROJECT_ROOT}, and {current_working_dir}. Application may not serve frontend assets.")
         # sys.exit(1) # Consider if exiting is appropriate or just log error
+
+# --- Docker Configuration ---
+LANGUAGES_CONFIG_PATH = APP_DIR / "static" / "languages.json"
+try:
+    with open(LANGUAGES_CONFIG_PATH, "r", encoding="utf-8") as f:
+        SUPPORTED_LANGUAGES = json.load(f)
+    print(f"DEBUG config: Successfully loaded {len(SUPPORTED_LANGUAGES)} languages from {LANGUAGES_CONFIG_PATH}")
+except Exception as e:
+    print(f"CRITICAL ERROR: Could not load or parse languages.json: {e}")
+    # Fallback to an empty dict if the file is missing or corrupt
+    SUPPORTED_LANGUAGES = {}
+
+DOCKER_TIMEOUT_SECONDS = int(os.getenv("DOCKER_TIMEOUT_SECONDS", 30))
+DOCKER_MEM_LIMIT = os.getenv("DOCKER_MEM_LIMIT", "128m")
+
 
 # --- Email Configuration ---
 MAIL_CONFIG = {
@@ -240,3 +242,7 @@ else:
 
 if not CSRF_PROTECT_SECRET_KEY:
      print("WARNING config: CSRF_PROTECT_SECRET_KEY is not set in environment. main.py will use a fallback (insecure for production).")
+    
+print("-" * 50)
+print(f"DEBUG: APP_SECRET_KEY loaded in config.py: {APP_SECRET_KEY}")
+print("-" * 50)

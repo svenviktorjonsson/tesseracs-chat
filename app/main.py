@@ -1279,7 +1279,44 @@ async def get_current_user_details(
     return models.UserResponseModel(id=user["id"], name=user["name"], email=user["email"])
 
 
+@app.get("/api/sessions/{session_id}/code-results", response_model=List[Dict[str, Any]], tags=["Code Execution"])
+async def get_session_code_execution_results(
+    session_id: str = FastApiPath(..., description="The ID of the session to fetch code results for."),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user)
+) -> List[Dict[str, Any]]:
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    
+    user_id = user.get('id')
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="User ID missing in token/session.")
 
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user_id)
+        )
+        if not cursor.fetchone():
+            cursor.execute("SELECT 1 FROM sessions WHERE id = ? AND is_active = 1", (session_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat session not found or is inactive.")
+            else:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this session's code results.")
+        
+        results = database.get_code_execution_results(session_id)
+        return results
+        
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected server error occurred while fetching code results.")
+    finally:
+        if conn:
+            conn.close()
 
 
 @app.get("/api/sessions", response_model=List[models.SessionResponseModel], tags=["Sessions"])
@@ -1405,10 +1442,6 @@ async def get_chat_messages_for_session(
             conn.close()
 
 
-# --- WebSocket Chat Logic ---
-# CSRF protection is not directly applied to WebSockets by fastapi-csrf-protect.
-# Auth is handled by checking the session cookie during the WebSocket upgrade request.
-
 async def handle_chat_message(
     chain: Any, 
     memory: Any, 
@@ -1435,8 +1468,8 @@ async def handle_chat_message(
         db_cursor_user_msg = db_conn_user_msg.cursor()
         db_cursor_user_msg.execute(
             """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, 
-                                          client_id_temp, turn_id, timestamp, 
-                                          model_provider_id, model_id) 
+                                           client_id_temp, turn_id, timestamp, 
+                                           model_provider_id, model_id) 
                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'), ?, ?)""",
             (session_id, user_db_id, user_name, 'user', user_input, client_js_id, turn_id, None, None) # LLM info not applicable to user msg
         )
@@ -1460,6 +1493,11 @@ async def handle_chat_message(
             return 
 
         async for chunk_data in chain.astream({"input": user_input}):
+            
+            # --- START: Added logging for debugging ---
+            print(f"--- LLM RAW CHUNK (Turn ID: {turn_id}) ---\n{chunk_data}\n---------------------------------")
+            # --- END: Added logging for debugging ---
+
             if stop_event and stop_event.is_set(): # Check if stop signal received
                 print(f"AI stream {stream_id} stopped by client signal.")
                 break 
@@ -1479,7 +1517,7 @@ async def handle_chat_message(
                             chunk_str = chunk_data[key]
                             break
                     if not chunk_str:
-                         print(f"DEBUG: LLM chunk_data (dict) received with unexpected structure: {chunk_data}")
+                        print(f"DEBUG: LLM chunk_data (dict) received with unexpected structure: {chunk_data}")
 
             elif hasattr(chunk_data, 'content') and isinstance(chunk_data.content, str): # For AIMessageChunk like objects
                 chunk_str = chunk_data.content
@@ -1497,9 +1535,9 @@ async def handle_chat_message(
         # After loop finishes (either by completing or by stop_event)
         if websocket.client_state == WebSocketState.CONNECTED:
             if stop_event and stop_event.is_set():
-                 await websocket.send_text("<EOS_STOPPED>") # Signal client generation was stopped
+                await websocket.send_text("<EOS_STOPPED>") # Signal client generation was stopped
             else:
-                 await websocket.send_text("<EOS>") # Normal End of Stream signal
+                await websocket.send_text("<EOS>") # Normal End of Stream signal
 
         if memory: 
             try:
@@ -1543,7 +1581,6 @@ async def handle_chat_message(
     finally:
         if stream_id and stop_event: 
             await state.unregister_ai_stream(stream_id)
-
 
 @app.websocket("/ws/{session_id_ws}/{client_js_id}")
 async def websocket_endpoint(
@@ -1754,6 +1791,29 @@ async def websocket_endpoint(
                         if websocket.client_state == WebSocketState.CONNECTED:
                             await websocket.send_json({"type": "code_finished", "payload": {"code_block_id": code_block_id, "exit_code": -1, "error": "Invalid run_code payload: 'language' or 'code' missing."}})
                 
+                elif message_type == "save_code_result" and payload and payload.get("code_block_id"):
+                    code_block_id = payload.get("code_block_id")
+                    language = payload.get("language")
+                    code_content = payload.get("code_content")
+                    output_content = payload.get("output_content")
+                    html_content = payload.get("html_content")
+                    exit_code = payload.get("exit_code")
+                    error_message = payload.get("error_message")
+                    execution_status = payload.get("execution_status", "completed")
+                    turn_id = payload.get("turn_id")
+                    
+                    database.save_code_execution_result(
+                        session_id=session_id_ws,
+                        code_block_id=code_block_id,
+                        language=language,
+                        code_content=code_content,
+                        output_content=output_content,
+                        html_content=html_content,
+                        exit_code=exit_code,
+                        error_message=error_message,
+                        execution_status=execution_status,
+                        turn_id=turn_id
+                    )
                 elif message_type == "stop_code" and payload and payload.get("code_block_id"):
                     code_block_id = payload.get("code_block_id")
                     print(f"---- WS LOG: Received 'stop_code' for block {code_block_id} from {user_id}")
@@ -1769,7 +1829,13 @@ async def websocket_endpoint(
                         await state.signal_stop_ai_stream(stream_id_to_stop)
                     else:
                         print(f"---- WS WARNING: Ignoring 'stop_ai_stream' with mismatched identifiers. Client: {stop_client_id}/{client_js_id}, Session: {stop_session_id}/{session_id_ws}")
-                
+
+                elif message_type == "code_input" and payload and payload.get("code_block_id"):
+                    code_block_id = payload.get("code_block_id")
+                    user_input_text = payload.get("input", "")
+                    print(f"---- WS LOG: Received 'code_input' for block {code_block_id} from {user_id}: '{user_input_text.strip()}'")
+                    asyncio.create_task(docker_utils.send_input_to_container(code_block_id, user_input_text))
+
                 else: 
                     if websocket.client_state == WebSocketState.CONNECTED:
                         await websocket.send_text(f"<ERROR>Unknown command type received: {message_type}<EOS>")

@@ -1,5 +1,7 @@
 // static/js/app-ui.js
 
+window.isNavigatingAway = false;
+
 function setupSidebarCSRF() {
     const sidebarCsrfField = document.getElementById('sidebar_csrf_token');
     const newChatButton = document.getElementById('new-chat-button-sidebar'); // For disabling/enabling

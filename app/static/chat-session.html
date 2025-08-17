@@ -20,40 +20,7 @@
      } else {
        console.warn('CHAT PAGE JS (after csrf-token-script): window.csrfTokenRaw IS STILL THE PLACEHOLDER "%%CSRF_TOKEN_RAW%%" OR UNDEFINED. Value:', window.csrfTokenRaw);
      }
-    </script>   
-    <style>
-        .sidebar-scrollable { overflow-y: auto; scrollbar-width: thin; scrollbar-color: #a0aec0 #edf2f7; } /* Tailwind gray-400 and gray-200 */
-        .sidebar-scrollable::-webkit-scrollbar { width: 6px; }
-        .sidebar-scrollable::-webkit-scrollbar-track { background: #edf2f7; border-radius: 3px; } /* Tailwind gray-200 */
-        .sidebar-scrollable::-webkit-scrollbar-thumb { background-color: #a0aec0; border-radius: 3px; border: 1px solid #edf2f7; } /* Tailwind gray-400 and gray-200 */
-        
-        /* Style for the Stop button */
-        #stop-ai-button {
-            background-color: #ef4444; /* Tailwind red-500 */
-            color: white;
-            padding: 0.5rem 1rem; /* py-2 px-4 */
-            border-radius: 0.5rem; /* rounded-lg */
-            font-weight: bold;
-            transition: background-color 0.15s ease-in-out;
-            margin-left: 0.5rem; /* space-x-2 equivalent */
-        }
-        #stop-ai-button:hover {
-            background-color: #dc2626; /* Tailwind red-600 */
-        }
-        #stop-ai-button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .hidden {
-            display: none !important;
-        }
-        /* Ensure body and html take full height for the flex container */
-        html, body {
-            height: 100%;
-            margin: 0;
-            font-family: 'Inter', sans-serif; /* Use Inter font */
-        }
-    </style>
+    </script>
 </head>
 <body class="bg-gray-100 text-gray-800">
 

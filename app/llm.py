@@ -1,8 +1,10 @@
-# app/llm.py
 import sys
 import os
 import traceback 
 from typing import List, Callable, Optional, Any
+
+# Add these new imports for the safety settings
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
@@ -12,6 +14,8 @@ from langchain_ollama.llms import OllamaLLM
 from langchain_openai import ChatOpenAI 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
+
+
 
 from . import config 
 
@@ -73,7 +77,7 @@ def get_model(
             # OpenAI-compatible might work without a key if self-hosted & unsecured, but usually needs one.
             # The `api_key_env_var_name` being set in config implies a key is generally expected.
             if api_key_env_name and not resolved_api_key: # If it's expected via ENV fallback but not found
-                 print(f"LLM_WARNING: API key for openai_compatible provider '{provider_id}' not found (checked user input and ENV var '{api_key_env_name}'). Proceeding without API key if possible.")
+                print(f"LLM_WARNING: API key for openai_compatible provider '{provider_id}' not found (checked user input and ENV var '{api_key_env_name}'). Proceeding without API key if possible.")
             print(f"LLM: Initializing ChatOpenAI for '{provider_id}' with model='{model_id}', final_base_url='{final_base_url}'")
             model_instance = ChatOpenAI(
                 model_name=model_id,
@@ -87,7 +91,21 @@ def get_model(
                 print(f"LLM_ERROR: Google API Key is required for provider '{provider_id}' but was not provided by the user.")
                 return None
             print(f"LLM: Initializing ChatGoogleGenerativeAI with model='{model_id}'")
-            model_instance = ChatGoogleGenerativeAI(model=model_id, google_api_key=resolved_api_key)
+            
+            # --- THIS IS THE FIX ---
+            # Add safety_settings to disable the aggressive content filtering
+            model_instance = ChatGoogleGenerativeAI(
+                model=model_id, 
+                google_api_key=resolved_api_key,
+                safety_settings={
+                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                }
+            )
+            # --- END OF FIX ---
+
             return model_instance
 
         elif provider_type == "anthropic":
@@ -95,7 +113,11 @@ def get_model(
                 print(f"LLM_ERROR: Anthropic API Key is required for provider '{provider_id}' but was not provided by the user.")
                 return None
             print(f"LLM: Initializing ChatAnthropic with model='{model_id}'")
-            model_instance = ChatAnthropic(model=model_id, api_key=resolved_api_key)
+            model_instance = model = ChatAnthropic(
+                    model=model_id,
+                    anthropic_api_key=resolved_api_key,
+                    max_tokens=8192,
+                )
             return model_instance
             
         else:
@@ -146,4 +168,3 @@ def create_chain(
         print(f"LLM Chain CRITICAL_ERROR: Failed to create LangChain chain: {e}")
         traceback.print_exc()
         return None
-

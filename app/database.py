@@ -13,6 +13,68 @@ PROJECT_ROOT = APP_DIR.parent
 DATABASE_NAME = "tesseracs_chat.db" # Name of the SQLite database file
 DATABASE_PATH = PROJECT_ROOT / DATABASE_NAME # Full path to the database file
 
+def get_code_execution_results(session_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            SELECT code_block_id, language, code_content, output_content, 
+                   html_content, exit_code, error_message, execution_status, 
+                   executed_at, turn_id
+            FROM code_execution_results 
+            WHERE session_id = ? 
+            ORDER BY executed_at ASC
+        """, (session_id,))
+        
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'code_block_id': row['code_block_id'],
+                'language': row['language'],
+                'code_content': row['code_content'],
+                'output_content': row['output_content'],
+                'html_content': row['html_content'],
+                'exit_code': row['exit_code'],
+                'error_message': row['error_message'],
+                'execution_status': row['execution_status'],
+                'executed_at': row['executed_at'],
+                'turn_id': row['turn_id']
+            })
+        
+        return results
+    except Exception as e:
+        print(f"Error retrieving code execution results for session {session_id}: {e}")
+        return []
+    finally:
+        conn.close()
+
+def save_code_execution_result(session_id, code_block_id, language, code_content, 
+                             output_content=None, html_content=None, exit_code=None, 
+                             error_message=None, execution_status='completed', turn_id=None):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("DELETE FROM code_execution_results WHERE code_block_id = ?", (code_block_id,))
+        
+        cursor.execute("""
+            INSERT INTO code_execution_results 
+            (session_id, code_block_id, language, code_content, output_content, 
+             html_content, exit_code, error_message, execution_status, turn_id, executed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'))
+        """, (session_id, code_block_id, language, code_content, output_content, 
+              html_content, exit_code, error_message, execution_status, turn_id))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"Error saving code execution result for {code_block_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
 def get_db_connection():
     """
     Establishes a connection to the SQLite database.
@@ -178,6 +240,28 @@ def init_db():
     );
     """)
     print("Ensured 'password_reset_attempts' table exists.")
+
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS code_execution_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,                   
+        code_block_id TEXT NOT NULL,               
+        language TEXT NOT NULL,                     
+        code_content TEXT NOT NULL,                 
+        output_content TEXT,                        
+        html_content TEXT,                          
+        exit_code INTEGER,                          
+        error_message TEXT,                         
+        execution_status TEXT NOT NULL DEFAULT 'completed' CHECK(execution_status IN ('completed', 'error', 'timeout')), 
+        executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+        turn_id INTEGER,                            
+        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE 
+    );
+    """)
+    print("Ensured 'code_execution_results' table exists.")
+
+
 
     # --- Indexes for Performance ---
     # These indexes help speed up common queries.
