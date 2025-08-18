@@ -50,67 +50,115 @@ async def read_from_socket_and_stream(
     """
     import struct
 
-    line_buffer = ""
+    # Use a buffer to handle partial lines and multiple lines in one read
+    buffer = b''
     try:
         while True:
-            # 1. Read the 8-byte header from the Docker stream
-            header_bytes = await asyncio.to_thread(socket.recv, 8)
-            if not header_bytes:
+            # 1. Read raw data from the socket
+            try:
+                raw_data = await asyncio.to_thread(socket.recv, 8192)
+            except PIPE_ENDED_ERROR:
+                print(f"[SocketStreamer-{code_block_id}] Container finished normally (pipe ended)")
                 break
-            if len(header_bytes) < 8:
-                print(f"[SocketStreamer-{code_block_id}] Incomplete header received, closing stream.")
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                print(f"[SocketStreamer-{code_block_id}] Connection closed: {e}")
                 break
 
-            # 2. Unpack the header to get stream type and content size
-            stream_type, size = struct.unpack('>BxxxL', header_bytes)
-            
-            # 3. Read the exact amount of data specified in the header
-            payload_bytes = b''
-            bytes_to_read = size
-            while bytes_to_read > 0:
-                chunk = await asyncio.to_thread(socket.recv, bytes_to_read)
-                if not chunk:
-                    raise OSError("Socket closed unexpectedly while reading payload")
-                payload_bytes += chunk
-                bytes_to_read -= len(chunk)
+            if not raw_data:
+                print(f"[SocketStreamer-{code_block_id}] No more data, container finished")
+                break
 
-            stream_name = 'stdout' if stream_type == 1 else 'stderr'
-            chunk_str = payload_bytes.decode('utf-8', 'replace')
+            buffer += raw_data
 
-            # The rest of the logic is the same as before
-            await send_ws_message(websocket, "code_output", {
-                "code_block_id": code_block_id, "stream": stream_name, "data": chunk_str
-            })
+            # 2. Process the buffer to extract complete Docker stream frames
+            while len(buffer) >= 8:
+                # Unpack header to get size
+                header_bytes = buffer[:8]
+                stream_type, size = struct.unpack('>BxxxL', header_bytes)
 
-            if stream_name == 'stdout':
-                line_buffer += chunk_str
-                if '\n' in line_buffer or '\r' in line_buffer:
-                    line_buffer = ""
-                    continue
-                
-                prompt_indicators = [':', '?', '>', 'input', 'enter']
-                line_lower = line_buffer.lower().strip()
-                if line_lower and any(indicator in line_lower for indicator in prompt_indicators):
-                    print(f"[SocketStreamer-{code_block_id}] Detected input prompt: '{line_buffer}'")
-                    await send_ws_message(websocket, "code_waiting_input", {"code_block_id": code_block_id, "prompt": line_buffer})
-                    line_buffer = ""
+                # Check if the full frame is in the buffer
+                if len(buffer) < 8 + size:
+                    break # Wait for more data
 
-    except (ConnectionResetError, BrokenPipeError, OSError) as e:
-        print(f"[SocketStreamer-{code_block_id}] Connection closed: {e}")
+                # Extract the payload
+                payload_bytes = buffer[8 : 8 + size]
+
+                # Remove the processed frame from the buffer
+                buffer = buffer[8 + size:]
+
+                # Decode and send to WebSocket
+                stream_name = 'stdout' if stream_type == 1 else 'stderr'
+                chunk_str = payload_bytes.decode('utf-8', 'replace')
+
+                await send_ws_message(websocket, "code_output", {
+                    "code_block_id": code_block_id, "stream": stream_name, "data": chunk_str
+                })
+
+                # Check for input prompts only on stdout
+                if stream_name == 'stdout':
+                    # The last part of the output might be an input prompt without a newline
+                    # A simple heuristic: check if the chunk ends with common prompt indicators.
+                    stripped_chunk = chunk_str.rstrip()
+                    if stripped_chunk and stripped_chunk.endswith((':', '?', '>')):
+                        print(f"[SocketStreamer-{code_block_id}] Detected input prompt: '{chunk_str}'")
+                        await send_ws_message(websocket, "code_waiting_input", {"code_block_id": code_block_id, "prompt": chunk_str})
+
     except Exception as e:
-        print(f"[SocketStreamer-{code_block_id}] Error in stream: {e}")
+        print(f"[SocketStreamer-{code_block_id}] Unexpected error in stream: {e}")
         traceback.print_exc()
     finally:
-        print(f"[SocketStreamer-{code_block_id}] Stream finished.")
+        print(f"[SocketStreamer-{code_block_id}] Stream finished - entering finally block")
         try:
-            result = container.wait(timeout=1)
+            # This block remains the same, handling the final exit code
+            print(f"[SocketStreamer-{code_block_id}] Reloading container to check status...")
+            await asyncio.to_thread(container.reload)
+            container_status = container.status
+            print(f"[SocketStreamer-{code_block_id}] Container status: {container_status}")
+
+            if container_status == 'running':
+                print(f"[SocketStreamer-{code_block_id}] Container still running, getting state without waiting...")
+                result = {"StatusCode": 0, "Error": None}
+            else:
+                print(f"[SocketStreamer-{code_block_id}] Container already finished, getting exit code...")
+                container_state = container.attrs.get('State', {})
+                exit_code = container_state.get('ExitCode', 0)
+                error_detail = container_state.get('Error')
+                result = {"StatusCode": exit_code, "Error": error_detail}
+                print(f"[SocketStreamer-{code_block_id}] Exit code: {exit_code}, Error: {error_detail}")
+
             exit_code = result.get("StatusCode", 0)
             error_msg = result.get("Error")
-            await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": exit_code, "error": error_msg})
-        except Exception:
-            await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": 0, "error": None})
-        
-        socket.close()
+
+            print(f"[SocketStreamer-{code_block_id}] About to send code_finished with exit_code: {exit_code}")
+
+            if websocket.client_state.name != 'CONNECTED':
+                print(f"[SocketStreamer-{code_block_id}] WARNING: WebSocket not connected (state: {websocket.client_state.name})")
+
+            await send_ws_message(websocket, "code_finished", {
+                "code_block_id": code_block_id, 
+                "exit_code": exit_code, 
+                "error": error_msg
+            })
+            print(f"[SocketStreamer-{code_block_id}] ✓ code_finished message sent successfully")
+
+        except Exception as e:
+            print(f"[SocketStreamer-{code_block_id}] ERROR in finally block: {e}")
+            traceback.print_exc()
+            try:
+                await send_ws_message(websocket, "code_finished", {
+                    "code_block_id": code_block_id, 
+                    "exit_code": 0, 
+                    "error": None
+                })
+                print(f"[SocketStreamer-{code_block_id}] ✓ Fallback code_finished message sent")
+            except Exception as fallback_error:
+                print(f"[SocketStreamer-{code_block_id}] ✗ Even fallback message failed: {fallback_error}")
+
+        try:
+            socket.close()
+            print(f"[SocketStreamer-{code_block_id}] Socket closed")
+        except Exception as socket_error:
+            print(f"[SocketStreamer-{code_block_id}] Error closing socket: {socket_error}")
 
 async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_block_id: str, language: str, code: str):
     print(f"[DockerRun-{code_block_id}] === STARTING DOCKER CODE EXECUTION ===")
@@ -223,9 +271,17 @@ async def stop_docker_container(code_block_id: str):
 
     if container := container_info.get("container"):
         try:
-            await asyncio.to_thread(container.kill)
+            # Check if container is still running before trying to kill it
+            await asyncio.to_thread(container.reload)
+            if container.status == 'running':
+                await asyncio.to_thread(container.kill)
+                print(f"Container for {code_block_id} killed.")
+            else:
+                print(f"Container for {code_block_id} already stopped (status: {container.status}).")
+            
+            # Always try to remove the container
             await asyncio.to_thread(container.remove, force=True)
-            print(f"Container for {code_block_id} stopped and removed.")
+            print(f"Container for {code_block_id} removed.")
         except Exception as e:
             print(f"Error stopping/removing container for {code_block_id}: {e}")
 

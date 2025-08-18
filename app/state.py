@@ -21,65 +21,102 @@ running_containers_lock = asyncio.Lock()
 active_ai_streams: Dict[str, asyncio.Event] = {}
 active_ai_streams_lock = asyncio.Lock() # Lock for safe concurrent access to active_ai_streams
 
+import re
+
 def get_memory_for_client(session_id: str) -> ConversationBufferMemory:
     """
     Retrieves or creates ConversationBufferMemory for a specific session_id.
-    Loads from DB if available, otherwise creates a new one.
+    Loads from DB, and for the LLM's context, appends any user-edited code blocks 
+    after the original block in the history.
     """
     global client_memory
     if session_id in client_memory:
-        # Return from in-memory cache if available
         return client_memory[session_id]
 
-    # Attempt to load from database
     conn = None
     try:
         conn = database.get_db_connection()
         cursor = conn.cursor()
+
+        # 1. Fetch all messages for the session
         cursor.execute(
-            "SELECT memory_state_json FROM session_memory_state WHERE session_id = ?",
+            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
             (session_id,)
         )
-        row = cursor.fetchone()
+        messages_rows = cursor.fetchall()
 
-        if row and row["memory_state_json"]:
-            try:
-                memory_data_list = json.loads(row["memory_state_json"]) # Expecting a list of message dicts
-                if isinstance(memory_data_list, list):
-                    # Create a new memory instance
-                    memory_instance = ConversationBufferMemory(
-                        return_messages=True, 
-                        memory_key="history" # Default memory key for ConversationBufferMemory
-                    )
-                    # Load messages into the new instance
-                    loaded_messages = messages_from_dict(memory_data_list)
-                    memory_instance.chat_memory.messages = loaded_messages
-                    
-                    client_memory[session_id] = memory_instance # Store in cache
-                    print(f"STATE: Memory loaded from DB for session {session_id}")
-                    return memory_instance
-                else:
-                    # Log if the stored JSON is not in the expected list format
-                    print(f"STATE WARNING: Memory data for session {session_id} is not a list. Creating new memory.")
-            except (json.JSONDecodeError, TypeError, Exception) as e:
-                # Catch errors during JSON loading or message reconstruction
-                print(f"STATE ERROR: Failed to load/parse memory for session {session_id} from DB: {e}")
-                traceback.print_exc() # Log full traceback for debugging
-                # Fall through to create new memory if parsing fails
-    except sqlite3.Error as db_err:
-        # Catch database errors during the query
-        print(f"STATE DB ERROR: Could not query session_memory_state for session {session_id}: {db_err}")
-        traceback.print_exc() # Log full traceback
-        # Fall through to create new memory if DB query fails
+        # 2. Fetch all edited code blocks for the session
+        edited_blocks = database.get_edited_code_blocks(session_id)
+
+        # 3. Reconstruct message history, applying edits for context
+        reconstructed_messages = []
+        for row in messages_rows:
+            msg = dict(row)
+            if msg['sender_type'] == 'ai' and msg['content'] and edited_blocks:
+                code_block_counter = 0
+
+                def process_code_block_for_context(match):
+                    nonlocal code_block_counter
+                    code_block_counter += 1
+
+                    turn_id = msg.get('turn_id')
+                    if turn_id is None:
+                        return match.group(0)
+
+                    block_id = f"code-block-turn{turn_id}-{code_block_counter}"
+                    original_block_text = match.group(0)
+
+                    # Check if an edit exists for this block
+                    edited_code = edited_blocks.get(block_id)
+
+                    if edited_code is not None:
+                        # Append the edited version for the LLM's context
+                        language = match.group(1)
+                        edited_block_text = f"```{language}\n{edited_code}\n```"
+                        return f"{original_block_text}\n\n(after edit by user:...)\n\n{edited_block_text}"
+                    else:
+                        # No edit, return the original block
+                        return original_block_text
+
+                # Use regex to find and amend code blocks in the content
+                code_block_regex = r"```(\w*)\n([\s\S]*?)\n```"
+                msg['content'] = re.sub(code_block_regex, process_code_block_for_context, msg['content'])
+
+            reconstructed_messages.append(msg)
+
+        if reconstructed_messages:
+            memory_instance = ConversationBufferMemory(return_messages=True, memory_key="history")
+
+            langchain_messages = []
+            for msg in reconstructed_messages:
+                if msg['sender_type'] == 'user':
+                    langchain_messages.append({"type": "human", "data": {"content": msg['content']}})
+                elif msg['sender_type'] == 'ai':
+                    langchain_messages.append({"type": "ai", "data": {"content": msg['content']}})
+
+            memory_instance.chat_memory.messages = messages_from_dict(langchain_messages)
+            client_memory[session_id] = memory_instance
+            print(f"STATE: Memory loaded from DB and reconstructed for session {session_id}")
+            return memory_instance
+
+    except Exception as e:
+        print(f"STATE ERROR: Failed to load/reconstruct memory for session {session_id}: {e}")
+        traceback.print_exc()
     finally:
         if conn:
             conn.close()
 
-    # If not found in cache or DB, or if loading failed, create and cache new memory
     print(f"STATE: Creating new memory for session {session_id}")
     new_memory = ConversationBufferMemory(return_messages=True, memory_key="history")
     client_memory[session_id] = new_memory
     return new_memory
+
+def remove_memory_for_client(session_id: str):
+    """Removes memory for a specific session_id from the in-memory cache."""
+    global client_memory
+    if session_id in client_memory:
+        del client_memory[session_id]
+        print(f"STATE: Memory cache cleared for session {session_id} due to data change.")
 
 def save_memory_state_to_db(session_id: str, memory: Optional[ConversationBufferMemory]):
     """

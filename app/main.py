@@ -1375,6 +1375,22 @@ async def get_user_sessions(
         if conn:
             conn.close()
 
+@app.get("/api/sessions/{session_id}/edited-blocks", response_model=Dict[str, str], tags=["Sessions"])
+async def get_session_edited_blocks(
+    session_id: str = FastApiPath(..., description="The ID of the session to fetch edited code blocks for."),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user)
+):
+    # User access verification
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user['id']))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this session's data.")
+    conn.close()
+
+    return database.get_edited_code_blocks(session_id)
+
 @app.get("/api/sessions/{session_id}/messages", response_model=List[models.MessageItem], tags=["Messages"])
 async def get_chat_messages_for_session(
     session_id: str = FastApiPath(..., description="The ID of the session to fetch messages for."),
@@ -1818,6 +1834,17 @@ async def websocket_endpoint(
                     code_block_id = payload.get("code_block_id")
                     print(f"---- WS LOG: Received 'stop_code' for block {code_block_id} from {user_id}")
                     asyncio.create_task(docker_utils.stop_docker_container(code_block_id))
+                elif message_type == "save_code_content" and payload and payload.get("code_block_id"):
+                    session_id_from_payload = payload.get("session_id")
+                    code_block_id = payload.get("code_block_id")
+                    language = payload.get("language")
+                    code_content = payload.get("code_content")
+                    
+                    if session_id_from_payload == session_id_ws and code_content is not None:
+                        print(f"---- WS LOG: Received 'save_code_content' for block {code_block_id} from {user_id}")
+                        database.save_edited_code_content(session_id_ws, code_block_id, language, code_content)
+                    else:
+                        print(f"---- WS WARNING: Ignoring 'save_code_content' with mismatched session or missing content.")
 
                 elif message_type == "stop_ai_stream" and payload:
                     stop_client_id = payload.get("client_id") 
@@ -1869,6 +1896,34 @@ async def websocket_endpoint(
                 print(f"---- WS INFO: Explicitly closing WebSocket connection for client {client_js_id}, session {session_id_ws}.")
                 await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
             except Exception: pass
+
+@app.delete("/api/sessions/{session_id}/edited-blocks/{code_block_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Code Execution"])
+async def delete_edited_code_block_route(
+    request: Request,
+    session_id: str = FastApiPath(..., description="The session ID."),
+    code_block_id: str = FastApiPath(..., description="The code block ID to restore."),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user),
+    csrf_protect: CsrfProtect = Depends()
+):
+    await csrf_protect.validate_csrf(request)
+    
+    # User access verification
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user['id']))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this session's data.")
+    conn.close()
+
+    success = database.delete_edited_code_block(session_id, code_block_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to restore code block.")
+    
+    # Invalidate the in-memory cache for this session
+    state.remove_memory_for_client(session_id)
+    
+    return
 
 @app.delete("/api/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Sessions"])
 async def delete_session_route(

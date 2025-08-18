@@ -89,7 +89,7 @@ let streamingCodeBlockCounter = 0;
 function addTerminalPrompt(outputPreElement, promptText) {
     if (!outputPreElement) return;
     
-    const outputContainer = outputPreElement.closest('.code-block-container');
+    const outputContainer = outputPreElement.closest('.block-container');
     if (!outputContainer) return;
     
     const inputField = document.createElement('input');
@@ -155,11 +155,11 @@ function getCursorPosition(parentElement) {
     preSelectionRange.selectNodeContents(parentElement);
     try {
         preSelectionRange.setEnd(range.startContainer, range.startOffset);
+        return preSelectionRange.toString().length;
     } catch (e) {
-        console.error("Error setting preSelectionRange end:", e);
+        console.error("Error getting cursor position:", e);
         return -1;
     }
-    return preSelectionRange.toString().length;
 }
 
 function setCursorPosition(parentElement, offset) {
@@ -177,7 +177,7 @@ function setCursorPosition(parentElement, offset) {
             const nextCharCount = charCount + node.length;
             if (!foundStart && offset >= charCount && offset <= nextCharCount) {
                 try {
-                    const offsetInNode = offset - charCount;
+                    const offsetInNode = Math.min(offset - charCount, node.length);
                     range.setStart(node, offsetInNode);
                     foundStart = true;
                 } catch (e) {
@@ -204,9 +204,21 @@ function setCursorPosition(parentElement, offset) {
         range.collapse(false);
         selection.removeAllRanges();
         selection.addRange(range);
-        console.warn(`Could not set cursor precisely at offset ${offset}. Placed at end.`);
     }
-    parentElement.focus();
+}
+
+function initializeCodeBlockHistory(blockId, initialContent) {
+    if (!window.codeBlockHistories) {
+        window.codeBlockHistories = new Map();
+    }
+    
+    if (!window.codeBlockHistories.has(blockId)) {
+        window.codeBlockHistories.set(blockId, {
+            history: [initialContent],
+            currentIndex: 0,
+            saveTimeout: null
+        });
+    }
 }
 
 // --- Configuration Loading ---
@@ -470,8 +482,7 @@ function renderLiveMessage(fullContent) {
     scrollToBottom('auto');
 }
 
-// REPLACE this function (for historical messages)
-function parseAndRenderAiContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix) {
+function parseAndRenderAiContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix, editedCodeBlocks = {}) {
     if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
 
     const KATEX_PLACEHOLDER_PREFIX_HISTORICAL = `%%HISTORICAL_KATEX_PLACEHOLDER_${turnIdSuffix}_`;
@@ -490,22 +501,36 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
     while ((matchCode = codeBlockRegex.exec(tempContentForCodeExtraction)) !== null) {
         historicalCodeBlockCounter++;
         const language = matchCode[1] || 'plaintext';
-        const code = matchCode[2];
+        const originalCode = matchCode[2];
         const placeholder = `%%HISTORICAL_CODE_BLOCK_${historicalCodeBlockCounter}%%`;
-        extractedCodeBlocks.push({ language, code, placeholder, index: historicalCodeBlockCounter });
+
+        const blockId = `code-block-turn${turnIdSuffix}-${historicalCodeBlockCounter}`;
+
+        extractedCodeBlocks.push({ 
+            language, 
+            originalCode, 
+            placeholder, 
+            index: historicalCodeBlockCounter,
+            id: blockId 
+        });
+
         contentAfterCodeExtraction += tempContentForCodeExtraction.substring(lastCodeMatchEndIndex, matchCode.index);
         contentAfterCodeExtraction += placeholder;
         lastCodeMatchEndIndex = codeBlockRegex.lastIndex;
     }
     contentAfterCodeExtraction += tempContentForCodeExtraction.substring(lastCodeMatchEndIndex);
     contentForProcessing = contentAfterCodeExtraction;
-    
+
     extractedCodeBlocks.forEach(block => {
-        // Use the new, unified function
-        createCodeBlock(block.language, block.code, turnIdSuffix, block.index, codeBlocksDivElement, false);
-        const blockId = `code-block-turn${turnIdSuffix}-${block.index}`;
-        const linkHTML = `<a href="#${blockId}" class="code-block-link text-blue-600 hover:underline">[Code Block ${block.index}]</a>`;
-        contentForProcessing = contentForProcessing.replace(block.placeholder, linkHTML);
+        const finalCodeContent = editedCodeBlocks[block.id] || block.originalCode;
+
+        // CORRECTED CALL: Pass BOTH the final content for display AND the true original content for the dataset
+        createCodeBlock(block.language, finalCodeContent, block.originalCode, turnIdSuffix, block.index, codeBlocksDivElement, false);
+
+        initializeCodeBlockHistory(block.id, finalCodeContent);
+        const replacementHTML = `<a href="#${block.id}" class="code-block-link text-blue-600 hover:underline">[Code Block ${block.index}]</a>`;
+
+        contentForProcessing = contentForProcessing.replace(block.placeholder, replacementHTML);
     });
 
     const storedKatex = {};
@@ -570,7 +595,6 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
     }
 }
 
-// REPLACE this function (for live-streaming messages)
 function parseAndRenderStreamingContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix) {
     if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
 
@@ -583,13 +607,21 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
         const [fullMatch, language, code] = match;
         const isComplete = fullMatch.endsWith('\n```') || fullMatch.endsWith('```');
         const startIndex = match.index;
-        
+
         contentWithPlaceholders += contentString.substring(lastIndex, startIndex);
-        
+
         if (!activeStreamingCodeBlocks.has(startIndex)) {
             streamingCodeBlockCounter++;
-            // Use the new, unified function
-            const newBlockElement = createCodeBlock(language || 'plaintext', code, turnIdSuffix, streamingCodeBlockCounter, codeBlocksDivElement, true);
+            // Create the new block, passing the code as both the display content AND the original dataset content
+            const newBlockElement = createCodeBlock(
+                language || 'plaintext', 
+                code, 
+                code, // The new originalCodeForDataset argument
+                turnIdSuffix, 
+                streamingCodeBlockCounter, 
+                codeBlocksDivElement, 
+                true
+            );
             activeStreamingCodeBlocks.set(startIndex, {
                 blockId: newBlockElement.id,
                 language: language || 'plaintext',
@@ -604,7 +636,7 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
             blockData.isComplete = isComplete;
             updateStreamingCodeBlockContent(blockData.blockId, newLanguage, code, isComplete);
         }
-        
+
         const blockData = activeStreamingCodeBlocks.get(startIndex);
         const blockNumber = blockData.blockId.split('-').pop();
         const blockId = `code-block-turn${turnIdSuffix}-${blockNumber}`;
@@ -612,13 +644,13 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
         contentWithPlaceholders += linkHTML;
         lastIndex = codeBlockRegex.lastIndex;
     }
-    
+
     contentWithPlaceholders += contentString.substring(lastIndex);
 
     const KATEX_PLACEHOLDER_PREFIX_STREAMING = `%%STREAMING_KATEX_PLACEHOLDER_${turnIdSuffix}_`;
     const storedKatex = {};
     let katexPlaceholderIndex = 0;
-    
+
     const katexRegexGlobal = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$((?:\\\$|[^$])+?)(?<!\\)\$/g;
     let textForMarkdownParsing = contentWithPlaceholders.replace(katexRegexGlobal, (match, displayContent, inlineContent) => {
         const isDisplayMode = !!displayContent;
@@ -679,20 +711,18 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
     }
 }
 
-
 function updateStreamingCodeBlockContent(blockId, language, content, isComplete) {
     const container = document.getElementById(blockId);
     if (!container) return;
 
     const codeElement = container.querySelector('code');
     const dotsSpan = container.querySelector('.streaming-dots');
-    const titleTextSpan = container.querySelector('.code-block-title .title-text');
+    const titleTextSpan = container.querySelector('.block-title .title-text');
     const currentLanguage = container.dataset.language;
 
     const rawLang = (language || 'plaintext').trim().toLowerCase();
     const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
 
-    // This block runs when the language is updated (e.g., from 'plaintext' to 'python')
     if (canonicalLang && canonicalLang !== currentLanguage) {
         container.dataset.language = canonicalLang;
         if (titleTextSpan) {
@@ -705,29 +735,43 @@ function updateStreamingCodeBlockContent(blockId, language, content, isComplete)
             codeElement.className = `language-${prismLang}`;
         }
 
-        // --- THIS IS THE FIX ---
-        // Re-evaluate if the run button should be visible now that we know the language.
         const runStopBtn = container.querySelector('.run-code-btn');
         if (runStopBtn) {
             const isLanguageSupported = supportedLanguagesConfig[canonicalLang]?.executable;
             if (isLanguageSupported) {
-                runStopBtn.style.display = ''; // Show the button
+                runStopBtn.style.display = '';
                 runStopBtn.title = 'Run Code';
             } else {
-                runStopBtn.style.display = 'none'; // Hide the button
+                runStopBtn.style.display = 'none';
                 runStopBtn.title = `Run Code (language '${canonicalLang}' not supported for execution)`;
             }
         }
-        // --- END OF FIX ---
+        
+        initializeCodeBlockHistory(blockId, content);
     }
     
     if (codeElement) {
+        const cursorPos = getCursorPosition(codeElement);
+        const wasEditing = document.activeElement === codeElement;
+        
         codeElement.textContent = content;
+        
         if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
             try {
                 Prism.highlightElement(codeElement);
+                if (wasEditing) {
+                    setCursorPosition(codeElement, cursorPos);
+                    codeElement.focus();
+                }
             } catch (e) {
                 console.error(`Prism highlight error:`, e);
+            }
+        }
+        
+        if (window.codeBlockHistories && window.codeBlockHistories.has(blockId)) {
+            const historyData = window.codeBlockHistories.get(blockId);
+            if (historyData.history.length === 1) {
+                historyData.history[0] = content;
             }
         }
     }
@@ -739,7 +783,7 @@ function updateStreamingCodeBlockContent(blockId, language, content, isComplete)
 
 function updateAllRunButtonStates() {
     document.querySelectorAll('.run-code-btn').forEach(btn => {
-        const container = btn.closest('.code-block-container');
+        const container = btn.closest('.block-container');
         const lang = container ? container.dataset.language : null;
         const isExecutable = lang ? supportedLanguagesConfig[lang]?.executable : false;
 
@@ -750,7 +794,7 @@ function updateAllRunButtonStates() {
     });
 }
 
-function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isStreaming = false) {
+function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isStreaming = false) {
    if (!codeBlocksAreaElement) {
        console.error("createCodeBlock: Code blocks area element is null!");
        return;
@@ -762,20 +806,22 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
 
    const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
-   
+
    const container = document.createElement('div');
-   container.classList.add('code-block-container');
+   container.classList.add('block-container');
    container.id = blockId;
    container.dataset.language = canonicalLang;
+   // Set the dataset to the TRUE original content, not the potentially edited content
+   container.dataset.originalContent = originalCodeForDataset;
 
    const codeHeader = document.createElement('div');
-   codeHeader.classList.add('code-block-header');
+   codeHeader.classList.add('block-header');
 
    const codeButtonsDiv = document.createElement('div');
-   codeButtonsDiv.classList.add('code-block-buttons');
+   codeButtonsDiv.classList.add('block-buttons');
 
    const runStopBtn = document.createElement('button');
-   runStopBtn.classList.add('run-code-btn', 'code-action-btn');
+   runStopBtn.classList.add('run-code-btn', 'block-action-btn');
    runStopBtn.dataset.status = 'idle';
    runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
    runStopBtn.addEventListener('click', handleRunStopCodeClick);
@@ -786,34 +832,40 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
        runStopBtn.style.display = 'none';
    }
 
+   const restoreBtn = document.createElement('button');
+   restoreBtn.classList.add('restore-code-btn', 'block-action-btn');
+   restoreBtn.textContent = 'Restore';
+   restoreBtn.title = 'Restore Original Code';
+
    const toggleCodeBtn = document.createElement('button');
-   toggleCodeBtn.classList.add('toggle-code-btn', 'code-action-btn');
+   toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
    toggleCodeBtn.textContent = 'Hide';
    toggleCodeBtn.title = 'Show/Hide Code';
 
    const copyCodeBtn = document.createElement('button');
-   copyCodeBtn.classList.add('copy-code-btn', 'code-action-btn');
+   copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
    copyCodeBtn.textContent = 'Copy';
    copyCodeBtn.title = 'Copy Code';
-   
+
    codeButtonsDiv.appendChild(runStopBtn);
+   codeButtonsDiv.appendChild(restoreBtn);
    codeButtonsDiv.appendChild(toggleCodeBtn);
    codeButtonsDiv.appendChild(copyCodeBtn);
 
    const codeTitle = document.createElement('span');
-   codeTitle.classList.add('code-block-title');
+   codeTitle.classList.add('block-title');
    const titleTextSpan = document.createElement('span');
    titleTextSpan.classList.add('title-text');
    titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${canonicalLang})`;
    codeTitle.appendChild(titleTextSpan);
-   
+
    if (isStreaming) {
        const dotsSpan = document.createElement('span');
        dotsSpan.classList.add('streaming-dots');
        dotsSpan.textContent = '...';
        codeTitle.appendChild(dotsSpan);
    }
-   
+
    codeHeader.appendChild(codeButtonsDiv);
    codeHeader.appendChild(codeTitle);
 
@@ -823,13 +875,16 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    codeElement.className = `language-${prismLang}`;
    codeElement.setAttribute('contenteditable', 'true');
    codeElement.setAttribute('spellcheck', 'false');
+   // Display the final content (which could be an edit)
    codeElement.textContent = codeContent;
+
+   initializeCodeBlockHistory(blockId, codeContent);
 
    preElement.appendChild(codeElement);
    container.appendChild(codeHeader);
    container.appendChild(preElement);
    codeBlocksAreaElement.appendChild(container);
-   
+
    toggleCodeBtn.addEventListener('click', () => {
        const isHidden = preElement.classList.toggle('hidden');
        toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide';
@@ -844,16 +899,107 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
            console.error('Failed to copy code: ', err);
        }
    });
-   
-   const debouncedHighlight = debounce(() => Prism.highlightElement(codeElement), 500);
-   codeElement.addEventListener('input', debouncedHighlight);
+
+   restoreBtn.addEventListener('click', async () => {
+        const originalContent = container.dataset.originalContent;
+        const sessionId = getSessionIdFromPath();
+        if (!sessionId || !window.csrfTokenRaw) return;
+
+        try {
+            const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${blockId}`, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-Token': window.csrfTokenRaw }
+            });
+
+            if (response.ok) {
+                const cursorPos = getCursorPosition(codeElement);
+                codeElement.textContent = originalContent;
+
+                if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+                    try {
+                        Prism.highlightElement(codeElement);
+                        setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length));
+                    } catch (e) { console.error(`Prism highlight error:`, e); }
+                }
+                // Add the restored state to the undo history instead of wiping it
+                saveCodeBlockState(blockId, originalContent);
+            } else {
+                const error = await response.json();
+                alert(`Failed to restore code block: ${error.detail || 'Server error'}`);
+            }
+        } catch (error) {
+            console.error("Error restoring code block:", error);
+            alert("An error occurred while restoring the code block.");
+        }
+   });
+
+   codeElement.addEventListener('keydown', (event) => {
+       handleCodeBlockKeydown(event, blockId);
+   });
+
+   codeElement.addEventListener('blur', () => {
+       const content = codeElement.textContent || '';
+       saveCodeBlockContent(blockId, content);
+   });
+
+   codeElement.addEventListener('input', () => {
+       const cursorPos = getCursorPosition(codeElement);
+       const content = codeElement.textContent || '';
+
+       setTimeout(() => {
+           if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+               try {
+                   Prism.highlightElement(codeElement);
+                   setCursorPosition(codeElement, cursorPos);
+               } catch (e) {
+                   console.error(`Prism highlight error:`, e);
+               }
+           }
+       }, 10);
+
+       saveCodeBlockState(blockId, content);
+   });
 
    return container;
 }
 
+function saveCodeBlockContent(blockId, content) {
+    const container = document.getElementById(blockId);
+    if (!container) return;
+    
+    const language = container.dataset.language;
+    const sessionId = getSessionIdFromPath();
+    
+    if (!sessionId || !websocket || websocket.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    
+    websocket.send(JSON.stringify({
+        type: 'save_code_content',
+        payload: {
+            session_id: sessionId,
+            code_block_id: blockId,
+            language: language,
+            code_content: content
+        }
+    }));
+}
+
+function createOutputHeaderHTML(blockNumber, statusText = 'Running...', statusClass = 'running') {
+    return `
+        <div class="block-buttons">
+            <button class="run-code-btn block-action-btn" style="display: none;">Run</button>
+            <button class="toggle-output-btn block-action-btn">Hide</button>
+            <button class="copy-output-btn block-action-btn">Copy</button>
+        </div>
+        <span class="block-title">Output Block ${blockNumber}</span>
+        <span class="block-status ${statusClass}">${statusText}</span>
+    `;
+}
+
 async function handleRunStopCodeClick(event) {
     const button = event.currentTarget;
-    const container = button.closest('.code-block-container');
+    const container = button.closest('.block-container');
     if (!container) return;
 
     const codeBlockId = container.id;
@@ -861,27 +1007,21 @@ async function handleRunStopCodeClick(event) {
     const codeElement = container.querySelector('code');
     const code = codeElement ? codeElement.textContent || '' : '';
 
+    saveCodeBlockContent(codeBlockId, code);
+
     let outputContainer = document.getElementById(`output-for-${codeBlockId}`);
     if (!outputContainer) {
         outputContainer = document.createElement('div');
         outputContainer.id = `output-for-${codeBlockId}`;
-        outputContainer.className = 'code-block-container output-block-container';
+        outputContainer.className = 'block-container';
 
         const blockNumber = codeBlockId.split('-').pop();
 
         const outputHeader = document.createElement('div');
-        outputHeader.className = 'code-output-header';
-        outputHeader.innerHTML = `
-            <div class="code-block-buttons">
-                <button class="toggle-output-btn code-action-btn">Hide</button>
-                <button class="copy-output-btn code-action-btn">Copy</button>
-            </div>
-            <span class="output-header-title">Output Block ${blockNumber}</span>
-            <span class="code-status-span running">Running...</span>
-        `;
-        
+        outputHeader.className = 'block-header';
+        outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
         const outputConsoleDiv = document.createElement('div');
-        outputConsoleDiv.className = 'code-output-console';
+        outputConsoleDiv.className = 'block-output-console';
         const outputPre = document.createElement('pre');
         outputConsoleDiv.appendChild(outputPre);
 
@@ -902,7 +1042,7 @@ async function handleRunStopCodeClick(event) {
             } catch (err) { console.error('Failed to copy output:', err); }
         });
     } else {
-        const outputPre = outputContainer.querySelector('.code-output-console pre, .code-output-console iframe');
+        const outputPre = outputContainer.querySelector('.block-output-console pre, .block-output-console iframe');
         if (outputPre) {
             if (outputPre.tagName === 'IFRAME') {
                 const newPre = document.createElement('pre');
@@ -915,7 +1055,7 @@ async function handleRunStopCodeClick(event) {
                 }
             }
         }
-        const statusSpan = outputContainer.querySelector('.code-status-span');
+        const statusSpan = outputContainer.querySelector('.block-status');
         if (statusSpan) {
             statusSpan.textContent = 'Running...';
             statusSpan.className = 'code-status-span running';
@@ -949,23 +1089,29 @@ async function handleRunStopCodeClick(event) {
     }
 }
 
-function saveCodeExecutionResult(codeBlockId, language, codeContent, outputContent, htmlContent, exitCode, errorMessage, executionStatus) {
-    if (websocket && websocket.readyState === WebSocket.OPEN) {
-        websocket.send(JSON.stringify({
-            type: 'save_code_result',
-            payload: {
-                code_block_id: codeBlockId,
-                language: language,
-                code_content: codeContent,
-                output_content: outputContent,
-                html_content: htmlContent,
-                exit_code: exitCode,
-                error_message: errorMessage,
-                execution_status: executionStatus
+function updateHeaderStatus(outputContainer, statusText, statusClass) {
+    const statusSpan = outputContainer.querySelector('.block-status');
+    if (statusSpan) {
+        statusSpan.textContent = statusText;
+        statusSpan.className = `block-status ${statusClass}`;
+    }
+    
+    const outputHeader = outputContainer.querySelector('.block-header');
+    if (outputHeader && outputHeader.classList.contains('header-is-sticky-js')) {
+        const stickyId = outputHeader.dataset.stickyId;
+        if (stickyId) {
+            const stickyClone = document.getElementById(stickyId);
+            if (stickyClone) {
+                const stickyStatusSpan = stickyClone.querySelector('.block-status');
+                if (stickyStatusSpan) {
+                    stickyStatusSpan.textContent = statusText;
+                    stickyStatusSpan.className = `block-status ${statusClass}`;
+                }
             }
-        }));
+        }
     }
 }
+
 
 function addCodeOutput(outputPreElement, streamType, text, language) {
     if (!outputPreElement || !text) return;
@@ -987,8 +1133,114 @@ function addCodeOutput(outputPreElement, streamType, text, language) {
     outputPreElement.scrollTop = outputPreElement.scrollHeight;
 }
 
+function performUndo(blockId) {
+    if (!window.codeBlockHistories) return false;
+    
+    const historyData = window.codeBlockHistories.get(blockId);
+    if (!historyData || historyData.currentIndex <= 0) return false;
+    
+    historyData.currentIndex--;
+    const content = historyData.history[historyData.currentIndex];
+    
+    const container = document.getElementById(blockId);
+    if (!container) return false;
+    
+    const codeElement = container.querySelector('code');
+    if (!codeElement) return false;
+    
+    const cursorPos = getCursorPosition(codeElement);
+    codeElement.textContent = content;
+    
+    if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+        try {
+            Prism.highlightElement(codeElement);
+            setCursorPosition(codeElement, Math.min(cursorPos, content.length));
+        } catch (e) {
+            console.error(`Prism highlight error:`, e);
+        }
+    }
+    
+    return true;
+}
+
+function performRedo(blockId) {
+    if (!window.codeBlockHistories) return false;
+    
+    const historyData = window.codeBlockHistories.get(blockId);
+    if (!historyData || historyData.currentIndex >= historyData.history.length - 1) return false;
+    
+    historyData.currentIndex++;
+    const content = historyData.history[historyData.currentIndex];
+    
+    const container = document.getElementById(blockId);
+    if (!container) return false;
+    
+    const codeElement = container.querySelector('code');
+    if (!codeElement) return false;
+    
+    const cursorPos = getCursorPosition(codeElement);
+    codeElement.textContent = content;
+    
+    if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+        try {
+            Prism.highlightElement(codeElement);
+            setCursorPosition(codeElement, Math.min(cursorPos, content.length));
+        } catch (e) {
+            console.error(`Prism highlight error:`, e);
+        }
+    }
+    
+    return true;
+}
+
+function handleCodeBlockKeydown(event, blockId) {
+    const isCtrlZ = event.ctrlKey && event.key === 'z' && !event.shiftKey;
+    const isCtrlY = event.ctrlKey && (event.key === 'y' || (event.key === 'z' && event.shiftKey));
+    
+    if (isCtrlZ) {
+        event.preventDefault();
+        performUndo(blockId);
+        return;
+    }
+    
+    if (isCtrlY) {
+        event.preventDefault();
+        performRedo(blockId);
+        return;
+    }
+    
+    const codeElement = event.target;
+    const content = codeElement.textContent || '';
+    saveCodeBlockState(blockId, content);
+}
+
+function saveCodeBlockState(blockId, content) {
+    if (!window.codeBlockHistories) return;
+    
+    const historyData = window.codeBlockHistories.get(blockId);
+    if (!historyData) return;
+
+    clearTimeout(historyData.saveTimeout);
+    historyData.saveTimeout = setTimeout(() => {
+        const lastContent = historyData.history[historyData.currentIndex];
+        if (lastContent !== content) {
+            historyData.history = historyData.history.slice(0, historyData.currentIndex + 1);
+            historyData.history.push(content);
+            
+            if (historyData.history.length > 50) {
+                historyData.history.shift();
+            } else {
+                historyData.currentIndex++;
+            }
+        }
+    }, 2000);
+}
+
+
 function handleStructuredMessage(messageData) {
     const { type, payload } = messageData;
+    console.log(`[handleStructuredMessage] Processing ${type} for ${payload?.code_block_id || 'unknown'}`);
+    
     if (!payload || !payload.code_block_id) return;
     
     const codeBlockId = payload.code_block_id;
@@ -996,26 +1248,28 @@ function handleStructuredMessage(messageData) {
     const outputBlockId = `output-for-${codeBlockId}`;
     let outputContainer = document.getElementById(outputBlockId);
 
+    console.log(`[handleStructuredMessage] Found container for ${codeBlockId}:`, codeContainer);
+    console.log(`[handleStructuredMessage] Found output container for ${outputBlockId}:`, outputContainer);
+
     if (!outputContainer && type === 'code_output') {
+        console.log(`[DEBUG] Creating new output container for ${codeBlockId}`);
         outputContainer = document.createElement('div');
         outputContainer.id = outputBlockId;
-        outputContainer.className = 'code-block-container output-block-container';
+        outputContainer.className = 'block-container';
 
         const blockNumber = codeBlockId.split('-').pop();
+        console.log(`[DEBUG] Block number: ${blockNumber}`);
 
         const outputHeader = document.createElement('div');
-        outputHeader.className = 'code-output-header';
-        outputHeader.innerHTML = `
-            <div class="code-block-buttons">
-                <button class="toggle-output-btn code-action-btn">Hide</button>
-                <button class="copy-output-btn code-action-btn">Copy</button>
-            </div>
-            <span class="output-header-title">Output Block ${blockNumber}</span>
-            <span class="code-status-span running">Running...</span>
-        `;
+        outputHeader.className = 'block-header';
+        
+        const headerHTML = createOutputHeaderHTML(blockNumber);
+        console.log(`[DEBUG] Generated header HTML:`, headerHTML);
+        outputHeader.innerHTML = headerHTML;
+        console.log(`[DEBUG] Header after innerHTML:`, outputHeader);
         
         const outputConsoleDiv = document.createElement('div');
-        outputConsoleDiv.className = 'code-output-console';
+        outputConsoleDiv.className = 'block-output-console';
         const outputPre = document.createElement('pre');
         outputConsoleDiv.appendChild(outputPre);
 
@@ -1035,13 +1289,42 @@ function handleStructuredMessage(messageData) {
                 setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
             } catch (err) { console.error('Failed to copy output:', err); }
         });
+    } else if (outputContainer && type === 'code_output') {
+        // Check if existing output container has proper header structure
+        const existingStatusSpan = outputContainer.querySelector('.block-status');
+        if (!existingStatusSpan) {
+            console.log(`[DEBUG] Existing output container missing status span, fixing header...`);
+            const existingHeader = outputContainer.querySelector('.block-header');
+            if (existingHeader) {
+                const blockNumber = codeBlockId.split('-').pop();
+                const headerHTML = createOutputHeaderHTML(blockNumber);
+                console.log(`[DEBUG] Replacing header HTML with:`, headerHTML);
+                existingHeader.innerHTML = headerHTML;
+                console.log(`[DEBUG] Header after fix:`, existingHeader);
+                
+                // Re-add event listeners
+                outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+                    const outputConsoleDiv = outputContainer.querySelector('.block-output-console');
+                    const isHidden = outputConsoleDiv.classList.toggle('hidden');
+                    e.target.textContent = isHidden ? 'Show' : 'Hide';
+                });
+                outputContainer.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
+                    try {
+                        const outputPre = outputContainer.querySelector('.block-output-console pre');
+                        await navigator.clipboard.writeText(outputPre.textContent || '');
+                        e.target.textContent = 'Copied!';
+                        setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+                    } catch (err) { console.error('Failed to copy output:', err); }
+                });
+            }
+        }
     }
 
     if (!outputContainer || !codeContainer) return;
     
     switch (type) {
         case 'code_output': {
-            const outputPre = outputContainer.querySelector('.code-output-console pre');
+            const outputPre = outputContainer.querySelector('.block-output-console pre');
             const language = codeContainer.dataset.language;
             if (outputPre) {
                 addCodeOutput(outputPre, payload.stream, payload.data, language);
@@ -1050,12 +1333,8 @@ function handleStructuredMessage(messageData) {
         }
 
         case 'code_waiting_input': {
-            const statusSpan = outputContainer.querySelector('.code-status-span');
-            if (statusSpan) {
-                statusSpan.textContent = 'Waiting for input...';
-                statusSpan.className = 'code-status-span waiting-input';
-            }
-            const outputPre = outputContainer.querySelector('.code-output-console pre');
+            updateHeaderStatus(outputContainer, 'Waiting for input...', 'waiting-input');
+            const outputPre = outputContainer.querySelector('.block-output-console pre');
             if (outputPre) {
                 addTerminalPrompt(outputPre, payload.prompt || '');
             }
@@ -1063,12 +1342,20 @@ function handleStructuredMessage(messageData) {
         }
 
         case 'code_finished': {
+            console.log(`[handleStructuredMessage] Processing code_finished for ${codeBlockId}`);
             const runStopBtn = codeContainer.querySelector('.run-code-btn');
-            const statusSpan = outputContainer.querySelector('.code-status-span');
-            const outputConsoleDiv = outputContainer.querySelector('.code-output-console');
+            const statusSpan = outputContainer.querySelector('.block-status');
+            const outputConsoleDiv = outputContainer.querySelector('.block-output-console');
             const outputPre = outputConsoleDiv ? outputConsoleDiv.querySelector('pre') : null;
 
-            if (!runStopBtn || !statusSpan || !outputConsoleDiv || !outputPre) return;
+            console.log(`[handleStructuredMessage] Found run button:`, runStopBtn);
+            console.log(`[handleStructuredMessage] Found status span:`, statusSpan);
+            console.log(`[handleStructuredMessage] Found output console div:`, outputConsoleDiv);
+
+            if (!runStopBtn || !statusSpan || !outputConsoleDiv || !outputPre) {
+                console.log(`[handleStructuredMessage] Missing elements - runStopBtn: ${!!runStopBtn}, statusSpan: ${!!statusSpan}, outputConsoleDiv: ${!!outputConsoleDiv}, outputPre: ${!!outputPre}`);
+                return;
+            }
 
             const { exit_code, error } = payload;
             let finishMessage = '';
@@ -1155,17 +1442,18 @@ function handleStructuredMessage(messageData) {
                 }));
             }
             
-            statusSpan.textContent = finishMessage;
-            statusSpan.className = `code-status-span ${statusClass}`;
+            console.log(`[handleStructuredMessage] About to update button status to idle and set finish message: ${finishMessage}`);
+            updateHeaderStatus(outputContainer, finishMessage, statusClass);
             runStopBtn.dataset.status = 'idle';
             runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
             runStopBtn.title = 'Run Code';
+            console.log(`[handleStructuredMessage] Button and status updated successfully`);
             break;
         }
     }
 }
 
-function renderSingleMessage(msg, parentElement, isHistory = false) {
+function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
     if (!parentElement || !msg) return;
 
     const senderType = msg.sender_type;
@@ -1177,7 +1465,7 @@ function renderSingleMessage(msg, parentElement, isHistory = false) {
         messageDiv.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
         messageDiv.setAttribute('data-sender', senderType);
         if (msg.id) messageDiv.setAttribute('data-message-id', String(msg.id));
-        
+
         if (senderType === 'user') {
             messageDiv.classList.add('bg-emerald-100', 'self-end', 'ml-auto');
         } else {
@@ -1214,7 +1502,7 @@ function renderSingleMessage(msg, parentElement, isHistory = false) {
 
     } else if (senderType === 'ai') {
         const turnIdSuffix = (msg.turn_id !== null && msg.turn_id !== undefined) ? String(msg.turn_id) : (msg.id ? `msg${msg.id}` : `hist-${Date.now()}`);
-        
+
         const aiTurnContainer = document.createElement('div');
         aiTurnContainer.classList.add('ai-turn-container');
         if (msg.id) aiTurnContainer.setAttribute('data-message-id', String(msg.id));
@@ -1222,7 +1510,7 @@ function renderSingleMessage(msg, parentElement, isHistory = false) {
         const thinkingArea = document.createElement('div');
         thinkingArea.classList.add('thinking-area');
         thinkingArea.style.display = msg.thinking_content ? 'block' : 'none';
-        
+
         const details = document.createElement('details');
         const summary = document.createElement('summary');
         summary.classList.add('thinking-summary');
@@ -1235,20 +1523,20 @@ function renderSingleMessage(msg, parentElement, isHistory = false) {
 
         const answerElement = document.createElement('div');
         answerElement.classList.add('message', 'ai-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-sky-100', 'self-start', 'mr-auto');
-        
+
         const senderElem = document.createElement('p');
         senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-sky-700');
         senderElem.textContent = 'AI';
         answerElement.appendChild(senderElem);
-        
+
         const contentDiv = document.createElement('div');
         contentDiv.classList.add('text-gray-800', 'text-sm', 'message-content');
         answerElement.appendChild(contentDiv);
 
         const codeBlocksArea = document.createElement('div');
         codeBlocksArea.classList.add('code-blocks-area');
-        
-        parseAndRenderAiContent(msg.content, contentDiv, codeBlocksArea, turnIdSuffix);
+
+        parseAndRenderAiContent(msg.content, contentDiv, codeBlocksArea, turnIdSuffix, editedCodeBlocks);
 
         if (timestamp) {
             const timestampElem = document.createElement('p');
@@ -1280,12 +1568,12 @@ function restoreCodeExecutionResult(result) {
 
     outputContainer = document.createElement('div');
     outputContainer.id = outputBlockId;
-    outputContainer.className = 'code-block-container output-block-container';
+    outputContainer.className = 'block-container';
 
     const blockNumber = result.code_block_id.split('-').pop();
 
     const outputHeader = document.createElement('div');
-    outputHeader.className = 'code-output-header';
+    outputHeader.className = 'block-header';
     
     let statusText = '';
     let statusClass = '';
@@ -1301,16 +1589,16 @@ function restoreCodeExecutionResult(result) {
     }
     
     outputHeader.innerHTML = `
-        <div class="code-block-buttons">
-            <button class="toggle-output-btn code-action-btn">Hide</button>
-            <button class="copy-output-btn code-action-btn">Copy</button>
+        <div class="block-buttons">
+            <button class="toggle-output-btn block-action-btn">Hide</button>
+            <button class="copy-output-btn block-action-btn">Copy</button>
         </div>
-        <span class="output-header-title">Output Block ${blockNumber}</span>
-        <span class="code-status-span ${statusClass}">${statusText}</span>
+        <span class="block-title">Output Block ${blockNumber}</span>
+        <span class="block-status ${statusClass}">${statusText}</span>
     `;
     
     const outputConsoleDiv = document.createElement('div');
-    outputConsoleDiv.className = 'code-output-console';
+    outputConsoleDiv.className = 'block-output-console';
     
     if (result.language === 'html' && result.html_content) {
         const iframe = document.createElement('iframe');
@@ -1388,30 +1676,33 @@ async function loadAndDisplayChatHistory(sessionId) {
     }
 
     streamingCodeBlockCounter = 0;
-
-    chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>'; 
+    chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>';
 
     try {
-        const response = await fetch(`/api/sessions/${sessionId}/messages`);
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ detail: "Failed to load chat history." }));
-            console.error(`Error fetching chat history for session ${sessionId}:`, response.status, errorData.detail);
-            chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">Error loading history: ${escapeHTML(errorData.detail || response.statusText)}</p>`;
-            return;
+        // Fetch all data concurrently
+        const [messagesResponse, codeResultsResponse, editedBlocksResponse] = await Promise.all([
+            fetch(`/api/sessions/${sessionId}/messages`),
+            fetch(`/api/sessions/${sessionId}/code-results`),
+            fetch(`/api/sessions/${sessionId}/edited-blocks`)
+        ]);
+
+        if (!messagesResponse.ok) {
+            const errorData = await messagesResponse.json().catch(() => ({ detail: "Failed to load chat history." }));
+            throw new Error(errorData.detail || messagesResponse.statusText);
         }
 
-        const messages = await response.json();
-        
-        const codeResultsResponse = await fetch(`/api/sessions/${sessionId}/code-results`);
+        const messages = await messagesResponse.json();
         const codeResults = codeResultsResponse.ok ? await codeResultsResponse.json() : [];
-        
+        const editedCodeBlocks = editedBlocksResponse.ok ? await editedBlocksResponse.json() : {};
+
         chatHistoryDiv.innerHTML = '';
 
         if (messages.length === 0) {
             chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">No messages in this session yet. Start chatting!</p>';
         } else {
             messages.forEach(msg => {
-                renderSingleMessage(msg, chatHistoryDiv, true);
+                // Pass the fetched data down to the rendering function
+                renderSingleMessage(msg, chatHistoryDiv, true, editedCodeBlocks);
             });
 
             codeResults.forEach(result => {
@@ -1422,25 +1713,24 @@ async function loadAndDisplayChatHistory(sessionId) {
                 Prism.highlightAll();
             }
 
-            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight; 
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
         }
         console.log(`Successfully loaded ${messages.length} messages for session ${sessionId}.`);
 
     } catch (error){
         console.error(`Failed to fetch or display chat history for session ${sessionId}:`, error);
-        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An unexpected error occurred while loading history. Check console.</p>`;
+        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An unexpected error occurred while loading history: ${escapeHTML(error.message)}</p>`;
     }
 }
-
 // --- WebSocket Connection ---
 function resetAllCodeButtonsOnErrorOrClose() {
     console.log("Resetting all code run/stop buttons and statuses due to connection issue.");
     const playIconSvg = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
 
-    document.querySelectorAll('.code-block-container').forEach(container => {
+    document.querySelectorAll('.block-container').forEach(container => {
         const button = container.querySelector('.run-code-btn');
-        const outputHeader = container.querySelector('.code-output-header');
-        const statusSpan = outputHeader ? outputHeader.querySelector('.code-status-span') : null;
+        const outputHeader = container.querySelector('.block-header');
+        const statusSpan = outputHeader ? outputHeader.querySelector('.block-status') : null;
 
         if (button && button.dataset.status !== 'idle') {
             button.dataset.status = 'idle';
@@ -1490,7 +1780,8 @@ function stickHeader(header, scrollerRect) {
     stickyClone.style.zIndex = '1000';
     stickyClone.style.backgroundColor = '#e5e7eb';
     stickyClone.style.borderRadius = '0';
-    stickyClone.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.1)';
+    stickyClone.style.boxShadow = 'none';
+    stickyClone.style.overflow = 'hidden';
     
     const originalButtons = header.querySelectorAll('button');
     const cloneButtons = stickyClone.querySelectorAll('button');
@@ -1540,6 +1831,22 @@ function unstickHeader(header) {
     if (stickyId) {
         const stickyClone = document.getElementById(stickyId);
         if (stickyClone) {
+            // Clean up button observers
+            const cloneButtons = stickyClone.querySelectorAll('button');
+            cloneButtons.forEach(btn => {
+                if (btn._syncObserver) {
+                    btn._syncObserver.disconnect();
+                    delete btn._syncObserver;
+                }
+            });
+            
+            // NEW: Clean up status observer
+            const cloneStatusSpan = stickyClone.querySelector('.block-status');
+            if (cloneStatusSpan && cloneStatusSpan._syncObserver) {
+                cloneStatusSpan._syncObserver.disconnect();
+                delete cloneStatusSpan._syncObserver;
+            }
+            
             stickyClone.remove();
         }
     }
@@ -1634,11 +1941,13 @@ function connectWebSocket() {
             let messageData;
             try {
                 messageData = JSON.parse(event.data);
+                console.log("[WebSocket] Received structured message:", messageData); // ADD THIS
             } catch (e) {
                 messageData = null;
             }
 
             if (messageData && messageData.type) {
+                console.log("[WebSocket] Handling structured message type:", messageData.type); // ADD THIS
                 handleStructuredMessage(messageData);
             } else {
                 const chunk = event.data;
@@ -1783,26 +2092,63 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (rafId) cancelAnimationFrame(rafId);
             rafId = requestAnimationFrame(function() {
                 const scrollerRect = chatHistoryScroller.getBoundingClientRect();
-                const containers = chatHistoryScroller.querySelectorAll('.code-block-container, .output-block-container');
+                const containers = chatHistoryScroller.querySelectorAll('.block-container');
 
                 const measurements = [];
                 containers.forEach(function(container) {
-                    const header = container.querySelector('.code-block-header, .code-output-header');
-                    const content = container.querySelector('pre, .code-output-console');
+                    const header = container.querySelector('.block-header, .block-header');
+                    const content = container.querySelector('pre, .block-output-console');
                     
                     if (header && content) {
                         measurements.push({
                             header: header,
                             headerRect: header.getBoundingClientRect(),
-                            contentRect: content.getBoundingClientRect()
+                            contentRect: content.getBoundingClientRect(),
+                            container: container
                         });
                     }
                 });
 
                 measurements.forEach(function(m) {
                     const shouldStick = m.headerRect.top < scrollerRect.top && m.contentRect.bottom > scrollerRect.top;
+                    
                     if (shouldStick) {
                         stickHeader(m.header, scrollerRect);
+                        
+                        // Handle clipping when approaching the bottom of content
+                        const stickyId = m.header.dataset.stickyId;
+                        if (stickyId) {
+                            const stickyClone = document.getElementById(stickyId);
+                            if (stickyClone) {
+                                const headerHeight = stickyClone.offsetHeight;
+                                const contentBottom = m.contentRect.bottom;
+                                const viewportTop = scrollerRect.top + 1; // Add 1px offset
+                                
+                                // Calculate how much space is available for the header (add 2px buffer)
+                                const availableSpace = contentBottom - viewportTop + 3;
+                                
+                                if (availableSpace < headerHeight && availableSpace > 0) {
+                                    // Clip the header from the top by moving it up and adjusting height
+                                    const clipAmount = headerHeight - availableSpace - 1;
+                                    stickyClone.style.top = `${viewportTop - clipAmount - 1}px`; // Move up by clip amount
+                                    stickyClone.style.clipPath = `inset(${clipAmount}px 0 0 0)`; // Clip from top
+                                    stickyClone.style.height = `${headerHeight}px`; // Keep original height for proper clipping
+                                    stickyClone.style.borderBottomLeftRadius = '0.375rem';
+                                    stickyClone.style.borderBottomRightRadius = '0.375rem';
+                                } else if (availableSpace <= 2) {
+                                    // Content has scrolled completely past, hide the sticky header
+                                    stickyClone.style.display = 'none';
+                                } else {
+                                    // Normal case: full header visible
+                                    stickyClone.style.height = 'auto';
+                                    stickyClone.style.top = `${scrollerRect.top}px`; // Use original viewport top without offset
+                                    stickyClone.style.display = 'flex';
+                                    stickyClone.style.clipPath = 'none'; // Reset clipping
+                                    stickyClone.style.borderBottomLeftRadius = '0';
+                                    stickyClone.style.borderBottomRightRadius = '0';
+                                }
+                            }
+                        }
                     } else {
                         unstickHeader(m.header);
                     }
@@ -1810,6 +2156,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         };
 
-        chatHistoryScroller.addEventListener('scroll', handleScroll, { passive: true });
-    }
+        chatHistoryScroller.addEventListener('scroll', function(e) {
+            // Only handle scroll if it's specifically from the chat history scroller
+            if (e.target === chatHistoryScroller) {
+                handleScroll();
+            }
+        }, { passive: true });
+            }
 });

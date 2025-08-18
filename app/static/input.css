@@ -50,7 +50,6 @@ html, body {
 }
 /* ----------------------------------- */
 
-
 /* Style for the AI Stop Generation button */
 #stop-ai-button {
     background-color: #ef4444; /* red-500 */
@@ -75,9 +74,7 @@ html, body {
 }
 /* ----------------------------------- */
 
-
 /* --- Message Styling --- */
-/* (All the other styles from your original input.css remain here) */
 .message {
     padding: 0.5rem 0.75rem;
     margin-bottom: 0.5rem;
@@ -146,7 +143,6 @@ html, body {
     margin: 0 2px;
 }
 
-/* (The rest of your file continues unchanged) */
 .loading-dots { display: inline-block; }
 .loading-dots::after {
     display: inline-block; position: relative; left: 1px;
@@ -156,6 +152,7 @@ html, body {
 @keyframes ellipsis {
     0% { content: "."; } 33% { content: ".."; } 66% { content: "..."; }
 }
+
 .thinking-area {
     width: 100%; max-width: 90%; margin-bottom: 4px;
     align-self: flex-start; font-size: 0.9em;
@@ -184,21 +181,23 @@ html, body {
     white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word;
     max-height: 200px; overflow-y: auto;
 }
+
 .code-blocks-area {
     width: 100%;
     max-width: 90%;
     align-self: flex-start;
     margin-top: 0.5rem;
 }
-.code-block-container {
+
+.block-container {
     margin-bottom: 0.75rem;
     border-radius: 0.375rem;
     overflow: hidden;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 
-.code-block-header,
-.code-output-header {
+
+.block-header {
     display: flex;
     align-items: center;
     background-color: #e5e7eb;
@@ -210,45 +209,24 @@ html, body {
     border-top-right-radius: 0.375rem;
 }
 
-.code-output-header {
-    margin-top: 0.25rem;
-}
-
-.code-output-header {
-    margin-top: 0.25rem;
-}
-.code-block-buttons,
-.output-header-buttons {
+.block-buttons {
     display: flex;
     align-items: center;
     gap: 0.375rem;
     flex-shrink: 0;
 }
-.code-block-title,
-.output-header-title {
+
+.block-title {
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-.code-block-title {
     flex-shrink: 1;
     flex-grow: 1;
     text-align: left;
 }
-.output-header-title {
-    flex-shrink: 0;
-    margin-right: 0.625rem;
-}
 
-
-.output-header-button-placeholder {
-    display: inline-block;
-    width: 24px;
-    height: 24px;
-    flex-shrink: 0;
-}
-.code-status-span {
+.block-status {
     margin-left: auto;
     text-align: right;
     font-style: italic;
@@ -260,10 +238,12 @@ html, body {
     color: #6b7280;
     flex-shrink: 0;
 }
-.code-status-span.running, .code-status-span.stopping { color: #ca8a04; font-weight: 500; }
-.code-status-span.success { color: #16a34a; font-weight: 500; }
-.code-status-span.error, .code-status-span.stopped { color: #dc2626; font-weight: 500; }
-.code-action-btn {
+
+.block-status.running, .block-status.stopping { color: #ca8a04; font-weight: 500; }
+.block-status.success { color: #16a34a; font-weight: 500; }
+.block-status.error, .block-status.stopped { color: #dc2626; font-weight: 500; }
+
+.block-action-btn {
     background-color: #d1d5db;
     color: #4b5563;
     border: none;
@@ -278,28 +258,10 @@ html, body {
     justify-content: center;
     white-space: nowrap;
 }
-.code-action-btn:hover { background-color: #9ca3af; color: #1f2937; }
-.code-action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.code-action-btn.copied { background-color: #16a34a; color: white; }
-.code-output-header .code-action-btn {
-    background-color: #d1d5db;
-    color: #4b5563;
-    border: none;
-    padding: 0.1875rem 0.4375rem;
-    border-radius: 0.25rem;
-    cursor: pointer;
-    font-size: 0.9em;
-    line-height: 1.2;
-    transition: background-color 0.2s ease, color 0.2s ease;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    white-space: nowrap;
-}
-.code-output-header .code-action-btn:hover {
-    background-color: #9ca3af;
-    color: #1f2937;
-}
+.block-action-btn:hover { background-color: #9ca3af; color: #1f2937; }
+.block-action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.block-action-btn.copied { background-color: #16a34a; color: white; }
+
 .run-code-btn {
     padding: 4px; width: 24px; height: 24px; font-size: 1em;
     background-color: transparent !important; border: none !important;
@@ -313,14 +275,15 @@ html, body {
 .run-code-btn[data-status="stopping"] { color: #f59e0b; cursor: wait; animation: spin 1s linear infinite; }
 .run-code-btn[data-status="stopping"]:hover { color: #d97706; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.code-block-container > pre[class*="language-"] {
+
+.block-container > pre[class*="language-"] {
     margin: 0;
     border: 1px solid #d1d5db;
     border-top: none;
     border-bottom: none !important;
     overflow: hidden;
 }
-.code-block-container > pre[class*="language-"] > code[class*="language-"] {
+.block-container > pre[class*="language-"] > code[class*="language-"] {
     outline: none;
     white-space: pre-wrap !important;
     word-wrap: break-word !important;
@@ -328,22 +291,26 @@ html, body {
     min-height: 1.5em;
     padding: 0.5em;
 }
-.code-block-container > pre[class*="language-"] > code[class*="language-"]:focus {
+.block-container > pre[class*="language-"] > code[class*="language-"]:focus {
     background-color: rgba(0, 0, 0, 0.03);
 }
-.code-output-console {
+
+.block-output-console {
     background-color: #1f2937;
     color: #f3f4f6;
     padding: 0;
     border: 1px solid #4b5563;
     border-top: none !important;
+    border-bottom-left-radius: 0.375rem;  /* Add this */
+    border-bottom-right-radius: 0.375rem; /* Add this */
     max-height: 250px;
     overflow-y: auto;
     font-family: monospace;
     font-size: 0.85em;
     line-height: 1.4;
 }
-.code-output-console pre {
+
+.block-output-console pre {
     margin: 0;
     white-space: pre-wrap;
     word-wrap: break-word;
@@ -353,13 +320,19 @@ html, body {
     background-color: transparent;
     outline: none !important;
 }
-.code-output-console span { display: inline; white-space: pre-wrap; }
-.code-output-console span.stdout-output { color: #ffffff; }
-.code-output-console span.stderr-output { color: #f87171; }
-.code-block-container > pre.hidden,
-.code-output-console.hidden,
-.code-output-header.hidden
- { display: none !important; }
+.block-output-console span { display: inline; white-space: pre-wrap; }
+.block-output-console span.stdout-output { color: #ffffff; }
+.block-output-console span.stderr-output { color: #f87171; }
+.block-container > pre.hidden,
+.block-output-console.hidden,
+.block-header.hidden { display: none !important; }
+
+/* Sticky header fixes */
+.block-header.header-is-sticky-js {
+    box-shadow: none !important;
+    margin-top: 0 !important;
+}
+
 footer { padding: 1rem; background-color: #e5e7eb; border-top: 1px solid #d1d5db; }
 #chat-form { display: flex; align-items: center; gap: 0.5rem; }
 .think-checkbox-container { display: flex; align-items: center; font-size: 0.9em; color: #4b5563; }

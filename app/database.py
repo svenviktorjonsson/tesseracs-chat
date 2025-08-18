@@ -49,6 +49,49 @@ def get_code_execution_results(session_id):
     finally:
         conn.close()
 
+def get_edited_code_blocks(session_id: str) -> dict:
+    """
+    Retrieves a dictionary of all edited code blocks for a given session.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    edited_blocks = {}
+    try:
+        cursor.execute(
+            "SELECT code_block_id, edited_content FROM edited_code_blocks WHERE session_id = ?",
+            (session_id,)
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            edited_blocks[row['code_block_id']] = row['edited_content']
+        return edited_blocks
+    except Exception as e:
+        print(f"Error retrieving edited code blocks for session {session_id}: {e}")
+        return {} # Return empty dict on error
+    finally:
+        conn.close()
+
+def delete_edited_code_block(session_id, code_block_id):
+    """
+    Deletes a specific edited code block record from the database.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM edited_code_blocks WHERE session_id = ? AND code_block_id = ?",
+            (session_id, code_block_id)
+        )
+        conn.commit()
+        print(f"Successfully deleted edited content for {code_block_id} in session {session_id}")
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"Error deleting edited code block for {code_block_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
 def save_code_execution_result(session_id, code_block_id, language, code_content, 
                              output_content=None, html_content=None, exit_code=None, 
                              error_message=None, execution_status='completed', turn_id=None):
@@ -201,6 +244,20 @@ def init_db():
     """)
     print("Ensured 'chat_messages' table exists.")
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS edited_code_blocks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,                   
+        code_block_id TEXT NOT NULL,               
+        language TEXT NOT NULL,                     
+        edited_content TEXT NOT NULL,               
+        edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(session_id, code_block_id),          
+        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE 
+    );
+    """)
+    print("Ensured 'edited_code_blocks' table exists.")
+
     # Add new columns to 'chat_messages' if they don't exist
     chat_messages_columns_to_add = {
         "model_provider_id": "TEXT",
@@ -296,6 +353,26 @@ def generate_secure_token(length: int = 32) -> str:
     Useful for session tokens, password reset tokens, etc.
     """
     return secrets.token_urlsafe(length)
+
+def save_edited_code_content(session_id, code_block_id, language, code_content):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            INSERT OR REPLACE INTO edited_code_blocks 
+            (session_id, code_block_id, language, edited_content, edited_at)
+            VALUES (?, ?, ?, ?, datetime('now', 'utc'))
+        """, (session_id, code_block_id, language, code_content))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"Error saving edited code content for {code_block_id}: {e}")
+        return False
+    finally:
+        conn.close()
 
 # This allows the script to be run directly to initialize the database
 # e.g., `python -m app.database` from the project root directory.

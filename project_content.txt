@@ -4,6 +4,7 @@ Relevant files and folders (excluding specified patterns):
 
 .
 ├── Readme.md
+├── change_names.py
 ├── check_database.py
 ├── fetch_assets.py
 ├── generate_secret_key.py
@@ -49,6 +50,181 @@ Relevant files and folders (excluding specified patterns):
 === Readme.md ===
 Readme
 
+
+=== change_names.py ===
+#!/usr/bin/env python3
+"""
+CSS Class Name Replacer Script
+Replaces old CSS class names with new unified block class names throughout the project.
+"""
+
+import os
+import re
+from pathlib import Path
+
+# Define the replacement mappings
+REPLACEMENTS = {
+    # Container classes
+    'code-block-container': 'block-container',
+    'output-block-container': 'block-container',
+    
+    # Header classes
+    'code-block-header': 'block-header',
+    'code-output-header': 'block-header',
+    
+    # Button and UI classes
+    'code-block-buttons': 'block-buttons',
+    'code-block-title': 'block-title',
+    'code-status-span': 'block-status',
+    'code-action-btn': 'block-action-btn',
+    
+    # Console class
+    'code-output-console': 'block-output-console',
+    
+    # Title classes
+    'output-header-title': 'block-title',
+}
+
+# Files to process
+FILES_TO_PROCESS = [
+    'app/static/script.js',
+    'app/static/input.css',
+    'app/static/chat-session.html',
+    'app/static/_sidebar.html',
+    'app/static/session-choice.html',
+    'app/static/settings.html',
+    'app/static/login.html',
+    'app/static/js/app-ui.js',
+    'app/static/js/settings.js',
+    'app/static/js/temp.js',
+]
+
+def replace_in_file(file_path, replacements, dry_run=False):
+    """Replace class names in a single file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        original_content = content
+        changes_made = []
+        
+        for old_class, new_class in replacements.items():
+            # Pattern to match class names in various contexts
+            patterns = [
+                # CSS selectors: .class-name
+                (rf'\.{re.escape(old_class)}\b', f'.{new_class}'),
+                
+                # JavaScript/HTML class strings: 'class-name' or "class-name"
+                (rf"'{re.escape(old_class)}'", f"'{new_class}'"),
+                (rf'"{re.escape(old_class)}"', f'"{new_class}"'),
+                
+                # classList operations: addClass('class-name'), removeClass('class-name')
+                (rf"(addClass|removeClass|contains|toggle)\s*\(\s*['\"]({re.escape(old_class)})['\"]", 
+                 lambda m: f"{m.group(1)}('{new_class}'"),
+                
+                # querySelector operations: querySelector('.class-name')
+                (rf"(querySelector|querySelectorAll)\s*\(\s*['\"]\.({re.escape(old_class)})['\"]",
+                 lambda m: f"{m.group(1)}('.{new_class}'"),
+                
+                # HTML class attributes: class="class-name"
+                (rf'class\s*=\s*["\']([^"\']*\b){re.escape(old_class)}\b([^"\']*)["\']',
+                 lambda m: f'class="{m.group(1)}{new_class}{m.group(2)}"'),
+            ]
+            
+            for pattern, replacement in patterns:
+                if callable(replacement):
+                    new_content = re.sub(pattern, replacement, content)
+                else:
+                    new_content = re.sub(pattern, replacement, content)
+                
+                if new_content != content:
+                    changes_made.append(f"  {old_class} → {new_class}")
+                    content = new_content
+        
+        if content != original_content:
+            if not dry_run:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                print(f"✓ Updated {file_path}")
+                for change in changes_made:
+                    print(change)
+            else:
+                print(f"Would update {file_path}:")
+                for change in changes_made:
+                    print(change)
+        else:
+            print(f"- No changes needed in {file_path}")
+            
+    except FileNotFoundError:
+        print(f"⚠ File not found: {file_path}")
+    except Exception as e:
+        print(f"✗ Error processing {file_path}: {e}")
+
+def main():
+    """Main function to process all files."""
+    print("CSS Class Name Replacer")
+    print("=" * 50)
+    
+    # Check if we're in the right directory
+    if not os.path.exists('app/static/script.js'):
+        print("Error: Please run this script from the project root directory.")
+        print("Expected to find 'app/static/script.js' from current directory.")
+        return
+    
+    # Ask for confirmation
+    print("This script will replace the following class names:")
+    for old, new in REPLACEMENTS.items():
+        print(f"  {old} → {new}")
+    
+    print(f"\nFiles to be processed:")
+    for file_path in FILES_TO_PROCESS:
+        if os.path.exists(file_path):
+            print(f"  ✓ {file_path}")
+        else:
+            print(f"  ⚠ {file_path} (not found)")
+    
+    response = input("\nProceed with replacements? (y/N): ").strip().lower()
+    if response != 'y':
+        print("Operation cancelled.")
+        return
+    
+    # Optional dry run
+    dry_run_response = input("Do a dry run first? (Y/n): ").strip().lower()
+    dry_run = dry_run_response != 'n'
+    
+    if dry_run:
+        print("\n" + "=" * 50)
+        print("DRY RUN - No files will be modified")
+        print("=" * 50)
+        
+        for file_path in FILES_TO_PROCESS:
+            if os.path.exists(file_path):
+                replace_in_file(file_path, REPLACEMENTS, dry_run=True)
+        
+        real_run_response = input("\nProceed with actual replacements? (y/N): ").strip().lower()
+        if real_run_response != 'y':
+            print("Operation cancelled.")
+            return
+    
+    print("\n" + "=" * 50)
+    print("PROCESSING FILES")
+    print("=" * 50)
+    
+    # Process each file
+    for file_path in FILES_TO_PROCESS:
+        if os.path.exists(file_path):
+            replace_in_file(file_path, REPLACEMENTS, dry_run=False)
+    
+    print("\n" + "=" * 50)
+    print("REPLACEMENT COMPLETE!")
+    print("=" * 50)
+    print("\nNext steps:")
+    print("1. Replace your input.css with the new unified CSS")
+    print("2. Test the application to ensure everything works")
+    print("3. Update your JavaScript selectors to use '.block-header' for sticky functionality")
+
+if __name__ == "__main__":
+    main()
 
 === check_database.py ===
 import sqlite3
@@ -293,6 +469,235 @@ module.exports = {
 }
 
 === project_content.txt ===
+=== Project Directory Structure ===
+Root: C:\Users\viktor.jonsson\OneDrive - CellMax Technologies AB\Documents\Repositories\svenviktorjonsson\tesseracs-chat
+Relevant files and folders (excluding specified patterns):
+
+.
+├── Readme.md
+├── change_names.py
+├── check_database.py
+├── fetch_assets.py
+├── generate_secret_key.py
+├── package.json
+├── postcss.config.js
+├── project_content.txt
+├── pyproject.toml
+├── tailwind.config.js
+├── write_project_content_to_file.py
+├── app/
+│   ├── __init__.py
+│   ├── auth.py
+│   ├── config.py
+│   ├── database.py
+│   ├── docker_utils.py
+│   ├── email_utils.py
+│   ├── encryption_utils.py
+│   ├── main.py
+│   ├── models.py
+│   ├── state.py
+│   ├── utils.py
+│   ├── static/
+│   │   ├── _sidebar.html
+│   │   ├── chat-session.html
+│   │   ├── languages.json
+│   │   ├── login.html
+│   │   ├── script.js
+│   │   ├── session-choice.html
+│   │   ├── settings.html
+│   │   ├── email_templates/
+│   │   │   ├── password_reset_email.html
+│   │   │   ├── registration_email.html
+│   │   ├── js/
+│   │   │   ├── app-ui.js
+│   │   │   ├── settings.js
+│   │   │   ├── temp.js
+├── tests/
+│   ├── test_coding.py
+
+
+=== File Contents ===
+
+=== Readme.md ===
+Readme
+
+
+=== change_names.py ===
+#!/usr/bin/env python3
+"""
+CSS Class Name Replacer Script
+Replaces old CSS class names with new unified block class names throughout the project.
+"""
+
+import os
+import re
+from pathlib import Path
+
+# Define the replacement mappings
+REPLACEMENTS = {
+    # Container classes
+    'code-block-container': 'block-container',
+    'output-block-container': 'block-container',
+    
+    # Header classes
+    'code-block-header': 'block-header',
+    'code-output-header': 'block-header',
+    
+    # Button and UI classes
+    'code-block-buttons': 'block-buttons',
+    'code-block-title': 'block-title',
+    'code-status-span': 'block-status',
+    'code-action-btn': 'block-action-btn',
+    
+    # Console class
+    'code-output-console': 'block-output-console',
+    
+    # Title classes
+    'output-header-title': 'block-title',
+}
+
+# Files to process
+FILES_TO_PROCESS = [
+    'app/static/script.js',
+    'app/static/input.css',
+    'app/static/chat-session.html',
+    'app/static/_sidebar.html',
+    'app/static/session-choice.html',
+    'app/static/settings.html',
+    'app/static/login.html',
+    'app/static/js/app-ui.js',
+    'app/static/js/settings.js',
+    'app/static/js/temp.js',
+]
+
+def replace_in_file(file_path, replacements, dry_run=False):
+    """Replace class names in a single file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        original_content = content
+        changes_made = []
+        
+        for old_class, new_class in replacements.items():
+            # Pattern to match class names in various contexts
+            patterns = [
+                # CSS selectors: .class-name
+                (rf'\.{re.escape(old_class)}\b', f'.{new_class}'),
+                
+                # JavaScript/HTML class strings: 'class-name' or "class-name"
+                (rf"'{re.escape(old_class)}'", f"'{new_class}'"),
+                (rf'"{re.escape(old_class)}"', f'"{new_class}"'),
+                
+                # classList operations: addClass('class-name'), removeClass('class-name')
+                (rf"(addClass|removeClass|contains|toggle)\s*\(\s*['\"]({re.escape(old_class)})['\"]", 
+                 lambda m: f"{m.group(1)}('{new_class}'"),
+                
+                # querySelector operations: querySelector('.class-name')
+                (rf"(querySelector|querySelectorAll)\s*\(\s*['\"]\.({re.escape(old_class)})['\"]",
+                 lambda m: f"{m.group(1)}('.{new_class}'"),
+                
+                # HTML class attributes: class="class-name"
+                (rf'class\s*=\s*["\']([^"\']*\b){re.escape(old_class)}\b([^"\']*)["\']',
+                 lambda m: f'class="{m.group(1)}{new_class}{m.group(2)}"'),
+            ]
+            
+            for pattern, replacement in patterns:
+                if callable(replacement):
+                    new_content = re.sub(pattern, replacement, content)
+                else:
+                    new_content = re.sub(pattern, replacement, content)
+                
+                if new_content != content:
+                    changes_made.append(f"  {old_class} → {new_class}")
+                    content = new_content
+        
+        if content != original_content:
+            if not dry_run:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                print(f"✓ Updated {file_path}")
+                for change in changes_made:
+                    print(change)
+            else:
+                print(f"Would update {file_path}:")
+                for change in changes_made:
+                    print(change)
+        else:
+            print(f"- No changes needed in {file_path}")
+            
+    except FileNotFoundError:
+        print(f"⚠ File not found: {file_path}")
+    except Exception as e:
+        print(f"✗ Error processing {file_path}: {e}")
+
+def main():
+    """Main function to process all files."""
+    print("CSS Class Name Replacer")
+    print("=" * 50)
+    
+    # Check if we're in the right directory
+    if not os.path.exists('app/static/script.js'):
+        print("Error: Please run this script from the project root directory.")
+        print("Expected to find 'app/static/script.js' from current directory.")
+        return
+    
+    # Ask for confirmation
+    print("This script will replace the following class names:")
+    for old, new in REPLACEMENTS.items():
+        print(f"  {old} → {new}")
+    
+    print(f"\nFiles to be processed:")
+    for file_path in FILES_TO_PROCESS:
+        if os.path.exists(file_path):
+            print(f"  ✓ {file_path}")
+        else:
+            print(f"  ⚠ {file_path} (not found)")
+    
+    response = input("\nProceed with replacements? (y/N): ").strip().lower()
+    if response != 'y':
+        print("Operation cancelled.")
+        return
+    
+    # Optional dry run
+    dry_run_response = input("Do a dry run first? (Y/n): ").strip().lower()
+    dry_run = dry_run_response != 'n'
+    
+    if dry_run:
+        print("\n" + "=" * 50)
+        print("DRY RUN - No files will be modified")
+        print("=" * 50)
+        
+        for file_path in FILES_TO_PROCESS:
+            if os.path.exists(file_path):
+                replace_in_file(file_path, REPLACEMENTS, dry_run=True)
+        
+        real_run_response = input("\nProceed with actual replacements? (y/N): ").strip().lower()
+        if real_run_response != 'y':
+            print("Operation cancelled.")
+            return
+    
+    print("\n" + "=" * 50)
+    print("PROCESSING FILES")
+    print("=" * 50)
+    
+    # Process each file
+    for file_path in FILES_TO_PROCESS:
+        if os.path.exists(file_path):
+            replace_in_file(file_path, REPLACEMENTS, dry_run=False)
+    
+    print("\n" + "=" * 50)
+    print("REPLACEMENT COMPLETE!")
+    print("=" * 50)
+    print("\nNext steps:")
+    print("1. Replace your input.css with the new unified CSS")
+    print("2. Test the application to ensure everything works")
+    print("3. Update your JavaScript selectors to use '.block-header' for sticky functionality")
+
+if __name__ == "__main__":
+    main()
+
+=== check_database.py ===
 
 
 === pyproject.toml ===
@@ -1164,6 +1569,36 @@ def get_code_execution_results(session_id):
     finally:
         conn.close()
 
+def delete_code_block_data(session_id, code_block_id):
+    """
+    Deletes code block data from both edited_code_blocks and code_execution_results tables.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Delete from edited_code_blocks table
+        cursor.execute(
+            "DELETE FROM edited_code_blocks WHERE session_id = ? AND code_block_id = ?",
+            (session_id, code_block_id)
+        )
+        
+        # Delete from code_execution_results table
+        cursor.execute(
+            "DELETE FROM code_execution_results WHERE session_id = ? AND code_block_id = ?",
+            (session_id, code_block_id)
+        )
+        
+        conn.commit()
+        print(f"Successfully deleted data for code block {code_block_id} in session {session_id}")
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"Error deleting code block data for {code_block_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
 def save_code_execution_result(session_id, code_block_id, language, code_content, 
                              output_content=None, html_content=None, exit_code=None, 
                              error_message=None, execution_status='completed', turn_id=None):
@@ -1316,6 +1751,20 @@ def init_db():
     """)
     print("Ensured 'chat_messages' table exists.")
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS edited_code_blocks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,                   
+        code_block_id TEXT NOT NULL,               
+        language TEXT NOT NULL,                     
+        edited_content TEXT NOT NULL,               
+        edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(session_id, code_block_id),          
+        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE 
+    );
+    """)
+    print("Ensured 'edited_code_blocks' table exists.")
+
     # Add new columns to 'chat_messages' if they don't exist
     chat_messages_columns_to_add = {
         "model_provider_id": "TEXT",
@@ -1412,6 +1861,26 @@ def generate_secure_token(length: int = 32) -> str:
     """
     return secrets.token_urlsafe(length)
 
+def save_edited_code_content(session_id, code_block_id, language, code_content):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            INSERT OR REPLACE INTO edited_code_blocks 
+            (session_id, code_block_id, language, edited_content, edited_at)
+            VALUES (?, ?, ?, ?, datetime('now', 'utc'))
+        """, (session_id, code_block_id, language, code_content))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"Error saving edited code content for {code_block_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
 # This allows the script to be run directly to initialize the database
 # e.g., `python -m app.database` from the project root directory.
 if __name__ == "__main__":
@@ -1464,384 +1933,219 @@ except DockerException as e:
 def get_docker_client():
     return docker_client
 
-def stream_container_logs(
+async def read_from_socket_and_stream(
     loop: asyncio.AbstractEventLoop,
     websocket: WebSocket,
     code_block_id: str,
     container: Container,
-    stop_event: asyncio.Event
+    socket: socket.socket
 ):
     """
-    Stream container logs using Docker's logs API instead of socket attachment.
-    This is more reliable on Windows Docker Desktop.
+    Reads from the container's interactive socket, decodes the Docker stream
+    protocol, buffers output to detect prompts, and forwards to the WebSocket.
     """
+    import struct
+
+    line_buffer = ""
     try:
-        print(f"[LogStreamer-{code_block_id}] === STARTING LOG STREAMING ===")
-        print(f"[LogStreamer-{code_block_id}] Container ID: {container.id}")
-        
-        # Check initial container status
-        try:
-            container.reload()
-            print(f"[LogStreamer-{code_block_id}] Initial container status: {container.status}")
-        except Exception as e:
-            print(f"[LogStreamer-{code_block_id}] ERROR: Could not reload container: {e}")
-            return
-        
-        print(f"[LogStreamer-{code_block_id}] Stop event status: {stop_event.is_set()}")
-        
-        # Don't wait! Start reading logs immediately to catch fast-executing programs
-        print(f"[LogStreamer-{code_block_id}] Starting immediate log streaming...")
-        
-        # Check stop event before starting
-        if stop_event.is_set():
-            print(f"[LogStreamer-{code_block_id}] ABORT: Stop event already set before log streaming!")
-            return
-        
-        print(f"[LogStreamer-{code_block_id}] Calling container.logs() with streaming...")
-        
-        # Use Docker's log streaming API
-        try:
-            log_stream = container.logs(
-                stdout=True, 
-                stderr=True, 
-                stream=True,  # Stream the logs
-                follow=True,  # Follow new output
-                timestamps=False,
-                since=None  # Get all logs from the beginning
-            )
-            print(f"[LogStreamer-{code_block_id}] container.logs() call successful, got log stream object")
-        except Exception as e:
-            print(f"[LogStreamer-{code_block_id}] ERROR: container.logs() failed: {e}")
-            traceback.print_exc()
-            return
-        
-        line_count = 0
-        print(f"[LogStreamer-{code_block_id}] Starting to iterate over log stream...")
-        
-        try:
-            for log_line in log_stream:
-                line_count += 1
-                print(f"[LogStreamer-{code_block_id}] === LOG LINE #{line_count} ===")
-                
-                # Check stop event on each iteration, but don't abort immediately for fast programs
-                if stop_event.is_set() and line_count > 0:
-                    print(f"[LogStreamer-{code_block_id}] Stop event set after processing {line_count} lines, ending stream.")
-                    break
-                
-                print(f"[LogStreamer-{code_block_id}] Raw log_line type: {type(log_line)}")
-                print(f"[LogStreamer-{code_block_id}] Raw log_line length: {len(log_line) if log_line else 'None/Empty'}")
-                    
-                try:
-                    # Decode the log line
-                    if isinstance(log_line, bytes):
-                        line_str = log_line.decode('utf-8', errors='replace')
-                    else:
-                        line_str = str(log_line)
-                    
-                    print(f"[LogStreamer-{code_block_id}] Decoded line_str: {repr(line_str)}")
-                    print(f"[LogStreamer-{code_block_id}] Decoded line_str length: {len(line_str)}")
-                    
-                    if not line_str:
-                        print(f"[LogStreamer-{code_block_id}] Skipping empty line")
-                        continue
-                        
-                    print(f"[LogStreamer-{code_block_id}] Sending to WebSocket...")
-                    
-                    # Send output to WebSocket
-                    future = asyncio.run_coroutine_threadsafe(
-                        send_ws_message(websocket, "code_output", {
-                            "code_block_id": code_block_id, 
-                            "stream": "stdout", 
-                            "data": line_str
-                        }),
-                        loop
-                    )
-                    
-                    # Wait for the WebSocket send to complete
-                    try:
-                        future.result(timeout=1.0)
-                        print(f"[LogStreamer-{code_block_id}] WebSocket message sent successfully")
-                    except Exception as ws_e:
-                        print(f"[LogStreamer-{code_block_id}] ERROR: WebSocket send failed: {ws_e}")
-                    
-                    # Check if this looks like an input prompt
-                    stripped_line = line_str.rstrip('\n\r')
-                    if stripped_line and len(stripped_line) > 0:
-                        prompt_indicators = [':', '?', '>', 'input', 'enter', 'password', 'name', 'age']
-                        line_lower = stripped_line.lower()
-                        if (any(indicator in line_lower for indicator in prompt_indicators) and 
-                            not line_lower.strip().startswith(('http', 'https', 'ftp', '/', '#', '//'))):
-                            print(f"[LogStreamer-{code_block_id}] Detected input prompt: '{stripped_line}'")
-                            asyncio.run_coroutine_threadsafe(
-                                send_ws_message(websocket, "code_waiting_input", {
-                                    "code_block_id": code_block_id, 
-                                    "prompt": stripped_line
-                                }),
-                                loop
-                            )
-                    
-                except Exception as e:
-                    print(f"[LogStreamer-{code_block_id}] ERROR processing log line: {e}")
-                    traceback.print_exc()
-                    continue
-                    
-        except Exception as stream_e:
-            print(f"[LogStreamer-{code_block_id}] ERROR during log stream iteration: {stream_e}")
-            traceback.print_exc()
-        
-        print(f"[LogStreamer-{code_block_id}] Log stream iteration finished. Total lines processed: {line_count}")
-        
-        # If we didn't get any log lines, try to get logs directly (for very fast programs)
-        if line_count == 0:
-            print(f"[LogStreamer-{code_block_id}] No lines from streaming, trying direct log fetch...")
+        while True:
+            # 1. Read the 8-byte header from the Docker stream
             try:
-                direct_logs = container.logs(stdout=True, stderr=True, timestamps=False)
-                if direct_logs:
-                    direct_str = direct_logs.decode('utf-8', errors='replace')
-                    print(f"[LogStreamer-{code_block_id}] Direct logs found: {repr(direct_str)}")
-                    if direct_str.strip():
-                        asyncio.run_coroutine_threadsafe(
-                            send_ws_message(websocket, "code_output", {
-                                "code_block_id": code_block_id, 
-                                "stream": "stdout", 
-                                "data": direct_str
-                            }),
-                            loop
-                        ).result(timeout=1.0)
-                        print(f"[LogStreamer-{code_block_id}] Direct logs sent to WebSocket")
-                else:
-                    print(f"[LogStreamer-{code_block_id}] No direct logs found either")
-            except Exception as direct_e:
-                print(f"[LogStreamer-{code_block_id}] ERROR fetching direct logs: {direct_e}")
-        
-        # Check final container status
-        try:
-            container.reload()
-            print(f"[LogStreamer-{code_block_id}] Final container status: {container.status}")
-        except Exception as e:
-            print(f"[LogStreamer-{code_block_id}] ERROR checking final container status: {e}")
+                header_bytes = await asyncio.to_thread(socket.recv, 8)
+            except PIPE_ENDED_ERROR as e:
+                # This is normal when the container finishes - not an error
+                print(f"[SocketStreamer-{code_block_id}] Container finished normally (pipe ended)")
+                break
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                print(f"[SocketStreamer-{code_block_id}] Connection closed: {e}")
+                break
                 
+            if not header_bytes:
+                print(f"[SocketStreamer-{code_block_id}] No more data, container finished")
+                break
+            if len(header_bytes) < 8:
+                print(f"[SocketStreamer-{code_block_id}] Incomplete header received, closing stream.")
+                break
+
+            # 2. Unpack the header to get stream type and content size
+            stream_type, size = struct.unpack('>BxxxL', header_bytes)
+            
+            # 3. Read the exact amount of data specified in the header
+            payload_bytes = b''
+            bytes_to_read = size
+            while bytes_to_read > 0:
+                try:
+                    chunk = await asyncio.to_thread(socket.recv, bytes_to_read)
+                except PIPE_ENDED_ERROR:
+                    print(f"[SocketStreamer-{code_block_id}] Container finished while reading payload")
+                    break
+                    
+                if not chunk:
+                    print(f"[SocketStreamer-{code_block_id}] Socket closed unexpectedly while reading payload")
+                    break
+                payload_bytes += chunk
+                bytes_to_read -= len(chunk)
+
+            if bytes_to_read > 0:
+                # Didn't read all expected data, container likely finished
+                break
+
+            stream_name = 'stdout' if stream_type == 1 else 'stderr'
+            chunk_str = payload_bytes.decode('utf-8', 'replace')
+
+            # Send the output to WebSocket
+            await send_ws_message(websocket, "code_output", {
+                "code_block_id": code_block_id, "stream": stream_name, "data": chunk_str
+            })
+
+            # Check for input prompts only on stdout
+            if stream_name == 'stdout':
+                line_buffer += chunk_str
+                if '\n' in line_buffer or '\r' in line_buffer:
+                    line_buffer = ""
+                    continue
+                
+                prompt_indicators = [':', '?', '>', 'input', 'enter']
+                line_lower = line_buffer.lower().strip()
+                if line_lower and any(indicator in line_lower for indicator in prompt_indicators):
+                    print(f"[SocketStreamer-{code_block_id}] Detected input prompt: '{line_buffer}'")
+                    await send_ws_message(websocket, "code_waiting_input", {"code_block_id": code_block_id, "prompt": line_buffer})
+                    line_buffer = ""
+
     except Exception as e:
-        print(f"[LogStreamer-{code_block_id}] CRITICAL ERROR in log streaming: {e}")
+        print(f"[SocketStreamer-{code_block_id}] Unexpected error in stream: {e}")
         traceback.print_exc()
     finally:
-        print(f"[LogStreamer-{code_block_id}] === LOG STREAMER FINISHED ===")
-
-async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_block_id: str, language: str, code: str):
-    print(f"[DockerRun-{code_block_id}] === STARTING DOCKER CODE EXECUTION ===")
-    print(f"[DockerRun-{code_block_id}] Language: {language}")
-    print(f"[DockerRun-{code_block_id}] Code length: {len(code)} characters")
-    print(f"[DockerRun-{code_block_id}] Client ID: {client_id}")
-    
-    local_docker_client = get_docker_client()
-    if not local_docker_client:
-        print(f"[DockerRun-{code_block_id}] ERROR: No Docker client available")
-        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": "Docker service is unavailable."})
-        return
-    
-    print(f"[DockerRun-{code_block_id}] Docker client available")
-    
-    lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
-    if not lang_config:
-        print(f"[DockerRun-{code_block_id}] ERROR: Language '{language}' not supported")
-        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": f"Language '{language}' not supported."})
-        return
-
-    print(f"[DockerRun-{code_block_id}] Language config: {lang_config}")
-    
-    tmpdir_obj = tempfile.TemporaryDirectory()
-    tmp_path = Path(tmpdir_obj.name)
-    print(f"[DockerRun-{code_block_id}] Created temp directory: {tmp_path}")
-    
-    try:
-        (tmp_path / lang_config["filename"]).write_text(code, encoding="utf-8")
-        print(f"[DockerRun-{code_block_id}] Wrote code to file: {lang_config['filename']}")
-    except Exception as e:
-        print(f"[DockerRun-{code_block_id}] ERROR writing code to file: {e}")
-        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": f"Error writing code to file: {e}"})
-        return
-    
-    is_interactive = lang_config.get("interactive", True)
-    container = None
-    exit_code, error_msg = -1, "An unexpected error occurred."
-
-    print(f"[DockerRun-{code_block_id}] Interactive mode: {is_interactive}")
-
-    try:
-        if is_interactive:
-            print(f"[DockerRun-{code_block_id}] Creating container for interactive streaming...")
+        print(f"[SocketStreamer-{code_block_id}] Stream finished - entering finally block")
+        try:
+            # Check if container is still running before waiting
+            print(f"[SocketStreamer-{code_block_id}] Reloading container to check status...")
+            await asyncio.to_thread(container.reload)
+            container_status = container.status
+            print(f"[SocketStreamer-{code_block_id}] Container status: {container_status}")
             
-            # For interactive languages, use log streaming for real-time output
-            print(f"[DockerRun-{code_block_id}] Docker run parameters:")
-            print(f"[DockerRun-{code_block_id}] - Image: {lang_config['image']}")
-            print(f"[DockerRun-{code_block_id}] - Command: {lang_config['command']}")
-            print(f"[DockerRun-{code_block_id}] - Volume: {tmp_path}:/app")
-            print(f"[DockerRun-{code_block_id}] - Memory limit: {config.DOCKER_MEM_LIMIT}")
-            
-            try:
-                container = local_docker_client.containers.run(
-                    image=lang_config["image"],
-                    command=lang_config["command"],
-                    volumes={str(tmp_path): {'bind': '/app', 'mode': 'rw'}},
-                    working_dir='/app',
-                    mem_limit=config.DOCKER_MEM_LIMIT,
-                    stdin_open=True,
-                    tty=True,
-                    detach=True,  # Run in detached mode
-                    remove=False  # Don't auto-remove so we can get logs
-                )
-                print(f"[DockerRun-{code_block_id}] Container created successfully: {container.id}")
-            except Exception as e:
-                print(f"[DockerRun-{code_block_id}] ERROR creating container: {e}")
-                traceback.print_exc()
-                await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": f"Error creating container: {e}"})
-                return
-            
-            print(f"[DockerRun-{code_block_id}] Container {container.id[:12]} started. Setting up log streaming...")
-            
-            # Store container info
-            print(f"[DockerRun-{code_block_id}] Storing container info in running_containers...")
-            async with state.running_containers_lock:
-                state.running_containers[code_block_id] = {
-                    "container": container, 
-                    "client_id": client_id, 
-                    "websocket": websocket,
-                    "stop_event": asyncio.Event()
-                }
-                print(f"[DockerRun-{code_block_id}] Container info stored. Total running containers: {len(state.running_containers)}")
-
-            # Start streaming logs in the background
-            loop = asyncio.get_running_loop()
-            streamer_stop_event = state.running_containers[code_block_id]["stop_event"]
-            
-            print(f"[DockerRun-{code_block_id}] Starting log streamer task...")
-            
-            # Start the log streamer
-            streamer_task = loop.run_in_executor(
-                None, 
-                stream_container_logs, 
-                loop, 
-                websocket, 
-                code_block_id, 
-                container,
-                streamer_stop_event
-            )
-            print(f"[DockerRun-{code_block_id}] Log streamer task started")
-            
-            # Wait for container to finish
-            print(f"[DockerRun-{code_block_id}] Waiting for container to finish (timeout: {config.DOCKER_TIMEOUT_SECONDS}s)...")
-            try:
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: container.wait(timeout=config.DOCKER_TIMEOUT_SECONDS)),
-                    timeout=config.DOCKER_TIMEOUT_SECONDS + 5
-                )
-                exit_code = result.get("StatusCode", 0)
-                error_msg = result.get("Error")
-                print(f"[DockerRun-{code_block_id}] Container finished. Exit code: {exit_code}, Error: {error_msg}")
-            except asyncio.TimeoutError:
-                print(f"[DockerRun-{code_block_id}] Container timed out after {config.DOCKER_TIMEOUT_SECONDS}s")
-                exit_code = -1
-                error_msg = "Execution timed out"
-                try:
-                    await asyncio.to_thread(container.kill)
-                    print(f"[DockerRun-{code_block_id}] Container killed due to timeout")
-                except Exception as kill_e:
-                    print(f"[DockerRun-{code_block_id}] Error killing container: {kill_e}")
-            
-            # Stop the streamer
-            print(f"[DockerRun-{code_block_id}] Setting stop event for log streamer...")
-            streamer_stop_event.set()
-            
-            # Wait a bit for the streamer to finish
-            print(f"[DockerRun-{code_block_id}] Waiting for log streamer to finish...")
-            try:
-                await asyncio.wait_for(streamer_task, timeout=3.0)
-                print(f"[DockerRun-{code_block_id}] Log streamer finished normally")
-            except asyncio.TimeoutError:
-                print(f"[DockerRun-{code_block_id}] Log streamer didn't finish in time (timeout)")
-            
-            print(f"[DockerRun-{code_block_id}] Sending code_finished message...")
-            await send_ws_message(websocket, "code_finished", {
-                "code_block_id": code_block_id, 
-                "exit_code": exit_code, 
-                "error": error_msg
-            })
-            print(f"[DockerRun-{code_block_id}] code_finished message sent")
-
-        else: # Batch mode for HTML, etc.
-            print(f"[DockerRun-{code_block_id}] Running in batch mode...")
-            container = local_docker_client.containers.run(
-                image=lang_config["image"], 
-                command=lang_config["command"],
-                volumes={str(tmp_path): {'bind': '/app', 'mode': 'rw'}},
-                working_dir='/app', 
-                mem_limit=config.DOCKER_MEM_LIMIT,
-                detach=True, 
-                stdin_open=False, 
-                tty=False
-            )
-            
-            result = container.wait(timeout=config.DOCKER_TIMEOUT_SECONDS)
+            if container_status == 'running':
+                print(f"[SocketStreamer-{code_block_id}] Container still running, getting state without waiting...")
+                # Don't wait for running containers, just send completion with exit code 0
+                result = {"StatusCode": 0, "Error": None}
+            else:
+                # Container already finished, get its exit code
+                print(f"[SocketStreamer-{code_block_id}] Container already finished, getting exit code...")
+                container_state = container.attrs.get('State', {})
+                exit_code = container_state.get('ExitCode', 0)
+                error_detail = container_state.get('Error')
+                result = {"StatusCode": exit_code, "Error": error_detail}
+                print(f"[SocketStreamer-{code_block_id}] Exit code: {exit_code}, Error: {error_detail}")
+                
             exit_code = result.get("StatusCode", 0)
             error_msg = result.get("Error")
             
-            if exit_code == 0 and not error_msg:
-                output_bytes = container.logs(stdout=True, stderr=False)
-                if output_bytes:
-                    output_str = output_bytes.decode('utf-8', errors='replace')
-                    await send_ws_message(websocket, "code_output", {
-                        "code_block_id": code_block_id, 
-                        "stream": "stdout", 
-                        "data": output_str
-                    })
+            print(f"[SocketStreamer-{code_block_id}] About to send code_finished with exit_code: {exit_code}")
             
-            stderr_bytes = container.logs(stdout=False, stderr=True)
-            if stderr_bytes:
-                stderr_str = stderr_bytes.decode('utf-8', errors='replace')
-                await send_ws_message(websocket, "code_output", {
-                    "code_block_id": code_block_id, 
-                    "stream": "stderr", 
-                    "data": stderr_str
-                })
+            # Check WebSocket state before sending
+            if websocket.client_state.name != 'CONNECTED':
+                print(f"[SocketStreamer-{code_block_id}] WARNING: WebSocket not connected (state: {websocket.client_state.name})")
             
             await send_ws_message(websocket, "code_finished", {
                 "code_block_id": code_block_id, 
                 "exit_code": exit_code, 
                 "error": error_msg
             })
+            print(f"[SocketStreamer-{code_block_id}] ✓ code_finished message sent successfully")
+            
+        except Exception as e:
+            print(f"[SocketStreamer-{code_block_id}] ERROR in finally block: {e}")
+            traceback.print_exc()
+            # Send a completion message anyway to unblock the UI
+            try:
+                await send_ws_message(websocket, "code_finished", {
+                    "code_block_id": code_block_id, 
+                    "exit_code": 0, 
+                    "error": None  # Don't include the cleanup error in the UI
+                })
+                print(f"[SocketStreamer-{code_block_id}] ✓ Fallback code_finished message sent")
+            except Exception as fallback_error:
+                print(f"[SocketStreamer-{code_block_id}] ✗ Even fallback message failed: {fallback_error}")
+        
+        try:
+            socket.close()
+            print(f"[SocketStreamer-{code_block_id}] Socket closed")
+        except Exception as socket_error:
+            print(f"[SocketStreamer-{code_block_id}] Error closing socket: {socket_error}")
 
+async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_block_id: str, language: str, code: str):
+    print(f"[DockerRun-{code_block_id}] === STARTING DOCKER CODE EXECUTION ===")
+    
+    local_docker_client = get_docker_client()
+    if not local_docker_client:
+        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": "Docker service is unavailable."})
+        return
+
+    lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
+    if not lang_config:
+        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": f"Language '{language}' not supported."})
+        return
+
+    tmpdir_obj = tempfile.TemporaryDirectory()
+    tmp_path = Path(tmpdir_obj.name)
+    container = None
+
+    try:
+        (tmp_path / lang_config["filename"]).write_text(code, encoding="utf-8")
+        
+        is_interactive = lang_config.get("interactive", True)
+        
+        container = local_docker_client.containers.run(
+            image=lang_config["image"],
+            command=lang_config["command"],
+            volumes={str(tmp_path): {'bind': '/app', 'mode': 'rw'}},
+            working_dir='/app',
+            mem_limit=config.DOCKER_MEM_LIMIT,
+            stdin_open=True,
+            tty=False,
+            detach=True,
+            remove=False
+        )
+
+        if is_interactive:
+            params = {'stdin': 1, 'stdout': 1, 'stderr': 1, 'stream': 1}
+            # On Windows, this is an NpipeSocket; on Linux, a regular socket.
+            # We use it directly without accessing ._sock
+            interactive_socket = container.attach_socket(params=params)
+
+            async with state.running_containers_lock:
+                state.running_containers[code_block_id] = {
+                    "container": container, "client_id": client_id, "socket": interactive_socket
+                }
+
+            loop = asyncio.get_running_loop()
+            reader_task = loop.create_task(
+                read_from_socket_and_stream(loop, websocket, code_block_id, container, interactive_socket)
+            )
+            await asyncio.wait_for(reader_task, timeout=config.DOCKER_TIMEOUT_SECONDS)
+
+        else: # Batch mode for non-interactive
+            result = container.wait(timeout=config.DOCKER_TIMEOUT_SECONDS)
+            exit_code = result.get("StatusCode", 0)
+            error_msg = result.get("Error")
+            output = container.logs(stdout=True, stderr=True).decode('utf-8', errors='replace')
+            await send_ws_message(websocket, "code_output", {"code_block_id": code_block_id, "stream": "stdout", "data": output})
+            await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": exit_code, "error": error_msg})
+
+    except asyncio.TimeoutError:
+        print(f"[DockerRun-{code_block_id}] Session timed out after {config.DOCKER_TIMEOUT_SECONDS}s.")
+        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": 137, "error": "Execution timed out."})
     except Exception as e:
         error_payload = f"Server Execution Error: {e}"
         print(f"[DockerRun-{code_block_id}] CRITICAL ERROR: {error_payload}")
         traceback.print_exc()
-        await send_ws_message(websocket, "code_finished", {
-            "code_block_id": code_block_id, 
-            "exit_code": -1, 
-            "error": error_payload
-        })
+        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": error_payload})
     finally:
         print(f"[DockerRun-{code_block_id}] === CLEANUP PHASE ===")
-        
-        # Clean up container
-        if container:
-            try: 
-                print(f"[DockerRun-{code_block_id}] Removing container {container.id[:12]}...")
-                await asyncio.to_thread(container.remove, force=True)
-                print(f"[DockerRun-{code_block_id}] Container removed")
-            except Exception as e:
-                print(f"[DockerRun-{code_block_id}] Error removing container: {e}")
-        
-        # Clean up from running containers
-        async with state.running_containers_lock:
-            removed = state.running_containers.pop(code_block_id, None)
-            print(f"[DockerRun-{code_block_id}] Removed from running_containers: {'Yes' if removed else 'No'}")
-            print(f"[DockerRun-{code_block_id}] Remaining running containers: {len(state.running_containers)}")
-        
-        # Clean up temp directory
+        await stop_docker_container(code_block_id)
         if tmpdir_obj:
-            try: 
+            try:
                 tmpdir_obj.cleanup()
-                print(f"[DockerRun-{code_block_id}] Temp directory cleaned up")
             except Exception as e:
                 print(f"[DockerRun-{code_block_id}] Error cleaning temp directory: {e}")
         
@@ -1849,53 +2153,48 @@ async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_b
 
 async def send_input_to_container(code_block_id: str, user_input: str):
     """
-    Send input to a running container. 
-    Note: With the log streaming approach, input handling needs to be implemented differently.
-    This function may need to be updated based on your specific input requirements.
+    Finds the interactive socket for a container and sends user input to it.
     """
     async with state.running_containers_lock:
         container_info = state.running_containers.get(code_block_id)
-        if not container_info:
-            print(f"Send input failed: No active container for {code_block_id}")
-            return
-        
-        container = container_info.get('container')
-        if not container:
-            print(f"Send input failed: No container object for {code_block_id}")
-            return
-        
-        try:
-            # For log streaming approach, we need to use container.exec_run to send input
-            # This is a workaround since we can't use the socket approach
-            exec_result = container.exec_run(
-                f'echo "{user_input}" > /proc/1/fd/0',
-                stdin=True,
-                tty=True
-            )
-            print(f"Sent input to {code_block_id}: {user_input}")
-        except Exception as e:
-            print(f"Error sending input to {code_block_id}: {e}")
-            # Alternative approach: try to write to stdin via docker API
+        if container_info and (socket := container_info.get("socket")):
             try:
-                # This might work for some containers
-                container.attach_socket(params={'stdin': 1, 'stream': 1}).send(user_input.encode())
-            except Exception as e2:
-                print(f"Alternative input method also failed for {code_block_id}: {e2}")
+                # Use a thread to send data on the blocking socket
+                await asyncio.to_thread(socket.sendall, user_input.encode('utf-8'))
+                print(f"Sent input to {code_block_id}: {user_input.strip()}")
+            except Exception as e:
+                print(f"Error sending input via socket: {e}")
+        else:
+            print(f"Send input failed: No active container or socket for {code_block_id}")
 
 async def stop_docker_container(code_block_id: str):
+    container_info = None
     async with state.running_containers_lock:
         container_info = state.running_containers.pop(code_block_id, None)
-    if not container_info: 
+    
+    if not container_info:
         return
 
-    if stop_event := container_info.get("stop_event"): 
-        stop_event.set()
+    if socket := container_info.get("socket"):
+        try:
+            socket.close()
+            print(f"Socket for {code_block_id} closed.")
+        except Exception as e_sock:
+            print(f"Error closing socket for {code_block_id}: {e_sock}")
 
     if container := container_info.get("container"):
         try:
-            await asyncio.to_thread(container.kill)
+            # Check if container is still running before trying to kill it
+            await asyncio.to_thread(container.reload)
+            if container.status == 'running':
+                await asyncio.to_thread(container.kill)
+                print(f"Container for {code_block_id} killed.")
+            else:
+                print(f"Container for {code_block_id} already stopped (status: {container.status}).")
+            
+            # Always try to remove the container
             await asyncio.to_thread(container.remove, force=True)
-            print(f"Container for {code_block_id} stopped and removed.")
+            print(f"Container for {code_block_id} removed.")
         except Exception as e:
             print(f"Error stopping/removing container for {code_block_id}: {e}")
 
@@ -4020,6 +4319,26 @@ async def websocket_endpoint(
                     code_block_id = payload.get("code_block_id")
                     print(f"---- WS LOG: Received 'stop_code' for block {code_block_id} from {user_id}")
                     asyncio.create_task(docker_utils.stop_docker_container(code_block_id))
+                elif message_type == "delete_code_block" and payload and payload.get("code_block_id"):
+                    session_id_from_payload = payload.get("session_id")
+                    code_block_id = payload.get("code_block_id")
+                    
+                    if session_id_from_payload == session_id_ws:
+                        print(f"---- WS LOG: Received 'delete_code_block' for block {code_block_id} from {user_id}")
+                        database.delete_code_block_data(session_id_ws, code_block_id)
+                    else:
+                        print(f"---- WS WARNING: Ignoring 'delete_code_block' with mismatched session.")
+                elif message_type == "save_code_content" and payload and payload.get("code_block_id"):
+                    session_id_from_payload = payload.get("session_id")
+                    code_block_id = payload.get("code_block_id")
+                    language = payload.get("language")
+                    code_content = payload.get("code_content")
+                    
+                    if session_id_from_payload == session_id_ws and code_content is not None:
+                        print(f"---- WS LOG: Received 'save_code_content' for block {code_block_id} from {user_id}")
+                        database.save_edited_code_content(session_id_ws, code_block_id, language, code_content)
+                    else:
+                        print(f"---- WS WARNING: Ignoring 'save_code_content' with mismatched session or missing content.")
 
                 elif message_type == "stop_ai_stream" and payload:
                     stop_client_id = payload.get("client_id") 
@@ -4583,6 +4902,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.websockets import WebSocketState
 import re
 import html
+import traceback
 
 def escape_html(s: str) -> str:
     """
@@ -4607,18 +4927,29 @@ def is_valid_email(email: str) -> bool:
 
 async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict):
     """Safely sends a JSON message over the WebSocket."""
-    # Check state before sending (no change needed here)
+    code_block_id = payload.get('code_block_id', 'N/A')
+    
+    print(f"[utils] Attempting to send {message_type} for {code_block_id}")
+    
+    # Check state before sending
     if websocket.client_state != WebSocketState.CONNECTED:
-        print(f"[utils] WebSocket not connected, cannot send {message_type} for {payload.get('code_block_id', 'N/A')}")
-        return
+        print(f"[utils] ✗ WebSocket not connected (state: {websocket.client_state.name}), cannot send {message_type} for {code_block_id}")
+        return False
+        
     try:
-        await websocket.send_json({"type": message_type, "payload": payload})
+        message = {"type": message_type, "payload": payload}
+        print(f"[utils] Sending message: {message}")
+        await websocket.send_json(message)
+        print(f"[utils] ✓ Successfully sent {message_type} for {code_block_id}")
+        return True
     except WebSocketDisconnect:
-        print(f"[utils] WebSocket disconnected while trying to send {message_type} for {payload.get('code_block_id', 'N/A')}")
+        print(f"[utils] ✗ WebSocket disconnected while trying to send {message_type} for {code_block_id}")
+        return False
     except Exception as e:
         # Catch other potential errors like Runtime Error if connection closed during send
-        print(f"[utils] Error sending WebSocket message ({message_type}) for {payload.get('code_block_id', 'N/A')}: {e}")
-        # traceback.print_exc() # Optional: uncomment for more detail
+        print(f"[utils] ✗ Error sending WebSocket message ({message_type}) for {code_block_id}: {e}")
+        traceback.print_exc() # Enable this to see full error details
+        return False
 
 === app/static/_sidebar.html ===
 <div class="p-4 border-b border-gray-700 flex items-center justify-between">
@@ -5339,9 +5670,9 @@ let streamingCodeBlockCounter = 0;
 function addTerminalPrompt(outputPreElement, promptText) {
     if (!outputPreElement) return;
     
-    const container = outputPreElement.closest('.code-block-container');
+    const outputContainer = outputPreElement.closest('.block-container');
+    if (!outputContainer) return;
     
-    // Create input field that blends into the terminal
     const inputField = document.createElement('input');
     inputField.type = 'text';
     inputField.style.border = 'none';
@@ -5355,28 +5686,25 @@ function addTerminalPrompt(outputPreElement, promptText) {
     inputField.style.width = 'auto';
     inputField.style.minWidth = '200px';
     
-    // Add the input directly to the output area, inline
     outputPreElement.appendChild(inputField);
-    
-    // Focus the input
     inputField.focus();
     
-    // Handle Enter key
     inputField.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             const userInput = inputField.value;
             
-            // Replace the input field with the typed text + newline
             const textNode = document.createTextNode(userInput + '\n');
             outputPreElement.replaceChild(textNode, inputField);
             
-            // Send input to backend
-            const codeBlockId = container.id;
+            // FIX: Get the output block's ID and strip the prefix to find the original code block ID.
+            const outputBlockId = outputContainer.id; // e.g., "output-for-code-block-turn1-1"
+            const originalCodeBlockId = outputBlockId.replace('output-for-', ''); // results in "code-block-turn1-1"
+
             if (websocket && websocket.readyState === WebSocket.OPEN) {
                 websocket.send(JSON.stringify({
                     type: 'code_input',
                     payload: { 
-                        code_block_id: codeBlockId, 
+                        code_block_id: originalCodeBlockId, // Send the CORRECT ID
                         input: userInput + '\n' 
                     }
                 }));
@@ -5408,11 +5736,11 @@ function getCursorPosition(parentElement) {
     preSelectionRange.selectNodeContents(parentElement);
     try {
         preSelectionRange.setEnd(range.startContainer, range.startOffset);
+        return preSelectionRange.toString().length;
     } catch (e) {
-        console.error("Error setting preSelectionRange end:", e);
+        console.error("Error getting cursor position:", e);
         return -1;
     }
-    return preSelectionRange.toString().length;
 }
 
 function setCursorPosition(parentElement, offset) {
@@ -5430,7 +5758,7 @@ function setCursorPosition(parentElement, offset) {
             const nextCharCount = charCount + node.length;
             if (!foundStart && offset >= charCount && offset <= nextCharCount) {
                 try {
-                    const offsetInNode = offset - charCount;
+                    const offsetInNode = Math.min(offset - charCount, node.length);
                     range.setStart(node, offsetInNode);
                     foundStart = true;
                 } catch (e) {
@@ -5457,9 +5785,21 @@ function setCursorPosition(parentElement, offset) {
         range.collapse(false);
         selection.removeAllRanges();
         selection.addRange(range);
-        console.warn(`Could not set cursor precisely at offset ${offset}. Placed at end.`);
     }
-    parentElement.focus();
+}
+
+function initializeCodeBlockHistory(blockId, initialContent) {
+    if (!window.codeBlockHistories) {
+        window.codeBlockHistories = new Map();
+    }
+    
+    if (!window.codeBlockHistories.has(blockId)) {
+        window.codeBlockHistories.set(blockId, {
+            history: [initialContent],
+            currentIndex: 0,
+            saveTimeout: null
+        });
+    }
 }
 
 // --- Configuration Loading ---
@@ -5723,7 +6063,6 @@ function renderLiveMessage(fullContent) {
     scrollToBottom('auto');
 }
 
-// REPLACE this function (for historical messages)
 function parseAndRenderAiContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix) {
     if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
 
@@ -5754,9 +6093,9 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
     contentForProcessing = contentAfterCodeExtraction;
     
     extractedCodeBlocks.forEach(block => {
-        // Use the new, unified function
-        createCodeBlock(block.language, block.code, turnIdSuffix, block.index, codeBlocksDivElement, false);
+        const newBlockElement = createCodeBlock(block.language, block.code, turnIdSuffix, block.index, codeBlocksDivElement, false);
         const blockId = `code-block-turn${turnIdSuffix}-${block.index}`;
+        initializeCodeBlockHistory(blockId, block.code);
         const linkHTML = `<a href="#${blockId}" class="code-block-link text-blue-600 hover:underline">[Code Block ${block.index}]</a>`;
         contentForProcessing = contentForProcessing.replace(block.placeholder, linkHTML);
     });
@@ -5823,7 +6162,6 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
     }
 }
 
-// REPLACE this function (for live-streaming messages)
 function parseAndRenderStreamingContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix) {
     if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
 
@@ -5939,13 +6277,12 @@ function updateStreamingCodeBlockContent(blockId, language, content, isComplete)
 
     const codeElement = container.querySelector('code');
     const dotsSpan = container.querySelector('.streaming-dots');
-    const titleTextSpan = container.querySelector('.code-block-title .title-text');
+    const titleTextSpan = container.querySelector('.block-title .title-text');
     const currentLanguage = container.dataset.language;
 
     const rawLang = (language || 'plaintext').trim().toLowerCase();
     const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
 
-    // This block runs when the language is updated (e.g., from 'plaintext' to 'python')
     if (canonicalLang && canonicalLang !== currentLanguage) {
         container.dataset.language = canonicalLang;
         if (titleTextSpan) {
@@ -5958,29 +6295,43 @@ function updateStreamingCodeBlockContent(blockId, language, content, isComplete)
             codeElement.className = `language-${prismLang}`;
         }
 
-        // --- THIS IS THE FIX ---
-        // Re-evaluate if the run button should be visible now that we know the language.
         const runStopBtn = container.querySelector('.run-code-btn');
         if (runStopBtn) {
             const isLanguageSupported = supportedLanguagesConfig[canonicalLang]?.executable;
             if (isLanguageSupported) {
-                runStopBtn.style.display = ''; // Show the button
+                runStopBtn.style.display = '';
                 runStopBtn.title = 'Run Code';
             } else {
-                runStopBtn.style.display = 'none'; // Hide the button
+                runStopBtn.style.display = 'none';
                 runStopBtn.title = `Run Code (language '${canonicalLang}' not supported for execution)`;
             }
         }
-        // --- END OF FIX ---
+        
+        initializeCodeBlockHistory(blockId, content);
     }
     
     if (codeElement) {
+        const cursorPos = getCursorPosition(codeElement);
+        const wasEditing = document.activeElement === codeElement;
+        
         codeElement.textContent = content;
+        
         if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
             try {
                 Prism.highlightElement(codeElement);
+                if (wasEditing) {
+                    setCursorPosition(codeElement, cursorPos);
+                    codeElement.focus();
+                }
             } catch (e) {
                 console.error(`Prism highlight error:`, e);
+            }
+        }
+        
+        if (window.codeBlockHistories && window.codeBlockHistories.has(blockId)) {
+            const historyData = window.codeBlockHistories.get(blockId);
+            if (historyData.history.length === 1) {
+                historyData.history[0] = content;
             }
         }
     }
@@ -5992,7 +6343,7 @@ function updateStreamingCodeBlockContent(blockId, language, content, isComplete)
 
 function updateAllRunButtonStates() {
     document.querySelectorAll('.run-code-btn').forEach(btn => {
-        const container = btn.closest('.code-block-container');
+        const container = btn.closest('.block-container');
         const lang = container ? container.dataset.language : null;
         const isExecutable = lang ? supportedLanguagesConfig[lang]?.executable : false;
 
@@ -6017,18 +6368,19 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
    
    const container = document.createElement('div');
-   container.classList.add('code-block-container');
+   container.classList.add('block-container');
    container.id = blockId;
    container.dataset.language = canonicalLang;
+   container.dataset.originalContent = codeContent;
 
    const codeHeader = document.createElement('div');
-   codeHeader.classList.add('code-block-header');
+   codeHeader.classList.add('block-header');
 
    const codeButtonsDiv = document.createElement('div');
-   codeButtonsDiv.classList.add('code-block-buttons');
+   codeButtonsDiv.classList.add('block-buttons');
 
    const runStopBtn = document.createElement('button');
-   runStopBtn.classList.add('run-code-btn', 'code-action-btn');
+   runStopBtn.classList.add('run-code-btn', 'block-action-btn');
    runStopBtn.dataset.status = 'idle';
    runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
    runStopBtn.addEventListener('click', handleRunStopCodeClick);
@@ -6039,22 +6391,34 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
        runStopBtn.style.display = 'none';
    }
 
+   const restoreBtn = document.createElement('button');
+   restoreBtn.classList.add('restore-code-btn', 'block-action-btn');
+   restoreBtn.textContent = 'Restore';
+   restoreBtn.title = 'Restore Original Code';
+
+   const deleteBtn = document.createElement('button');
+   deleteBtn.classList.add('delete-code-btn', 'block-action-btn');
+   deleteBtn.textContent = 'Delete';
+   deleteBtn.title = 'Delete Code Block';
+
    const toggleCodeBtn = document.createElement('button');
-   toggleCodeBtn.classList.add('toggle-code-btn', 'code-action-btn');
+   toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
    toggleCodeBtn.textContent = 'Hide';
    toggleCodeBtn.title = 'Show/Hide Code';
 
    const copyCodeBtn = document.createElement('button');
-   copyCodeBtn.classList.add('copy-code-btn', 'code-action-btn');
+   copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
    copyCodeBtn.textContent = 'Copy';
    copyCodeBtn.title = 'Copy Code';
    
    codeButtonsDiv.appendChild(runStopBtn);
+   codeButtonsDiv.appendChild(restoreBtn);
+   codeButtonsDiv.appendChild(deleteBtn);
    codeButtonsDiv.appendChild(toggleCodeBtn);
    codeButtonsDiv.appendChild(copyCodeBtn);
 
    const codeTitle = document.createElement('span');
-   codeTitle.classList.add('code-block-title');
+   codeTitle.classList.add('block-title');
    const titleTextSpan = document.createElement('span');
    titleTextSpan.classList.add('title-text');
    titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${canonicalLang})`;
@@ -6078,6 +6442,8 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    codeElement.setAttribute('spellcheck', 'false');
    codeElement.textContent = codeContent;
 
+   initializeCodeBlockHistory(blockId, codeContent);
+
    preElement.appendChild(codeElement);
    container.appendChild(codeHeader);
    container.appendChild(preElement);
@@ -6097,16 +6463,160 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
            console.error('Failed to copy code: ', err);
        }
    });
+
+   restoreBtn.addEventListener('click', () => {
+       const originalContent = container.dataset.originalContent;
+       const cursorPos = getCursorPosition(codeElement);
+       codeElement.textContent = originalContent;
+       
+       if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+           try {
+               Prism.highlightElement(codeElement);
+               setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length));
+           } catch (e) {
+               console.error(`Prism highlight error:`, e);
+           }
+       }
+       
+       saveCodeBlockContent(blockId, originalContent);
+   });
+
+   deleteBtn.addEventListener('click', () => {
+       if (confirm('Are you sure you want to delete this code block? This action cannot be undone.')) {
+           deleteCodeBlock(blockId);
+       }
+   });
    
-   const debouncedHighlight = debounce(() => Prism.highlightElement(codeElement), 500);
-   codeElement.addEventListener('input', debouncedHighlight);
+   codeElement.addEventListener('keydown', (event) => {
+       handleCodeBlockKeydown(event, blockId);
+   });
+
+   codeElement.addEventListener('blur', () => {
+       const content = codeElement.textContent || '';
+       saveCodeBlockContent(blockId, content);
+   });
+
+   codeElement.addEventListener('input', () => {
+       const cursorPos = getCursorPosition(codeElement);
+       const content = codeElement.textContent || '';
+       
+       setTimeout(() => {
+           if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+               try {
+                   Prism.highlightElement(codeElement);
+                   setCursorPosition(codeElement, cursorPos);
+               } catch (e) {
+                   console.error(`Prism highlight error:`, e);
+               }
+           }
+       }, 10);
+       
+       saveCodeBlockState(blockId, content);
+   });
 
    return container;
 }
 
+function deleteCodeBlock(blockId) {
+    const container = document.getElementById(blockId);
+    if (!container) return;
+    
+    // Clean up sticky header if this block has one
+    const header = container.querySelector('.block-header');
+    if (header) {
+        unstickHeader(header);
+    }
+    
+    // Find and remove the associated output container
+    const outputContainer = document.getElementById(`output-for-${blockId}`);
+    if (outputContainer) {
+        // Clean up sticky header for output container too
+        const outputHeader = outputContainer.querySelector('.block-header');
+        if (outputHeader) {
+            unstickHeader(outputHeader);
+        }
+        outputContainer.remove();
+    }
+    
+    // Update chat message to indicate deletion
+    updateChatMessageForDeletedCodeBlock(blockId);
+    
+    // Remove the main code block container
+    container.remove();
+    
+    // Clean up from code block histories
+    if (window.codeBlockHistories && window.codeBlockHistories.has(blockId)) {
+        window.codeBlockHistories.delete(blockId);
+    }
+    
+    // Send deletion message to server
+    const sessionId = getSessionIdFromPath();
+    if (sessionId && websocket && websocket.readyState === WebSocket.OPEN) {
+        websocket.send(JSON.stringify({
+            type: 'delete_code_block',
+            payload: {
+                session_id: sessionId,
+                code_block_id: blockId
+            }
+        }));
+    }
+}
+
+function updateChatMessageForDeletedCodeBlock(blockId) {
+    // Find the code block link in the chat message and replace it with deletion notice
+    const codeBlockLinks = document.querySelectorAll(`a[href="#${blockId}"]`);
+    
+    codeBlockLinks.forEach(link => {
+        if (link.classList.contains('code-block-link')) {
+            // Replace the link with a deleted indicator
+            const deletedSpan = document.createElement('span');
+            deletedSpan.className = 'deleted-code-block text-gray-500 italic line-through';
+            deletedSpan.textContent = '[Code Block Deleted]';
+            deletedSpan.title = `Original code block ${blockId} was deleted`;
+            
+            // Replace the link with the deleted indicator
+            link.parentNode.replaceChild(deletedSpan, link);
+        }
+    });
+}
+
+function saveCodeBlockContent(blockId, content) {
+    const container = document.getElementById(blockId);
+    if (!container) return;
+    
+    const language = container.dataset.language;
+    const sessionId = getSessionIdFromPath();
+    
+    if (!sessionId || !websocket || websocket.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    
+    websocket.send(JSON.stringify({
+        type: 'save_code_content',
+        payload: {
+            session_id: sessionId,
+            code_block_id: blockId,
+            language: language,
+            code_content: content
+        }
+    }));
+}
+
+function createOutputHeaderHTML(blockNumber, statusText = 'Running...', statusClass = 'running') {
+    return `
+        <div class="block-buttons">
+            <button class="run-code-btn block-action-btn" style="display: none;">Run</button>
+            <button class="toggle-output-btn block-action-btn">Hide</button>
+            <button class="copy-output-btn block-action-btn">Copy</button>
+        </div>
+        <span class="block-title">Output Block ${blockNumber}</span>
+        <span class="block-status ${statusClass}">${statusText}</span>
+    `;
+}
+
 async function handleRunStopCodeClick(event) {
     const button = event.currentTarget;
-    const container = button.closest('.code-block-container');
+    const container = button.closest('.block-container');
     if (!container) return;
 
     const codeBlockId = container.id;
@@ -6114,27 +6624,21 @@ async function handleRunStopCodeClick(event) {
     const codeElement = container.querySelector('code');
     const code = codeElement ? codeElement.textContent || '' : '';
 
+    saveCodeBlockContent(codeBlockId, code);
+
     let outputContainer = document.getElementById(`output-for-${codeBlockId}`);
     if (!outputContainer) {
         outputContainer = document.createElement('div');
         outputContainer.id = `output-for-${codeBlockId}`;
-        outputContainer.className = 'code-block-container output-block-container';
+        outputContainer.className = 'block-container';
 
         const blockNumber = codeBlockId.split('-').pop();
 
         const outputHeader = document.createElement('div');
-        outputHeader.className = 'code-output-header';
-        outputHeader.innerHTML = `
-            <div class="code-block-buttons">
-                <button class="toggle-output-btn code-action-btn">Hide</button>
-                <button class="copy-output-btn code-action-btn">Copy</button>
-            </div>
-            <span class="output-header-title">Output Block ${blockNumber}</span>
-            <span class="code-status-span running">Running...</span>
-        `;
-        
+        outputHeader.className = 'block-header';
+        outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
         const outputConsoleDiv = document.createElement('div');
-        outputConsoleDiv.className = 'code-output-console';
+        outputConsoleDiv.className = 'block-output-console';
         const outputPre = document.createElement('pre');
         outputConsoleDiv.appendChild(outputPre);
 
@@ -6155,7 +6659,7 @@ async function handleRunStopCodeClick(event) {
             } catch (err) { console.error('Failed to copy output:', err); }
         });
     } else {
-        const outputPre = outputContainer.querySelector('.code-output-console pre, .code-output-console iframe');
+        const outputPre = outputContainer.querySelector('.block-output-console pre, .block-output-console iframe');
         if (outputPre) {
             if (outputPre.tagName === 'IFRAME') {
                 const newPre = document.createElement('pre');
@@ -6168,7 +6672,7 @@ async function handleRunStopCodeClick(event) {
                 }
             }
         }
-        const statusSpan = outputContainer.querySelector('.code-status-span');
+        const statusSpan = outputContainer.querySelector('.block-status');
         if (statusSpan) {
             statusSpan.textContent = 'Running...';
             statusSpan.className = 'code-status-span running';
@@ -6202,23 +6706,29 @@ async function handleRunStopCodeClick(event) {
     }
 }
 
-function saveCodeExecutionResult(codeBlockId, language, codeContent, outputContent, htmlContent, exitCode, errorMessage, executionStatus) {
-    if (websocket && websocket.readyState === WebSocket.OPEN) {
-        websocket.send(JSON.stringify({
-            type: 'save_code_result',
-            payload: {
-                code_block_id: codeBlockId,
-                language: language,
-                code_content: codeContent,
-                output_content: outputContent,
-                html_content: htmlContent,
-                exit_code: exitCode,
-                error_message: errorMessage,
-                execution_status: executionStatus
+function updateHeaderStatus(outputContainer, statusText, statusClass) {
+    const statusSpan = outputContainer.querySelector('.block-status');
+    if (statusSpan) {
+        statusSpan.textContent = statusText;
+        statusSpan.className = `block-status ${statusClass}`;
+    }
+    
+    const outputHeader = outputContainer.querySelector('.block-header');
+    if (outputHeader && outputHeader.classList.contains('header-is-sticky-js')) {
+        const stickyId = outputHeader.dataset.stickyId;
+        if (stickyId) {
+            const stickyClone = document.getElementById(stickyId);
+            if (stickyClone) {
+                const stickyStatusSpan = stickyClone.querySelector('.block-status');
+                if (stickyStatusSpan) {
+                    stickyStatusSpan.textContent = statusText;
+                    stickyStatusSpan.className = `block-status ${statusClass}`;
+                }
             }
-        }));
+        }
     }
 }
+
 
 function addCodeOutput(outputPreElement, streamType, text, language) {
     if (!outputPreElement || !text) return;
@@ -6240,8 +6750,114 @@ function addCodeOutput(outputPreElement, streamType, text, language) {
     outputPreElement.scrollTop = outputPreElement.scrollHeight;
 }
 
+function performUndo(blockId) {
+    if (!window.codeBlockHistories) return false;
+    
+    const historyData = window.codeBlockHistories.get(blockId);
+    if (!historyData || historyData.currentIndex <= 0) return false;
+    
+    historyData.currentIndex--;
+    const content = historyData.history[historyData.currentIndex];
+    
+    const container = document.getElementById(blockId);
+    if (!container) return false;
+    
+    const codeElement = container.querySelector('code');
+    if (!codeElement) return false;
+    
+    const cursorPos = getCursorPosition(codeElement);
+    codeElement.textContent = content;
+    
+    if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+        try {
+            Prism.highlightElement(codeElement);
+            setCursorPosition(codeElement, Math.min(cursorPos, content.length));
+        } catch (e) {
+            console.error(`Prism highlight error:`, e);
+        }
+    }
+    
+    return true;
+}
+
+function performRedo(blockId) {
+    if (!window.codeBlockHistories) return false;
+    
+    const historyData = window.codeBlockHistories.get(blockId);
+    if (!historyData || historyData.currentIndex >= historyData.history.length - 1) return false;
+    
+    historyData.currentIndex++;
+    const content = historyData.history[historyData.currentIndex];
+    
+    const container = document.getElementById(blockId);
+    if (!container) return false;
+    
+    const codeElement = container.querySelector('code');
+    if (!codeElement) return false;
+    
+    const cursorPos = getCursorPosition(codeElement);
+    codeElement.textContent = content;
+    
+    if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+        try {
+            Prism.highlightElement(codeElement);
+            setCursorPosition(codeElement, Math.min(cursorPos, content.length));
+        } catch (e) {
+            console.error(`Prism highlight error:`, e);
+        }
+    }
+    
+    return true;
+}
+
+function handleCodeBlockKeydown(event, blockId) {
+    const isCtrlZ = event.ctrlKey && event.key === 'z' && !event.shiftKey;
+    const isCtrlY = event.ctrlKey && (event.key === 'y' || (event.key === 'z' && event.shiftKey));
+    
+    if (isCtrlZ) {
+        event.preventDefault();
+        performUndo(blockId);
+        return;
+    }
+    
+    if (isCtrlY) {
+        event.preventDefault();
+        performRedo(blockId);
+        return;
+    }
+    
+    const codeElement = event.target;
+    const content = codeElement.textContent || '';
+    saveCodeBlockState(blockId, content);
+}
+
+function saveCodeBlockState(blockId, content) {
+    if (!window.codeBlockHistories) return;
+    
+    const historyData = window.codeBlockHistories.get(blockId);
+    if (!historyData) return;
+
+    clearTimeout(historyData.saveTimeout);
+    historyData.saveTimeout = setTimeout(() => {
+        const lastContent = historyData.history[historyData.currentIndex];
+        if (lastContent !== content) {
+            historyData.history = historyData.history.slice(0, historyData.currentIndex + 1);
+            historyData.history.push(content);
+            
+            if (historyData.history.length > 50) {
+                historyData.history.shift();
+            } else {
+                historyData.currentIndex++;
+            }
+        }
+    }, 2000);
+}
+
+
 function handleStructuredMessage(messageData) {
     const { type, payload } = messageData;
+    console.log(`[handleStructuredMessage] Processing ${type} for ${payload?.code_block_id || 'unknown'}`);
+    
     if (!payload || !payload.code_block_id) return;
     
     const codeBlockId = payload.code_block_id;
@@ -6249,26 +6865,28 @@ function handleStructuredMessage(messageData) {
     const outputBlockId = `output-for-${codeBlockId}`;
     let outputContainer = document.getElementById(outputBlockId);
 
+    console.log(`[handleStructuredMessage] Found container for ${codeBlockId}:`, codeContainer);
+    console.log(`[handleStructuredMessage] Found output container for ${outputBlockId}:`, outputContainer);
+
     if (!outputContainer && type === 'code_output') {
+        console.log(`[DEBUG] Creating new output container for ${codeBlockId}`);
         outputContainer = document.createElement('div');
         outputContainer.id = outputBlockId;
-        outputContainer.className = 'code-block-container output-block-container';
+        outputContainer.className = 'block-container';
 
         const blockNumber = codeBlockId.split('-').pop();
+        console.log(`[DEBUG] Block number: ${blockNumber}`);
 
         const outputHeader = document.createElement('div');
-        outputHeader.className = 'code-output-header';
-        outputHeader.innerHTML = `
-            <div class="code-block-buttons">
-                <button class="toggle-output-btn code-action-btn">Hide</button>
-                <button class="copy-output-btn code-action-btn">Copy</button>
-            </div>
-            <span class="output-header-title">Output Block ${blockNumber}</span>
-            <span class="code-status-span running">Running...</span>
-        `;
+        outputHeader.className = 'block-header';
+        
+        const headerHTML = createOutputHeaderHTML(blockNumber);
+        console.log(`[DEBUG] Generated header HTML:`, headerHTML);
+        outputHeader.innerHTML = headerHTML;
+        console.log(`[DEBUG] Header after innerHTML:`, outputHeader);
         
         const outputConsoleDiv = document.createElement('div');
-        outputConsoleDiv.className = 'code-output-console';
+        outputConsoleDiv.className = 'block-output-console';
         const outputPre = document.createElement('pre');
         outputConsoleDiv.appendChild(outputPre);
 
@@ -6288,13 +6906,42 @@ function handleStructuredMessage(messageData) {
                 setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
             } catch (err) { console.error('Failed to copy output:', err); }
         });
+    } else if (outputContainer && type === 'code_output') {
+        // Check if existing output container has proper header structure
+        const existingStatusSpan = outputContainer.querySelector('.block-status');
+        if (!existingStatusSpan) {
+            console.log(`[DEBUG] Existing output container missing status span, fixing header...`);
+            const existingHeader = outputContainer.querySelector('.block-header');
+            if (existingHeader) {
+                const blockNumber = codeBlockId.split('-').pop();
+                const headerHTML = createOutputHeaderHTML(blockNumber);
+                console.log(`[DEBUG] Replacing header HTML with:`, headerHTML);
+                existingHeader.innerHTML = headerHTML;
+                console.log(`[DEBUG] Header after fix:`, existingHeader);
+                
+                // Re-add event listeners
+                outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+                    const outputConsoleDiv = outputContainer.querySelector('.block-output-console');
+                    const isHidden = outputConsoleDiv.classList.toggle('hidden');
+                    e.target.textContent = isHidden ? 'Show' : 'Hide';
+                });
+                outputContainer.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
+                    try {
+                        const outputPre = outputContainer.querySelector('.block-output-console pre');
+                        await navigator.clipboard.writeText(outputPre.textContent || '');
+                        e.target.textContent = 'Copied!';
+                        setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+                    } catch (err) { console.error('Failed to copy output:', err); }
+                });
+            }
+        }
     }
 
     if (!outputContainer || !codeContainer) return;
     
     switch (type) {
         case 'code_output': {
-            const outputPre = outputContainer.querySelector('.code-output-console pre');
+            const outputPre = outputContainer.querySelector('.block-output-console pre');
             const language = codeContainer.dataset.language;
             if (outputPre) {
                 addCodeOutput(outputPre, payload.stream, payload.data, language);
@@ -6303,12 +6950,8 @@ function handleStructuredMessage(messageData) {
         }
 
         case 'code_waiting_input': {
-            const statusSpan = outputContainer.querySelector('.code-status-span');
-            if (statusSpan) {
-                statusSpan.textContent = 'Waiting for input...';
-                statusSpan.className = 'code-status-span waiting-input';
-            }
-            const outputPre = outputContainer.querySelector('.code-output-console pre');
+            updateHeaderStatus(outputContainer, 'Waiting for input...', 'waiting-input');
+            const outputPre = outputContainer.querySelector('.block-output-console pre');
             if (outputPre) {
                 addTerminalPrompt(outputPre, payload.prompt || '');
             }
@@ -6316,12 +6959,20 @@ function handleStructuredMessage(messageData) {
         }
 
         case 'code_finished': {
+            console.log(`[handleStructuredMessage] Processing code_finished for ${codeBlockId}`);
             const runStopBtn = codeContainer.querySelector('.run-code-btn');
-            const statusSpan = outputContainer.querySelector('.code-status-span');
-            const outputConsoleDiv = outputContainer.querySelector('.code-output-console');
+            const statusSpan = outputContainer.querySelector('.block-status');
+            const outputConsoleDiv = outputContainer.querySelector('.block-output-console');
             const outputPre = outputConsoleDiv ? outputConsoleDiv.querySelector('pre') : null;
 
-            if (!runStopBtn || !statusSpan || !outputConsoleDiv || !outputPre) return;
+            console.log(`[handleStructuredMessage] Found run button:`, runStopBtn);
+            console.log(`[handleStructuredMessage] Found status span:`, statusSpan);
+            console.log(`[handleStructuredMessage] Found output console div:`, outputConsoleDiv);
+
+            if (!runStopBtn || !statusSpan || !outputConsoleDiv || !outputPre) {
+                console.log(`[handleStructuredMessage] Missing elements - runStopBtn: ${!!runStopBtn}, statusSpan: ${!!statusSpan}, outputConsoleDiv: ${!!outputConsoleDiv}, outputPre: ${!!outputPre}`);
+                return;
+            }
 
             const { exit_code, error } = payload;
             let finishMessage = '';
@@ -6408,17 +7059,17 @@ function handleStructuredMessage(messageData) {
                 }));
             }
             
-            statusSpan.textContent = finishMessage;
-            statusSpan.className = `code-status-span ${statusClass}`;
+            console.log(`[handleStructuredMessage] About to update button status to idle and set finish message: ${finishMessage}`);
+            updateHeaderStatus(outputContainer, finishMessage, statusClass);
             runStopBtn.dataset.status = 'idle';
             runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
             runStopBtn.title = 'Run Code';
+            console.log(`[handleStructuredMessage] Button and status updated successfully`);
             break;
         }
     }
 }
 
-// --- History Loading ---
 function renderSingleMessage(msg, parentElement, isHistory = false) {
     if (!parentElement || !msg) return;
 
@@ -6467,7 +7118,7 @@ function renderSingleMessage(msg, parentElement, isHistory = false) {
         parentElement.appendChild(messageDiv);
 
     } else if (senderType === 'ai') {
-        const turnIdSuffix = msg.id ? String(msg.id) : `hist-${Date.now()}`;
+        const turnIdSuffix = (msg.turn_id !== null && msg.turn_id !== undefined) ? String(msg.turn_id) : (msg.id ? `msg${msg.id}` : `hist-${Date.now()}`);
         
         const aiTurnContainer = document.createElement('div');
         aiTurnContainer.classList.add('ai-turn-container');
@@ -6534,12 +7185,12 @@ function restoreCodeExecutionResult(result) {
 
     outputContainer = document.createElement('div');
     outputContainer.id = outputBlockId;
-    outputContainer.className = 'code-block-container output-block-container';
+    outputContainer.className = 'block-container';
 
     const blockNumber = result.code_block_id.split('-').pop();
 
     const outputHeader = document.createElement('div');
-    outputHeader.className = 'code-output-header';
+    outputHeader.className = 'block-header';
     
     let statusText = '';
     let statusClass = '';
@@ -6555,16 +7206,16 @@ function restoreCodeExecutionResult(result) {
     }
     
     outputHeader.innerHTML = `
-        <div class="code-block-buttons">
-            <button class="toggle-output-btn code-action-btn">Hide</button>
-            <button class="copy-output-btn code-action-btn">Copy</button>
+        <div class="block-buttons">
+            <button class="toggle-output-btn block-action-btn">Hide</button>
+            <button class="copy-output-btn block-action-btn">Copy</button>
         </div>
-        <span class="output-header-title">Output Block ${blockNumber}</span>
-        <span class="code-status-span ${statusClass}">${statusText}</span>
+        <span class="block-title">Output Block ${blockNumber}</span>
+        <span class="block-status ${statusClass}">${statusText}</span>
     `;
     
     const outputConsoleDiv = document.createElement('div');
-    outputConsoleDiv.className = 'code-output-console';
+    outputConsoleDiv.className = 'block-output-console';
     
     if (result.language === 'html' && result.html_content) {
         const iframe = document.createElement('iframe');
@@ -6691,10 +7342,10 @@ function resetAllCodeButtonsOnErrorOrClose() {
     console.log("Resetting all code run/stop buttons and statuses due to connection issue.");
     const playIconSvg = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
 
-    document.querySelectorAll('.code-block-container').forEach(container => {
+    document.querySelectorAll('.block-container').forEach(container => {
         const button = container.querySelector('.run-code-btn');
-        const outputHeader = container.querySelector('.code-output-header');
-        const statusSpan = outputHeader ? outputHeader.querySelector('.code-status-span') : null;
+        const outputHeader = container.querySelector('.block-header');
+        const statusSpan = outputHeader ? outputHeader.querySelector('.block-status') : null;
 
         if (button && button.dataset.status !== 'idle') {
             button.dataset.status = 'idle';
@@ -6744,7 +7395,8 @@ function stickHeader(header, scrollerRect) {
     stickyClone.style.zIndex = '1000';
     stickyClone.style.backgroundColor = '#e5e7eb';
     stickyClone.style.borderRadius = '0';
-    stickyClone.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.1)';
+    stickyClone.style.boxShadow = 'none';
+    stickyClone.style.overflow = 'hidden';
     
     const originalButtons = header.querySelectorAll('button');
     const cloneButtons = stickyClone.querySelectorAll('button');
@@ -6794,6 +7446,22 @@ function unstickHeader(header) {
     if (stickyId) {
         const stickyClone = document.getElementById(stickyId);
         if (stickyClone) {
+            // Clean up button observers
+            const cloneButtons = stickyClone.querySelectorAll('button');
+            cloneButtons.forEach(btn => {
+                if (btn._syncObserver) {
+                    btn._syncObserver.disconnect();
+                    delete btn._syncObserver;
+                }
+            });
+            
+            // NEW: Clean up status observer
+            const cloneStatusSpan = stickyClone.querySelector('.block-status');
+            if (cloneStatusSpan && cloneStatusSpan._syncObserver) {
+                cloneStatusSpan._syncObserver.disconnect();
+                delete cloneStatusSpan._syncObserver;
+            }
+            
             stickyClone.remove();
         }
     }
@@ -6888,11 +7556,13 @@ function connectWebSocket() {
             let messageData;
             try {
                 messageData = JSON.parse(event.data);
+                console.log("[WebSocket] Received structured message:", messageData); // ADD THIS
             } catch (e) {
                 messageData = null;
             }
 
             if (messageData && messageData.type) {
+                console.log("[WebSocket] Handling structured message type:", messageData.type); // ADD THIS
                 handleStructuredMessage(messageData);
             } else {
                 const chunk = event.data;
@@ -7037,26 +7707,63 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (rafId) cancelAnimationFrame(rafId);
             rafId = requestAnimationFrame(function() {
                 const scrollerRect = chatHistoryScroller.getBoundingClientRect();
-                const containers = chatHistoryScroller.querySelectorAll('.code-block-container, .output-block-container');
+                const containers = chatHistoryScroller.querySelectorAll('.block-container');
 
                 const measurements = [];
                 containers.forEach(function(container) {
-                    const header = container.querySelector('.code-block-header, .code-output-header');
-                    const content = container.querySelector('pre, .code-output-console');
+                    const header = container.querySelector('.block-header, .block-header');
+                    const content = container.querySelector('pre, .block-output-console');
                     
                     if (header && content) {
                         measurements.push({
                             header: header,
                             headerRect: header.getBoundingClientRect(),
-                            contentRect: content.getBoundingClientRect()
+                            contentRect: content.getBoundingClientRect(),
+                            container: container
                         });
                     }
                 });
 
                 measurements.forEach(function(m) {
                     const shouldStick = m.headerRect.top < scrollerRect.top && m.contentRect.bottom > scrollerRect.top;
+                    
                     if (shouldStick) {
                         stickHeader(m.header, scrollerRect);
+                        
+                        // Handle clipping when approaching the bottom of content
+                        const stickyId = m.header.dataset.stickyId;
+                        if (stickyId) {
+                            const stickyClone = document.getElementById(stickyId);
+                            if (stickyClone) {
+                                const headerHeight = stickyClone.offsetHeight;
+                                const contentBottom = m.contentRect.bottom;
+                                const viewportTop = scrollerRect.top + 1; // Add 1px offset
+                                
+                                // Calculate how much space is available for the header (add 2px buffer)
+                                const availableSpace = contentBottom - viewportTop + 3;
+                                
+                                if (availableSpace < headerHeight && availableSpace > 0) {
+                                    // Clip the header from the top by moving it up and adjusting height
+                                    const clipAmount = headerHeight - availableSpace - 1;
+                                    stickyClone.style.top = `${viewportTop - clipAmount - 1}px`; // Move up by clip amount
+                                    stickyClone.style.clipPath = `inset(${clipAmount}px 0 0 0)`; // Clip from top
+                                    stickyClone.style.height = `${headerHeight}px`; // Keep original height for proper clipping
+                                    stickyClone.style.borderBottomLeftRadius = '0.375rem';
+                                    stickyClone.style.borderBottomRightRadius = '0.375rem';
+                                } else if (availableSpace <= 2) {
+                                    // Content has scrolled completely past, hide the sticky header
+                                    stickyClone.style.display = 'none';
+                                } else {
+                                    // Normal case: full header visible
+                                    stickyClone.style.height = 'auto';
+                                    stickyClone.style.top = `${scrollerRect.top}px`; // Use original viewport top without offset
+                                    stickyClone.style.display = 'flex';
+                                    stickyClone.style.clipPath = 'none'; // Reset clipping
+                                    stickyClone.style.borderBottomLeftRadius = '0';
+                                    stickyClone.style.borderBottomRightRadius = '0';
+                                }
+                            }
+                        }
                     } else {
                         unstickHeader(m.header);
                     }
@@ -7064,8 +7771,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         };
 
-        chatHistoryScroller.addEventListener('scroll', handleScroll, { passive: true });
-    }
+        chatHistoryScroller.addEventListener('scroll', function(e) {
+            // Only handle scroll if it's specifically from the chat history scroller
+            if (e.target === chatHistoryScroller) {
+                handleScroll();
+            }
+        }, { passive: true });
+            }
 });
 
 === app/static/session-choice.html ===
@@ -8635,30 +9347,30 @@ function createStreamingCodeBlock(language, blockId, codeBlocksAreaElement, turn
     const playIconSvg = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
 
     const container = document.createElement('div');
-    container.classList.add('code-block-container');
+    container.classList.add('block-container');
     container.id = blockId;
     container.dataset.language = displayLang;
 
     const codeHeader = document.createElement('div');
-    codeHeader.classList.add('code-block-header');
+    codeHeader.classList.add('block-header');
 
     const codeButtonsDiv = document.createElement('div');
-    codeButtonsDiv.classList.add('code-block-buttons');
+    codeButtonsDiv.classList.add('block-buttons');
 
     const runStopBtn = document.createElement('button');
-    runStopBtn.classList.add('run-code-btn', 'code-action-btn');
+    runStopBtn.classList.add('run-code-btn', 'block-action-btn');
     runStopBtn.dataset.status = 'idle';
     runStopBtn.innerHTML = playIconSvg;
     runStopBtn.title = 'Run Code';
     runStopBtn.addEventListener('click', handleRunStopCodeClick);
 
     const toggleCodeBtn = document.createElement('button');
-    toggleCodeBtn.classList.add('toggle-code-btn', 'code-action-btn');
+    toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
     toggleCodeBtn.textContent = 'Hide';
     toggleCodeBtn.title = 'Show/Hide Code';
 
     const copyCodeBtn = document.createElement('button');
-    copyCodeBtn.classList.add('copy-code-btn', 'code-action-btn');
+    copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
     copyCodeBtn.textContent = 'Copy';
     copyCodeBtn.title = 'Copy Code';
 
@@ -8672,7 +9384,7 @@ function createStreamingCodeBlock(language, blockId, codeBlocksAreaElement, turn
     codeButtonsDiv.appendChild(copyCodeBtn);
 
     const codeTitle = document.createElement('span');
-    codeTitle.classList.add('code-block-title');
+    codeTitle.classList.add('block-title');
     const titleTextSpan = document.createElement('span');
     titleTextSpan.classList.add('title-text');
     titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${displayLang})`;
@@ -8697,22 +9409,22 @@ function createStreamingCodeBlock(language, blockId, codeBlocksAreaElement, turn
 
     // Create output area structure (same as before)
     const outputHeader = document.createElement('div');
-    outputHeader.classList.add('code-output-header');
+    outputHeader.classList.add('block-header');
     outputHeader.style.display = 'none';
     
     const outputButtonsDiv = document.createElement('div');
-    outputButtonsDiv.classList.add('code-block-buttons');
+    outputButtonsDiv.classList.add('block-buttons');
     const placeholderSpan = document.createElement('span');
     placeholderSpan.classList.add('output-header-button-placeholder');
     outputButtonsDiv.appendChild(placeholderSpan);
     
     const toggleOutputBtn = document.createElement('button');
-    toggleOutputBtn.classList.add('toggle-output-btn', 'code-action-btn');
+    toggleOutputBtn.classList.add('toggle-output-btn', 'block-action-btn');
     toggleOutputBtn.textContent = 'Hide';
     toggleOutputBtn.title = 'Show/Hide Output';
     
     const copyOutputBtn = document.createElement('button');
-    copyOutputBtn.classList.add('copy-output-btn', 'code-action-btn');
+    copyOutputBtn.classList.add('copy-output-btn', 'block-action-btn');
     copyOutputBtn.textContent = 'Copy';
     copyOutputBtn.title = 'Copy Output';
     
@@ -8720,11 +9432,11 @@ function createStreamingCodeBlock(language, blockId, codeBlocksAreaElement, turn
     outputButtonsDiv.appendChild(copyOutputBtn);
     
     const outputTitle = document.createElement('span');
-    outputTitle.classList.add('output-header-title');
+    outputTitle.classList.add('block-title');
     outputTitle.textContent = `Output Code Block ${codeBlockIndex}`;
     
     const codeStatusSpan = document.createElement('span');
-    codeStatusSpan.classList.add('code-status-span');
+    codeStatusSpan.classList.add('block-status');
     codeStatusSpan.textContent = 'Idle';
     
     outputHeader.appendChild(outputButtonsDiv);
@@ -8732,7 +9444,7 @@ function createStreamingCodeBlock(language, blockId, codeBlocksAreaElement, turn
     outputHeader.appendChild(codeStatusSpan);
 
     const outputConsoleDiv = document.createElement('div');
-    outputConsoleDiv.classList.add('code-output-console');
+    outputConsoleDiv.classList.add('block-output-console');
     outputConsoleDiv.style.display = 'none';
     const outputPre = document.createElement('pre');
     outputConsoleDiv.appendChild(outputPre);
