@@ -333,6 +333,162 @@ html, body {
     margin-top: 0 !important;
 }
 
+
+
+.mpld3-plot-container {
+    background-color: white !important;
+    border: 1px solid #d1d5db;
+    border-top: none !important;
+    border-bottom-left-radius: 0.375rem;
+    border-bottom-right-radius: 0.375rem;
+    padding: 0 !important;
+    margin: 0;
+    overflow: visible !important; /* Key change: ensure toolbar isn't clipped */
+    min-height: 500px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.mpld3-plot-container svg {
+    background-color: white !important;
+    border: none !important;
+    border-radius: 0;
+    box-shadow: none !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 450px;
+    max-width: 100% !important;
+    display: block;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important; /* Ensure SVG content isn't clipped */
+}
+
+.mpld3-plot-container.hidden {
+    display: none !important;
+}
+
+/* Toolbar styling - ensure it's always visible */
+.mpld3-plot-container .mpld3-toolbar {
+    background-color: rgba(255, 255, 255, 0.95) !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 0.375rem !important;
+    padding: 0.375rem !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+    pointer-events: auto !important;
+    z-index: 1000 !important;
+    position: relative !important; /* Ensure it's not clipped */
+}
+
+.mpld3-plot-container .mpld3-toolbar button {
+    background-color: white !important;
+    border: 1px solid #d1d5db !important;
+    color: #374151 !important;
+    padding: 0.25rem 0.5rem !important;
+    margin: 0.125rem !important;
+    border-radius: 0.25rem !important;
+    cursor: pointer !important;
+    pointer-events: auto !important;
+    min-width: 24px !important;
+    min-height: 24px !important;
+}
+
+.mpld3-plot-container .mpld3-toolbar button:hover {
+    background-color: #f9fafb !important;
+    border-color: #9ca3af !important;
+}
+
+/* Ensure toolbar images/icons are visible */
+.mpld3-plot-container .mpld3-toolbar image {
+    pointer-events: auto !important;
+    opacity: 1 !important;
+}
+
+.mpld3-plot-container .mpld3-toolbar rect {
+    pointer-events: auto !important;
+}
+
+/* Ensure axes and plot elements are properly contained */
+.mpld3-plot-container .mpld3-axes {
+    pointer-events: auto !important;
+}
+
+/* Fix any text elements that might be clipped */
+.mpld3-plot-container text {
+    pointer-events: none !important;
+    fill: #333333 !important;
+}
+
+/* Animation notice styling */
+.animation-notice {
+    background-color: #fef3c7;
+    border: 1px solid #f59e0b;
+    border-radius: 0.375rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.animation-notice-content {
+    font-size: 0.875rem;
+}
+
+.animation-notice-content strong {
+    color: #92400e;
+    display: block;
+    margin-bottom: 0.5rem;
+}
+
+.animation-notice-content p {
+    margin: 0.5rem 0;
+    color: #78350f;
+}
+
+.animation-notice-content details {
+    margin-top: 0.75rem;
+}
+
+.animation-notice-content summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #92400e;
+    margin-bottom: 0.5rem;
+}
+
+.animation-notice-content ul {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+    color: #78350f;
+}
+
+.animation-notice-content li {
+    margin: 0.25rem 0;
+}
+
+.animation-notice-content code {
+    background-color: #fbbf24;
+    padding: 0.125rem 0.25rem;
+    border-radius: 0.25rem;
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+}
+
+.animation-notice.hidden {
+    display: none;
+}
+
+/* Warning status styling */
+.block-status.warning {
+    background-color: #fbbf24;
+    color: #78350f;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
 footer { padding: 1rem; background-color: #e5e7eb; border-top: 1px solid #d1d5db; }
 #chat-form { display: flex; align-items: center; gap: 0.5rem; }
 .think-checkbox-container { display: flex; align-items: center; font-size: 0.9em; color: #4b5563; }

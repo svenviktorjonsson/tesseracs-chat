@@ -1,4 +1,3 @@
-# app/docker_utils.py
 import asyncio
 import tempfile
 import traceback
@@ -9,13 +8,45 @@ from docker.models.containers import Container
 from fastapi import WebSocket
 import time
 import socket
+import json # Ensure json is imported
+import re   # --- NEW: Import re module ---
+import ast
+import os
+from typing import List
+
+STD_LIB_MODULES = {
+    'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat', 'asyncio', 'asyncore', 'atexit',
+    'audioop', 'base64', 'bdb', 'binascii', 'binhex', 'bisect', 'builtins', 'bz2',
+    'calendar', 'cgi', 'cgitb', 'chunk', 'cmath', 'cmd', 'code', 'codecs', 'codeop',
+    'collections', 'colorsys', 'compileall', 'concurrent', 'configparser', 'contextlib',
+    'contextvars', 'copy', 'copyreg', 'crypt', 'csv', 'ctypes', 'curses', 'dataclasses',
+    'datetime', 'dbm', 'decimal', 'difflib', 'dis', 'distutils', 'doctest', 'dummy_threading',
+    'email', 'encodings', 'ensurepip', 'enum', 'errno', 'faulthandler', 'fcntl', 'filecmp',
+    'fileinput', 'fnmatch', 'fractions', 'ftplib', 'functools', 'gc', 'getopt', 'getpass',
+    'gettext', 'glob', 'grp', 'gzip', 'hashlib', 'heapq', 'hmac', 'html', 'http', 'imaplib',
+    'imghdr', 'imp', 'importlib', 'inspect', 'io', 'ipaddress', 'itertools', 'json',
+    'keyword', 'lib2to3', 'linecache', 'locale', 'logging', 'lzma', 'mailbox', 'mailcap',
+    'marshal', 'math', 'mimetypes', 'mmap', 'modulefinder', 'multiprocessing', 'netrc',
+    'nis', 'nntplib', 'numbers', 'operator', 'optparse', 'os', 'ossaudiodev', 'parser',
+    'pathlib', 'pdb', 'pickle', 'pickletools', 'pipes', 'pkgutil', 'platform', 'plistlib',
+    'poplib', 'posix', 'pprint', 'profile', 'pstats', 'pty', 'pwd', 'py_compile', 'pyclbr',
+    'pydoc', 'queue', 'quopri', 'random', 're', 'readline', 'reprlib', 'resource', 'rlcompleter',
+    'runpy', 'sched', 'secrets', 'select', 'selectors', 'shelve', 'shlex', 'shutil',
+    'signal', 'site', 'smtpd', 'smtplib', 'sndhdr', 'socket', 'socketserver', 'spwd',
+    'sqlite3', 'ssl', 'stat', 'statistics', 'string', 'stringprep', 'struct', 'subprocess',
+    'sunau', 'symbol', 'symtable', 'sys', 'sysconfig', 'syslog', 'tabnanny', 'tarfile',
+    'telnetlib', 'tempfile', 'termios', 'textwrap', 'threading', 'time', 'timeit', 'tkinter',
+    'token', 'tokenize', 'trace', 'traceback', 'tracemalloc', 'tty', 'turtle', 'turtledemo',
+    'types', 'typing', 'unicodedata', 'unittest', 'urllib', 'uu', 'uuid', 'venv', 'warnings',
+    'wave', 'weakref', 'webbrowser', 'wsgiref', 'xdrlib', 'xml', 'xmlrpc', 'zipapp',
+    'zipfile', 'zipimport', 'zlib'
+}
 
 # Import pywintypes if on Windows, otherwise ignore
 try:
     import pywintypes
     PIPE_ENDED_ERROR = pywintypes.error
 except ImportError:
-    # Create a dummy exception class for non-Windows platforms
     class DummyPipeEndedError(Exception):
         pass
     PIPE_ENDED_ERROR = DummyPipeEndedError
@@ -37,6 +68,33 @@ except DockerException as e:
 def get_docker_client():
     return docker_client
 
+def find_python_imports(code: str) -> List[str]:
+    """
+    Analyzes Python code using AST to find top-level modules that need to be installed.
+    """
+    try:
+        tree = ast.parse(code)
+        imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.add(alias.name.split('.')[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imports.add(node.module.split('.')[0])
+        
+        # Filter out standard library modules from the found imports
+        non_std_lib_imports = {imp for imp in imports if imp not in STD_LIB_MODULES}
+        
+        print(f"[find_python_imports] Found potential packages to install: {non_std_lib_imports}")
+        return sorted(list(non_std_lib_imports))
+    except SyntaxError as e:
+        print(f"[find_python_imports] Syntax error analyzing code: {e}")
+        return []
+    except Exception as e:
+        print(f"[find_python_imports] Error analyzing code with AST: {e}")
+        return []
+
 async def read_from_socket_and_stream(
     loop: asyncio.AbstractEventLoop,
     websocket: WebSocket,
@@ -44,17 +102,11 @@ async def read_from_socket_and_stream(
     container: Container,
     socket: socket.socket
 ):
-    """
-    Reads from the container's interactive socket, decodes the Docker stream
-    protocol, buffers output to detect prompts, and forwards to the WebSocket.
-    """
+    # This function remains unchanged...
     import struct
-
-    # Use a buffer to handle partial lines and multiple lines in one read
     buffer = b''
     try:
         while True:
-            # 1. Read raw data from the socket
             try:
                 raw_data = await asyncio.to_thread(socket.recv, 8192)
             except PIPE_ENDED_ERROR:
@@ -69,24 +121,16 @@ async def read_from_socket_and_stream(
                 break
 
             buffer += raw_data
-
-            # 2. Process the buffer to extract complete Docker stream frames
             while len(buffer) >= 8:
-                # Unpack header to get size
                 header_bytes = buffer[:8]
                 stream_type, size = struct.unpack('>BxxxL', header_bytes)
 
-                # Check if the full frame is in the buffer
                 if len(buffer) < 8 + size:
-                    break # Wait for more data
+                    break 
 
-                # Extract the payload
                 payload_bytes = buffer[8 : 8 + size]
-
-                # Remove the processed frame from the buffer
                 buffer = buffer[8 + size:]
 
-                # Decode and send to WebSocket
                 stream_name = 'stdout' if stream_type == 1 else 'stderr'
                 chunk_str = payload_bytes.decode('utf-8', 'replace')
 
@@ -94,10 +138,7 @@ async def read_from_socket_and_stream(
                     "code_block_id": code_block_id, "stream": stream_name, "data": chunk_str
                 })
 
-                # Check for input prompts only on stdout
                 if stream_name == 'stdout':
-                    # The last part of the output might be an input prompt without a newline
-                    # A simple heuristic: check if the chunk ends with common prompt indicators.
                     stripped_chunk = chunk_str.rstrip()
                     if stripped_chunk and stripped_chunk.endswith((':', '?', '>')):
                         print(f"[SocketStreamer-{code_block_id}] Detected input prompt: '{chunk_str}'")
@@ -109,7 +150,6 @@ async def read_from_socket_and_stream(
     finally:
         print(f"[SocketStreamer-{code_block_id}] Stream finished - entering finally block")
         try:
-            # This block remains the same, handling the final exit code
             print(f"[SocketStreamer-{code_block_id}] Reloading container to check status...")
             await asyncio.to_thread(container.reload)
             container_status = container.status
@@ -176,16 +216,79 @@ async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_b
     tmpdir_obj = tempfile.TemporaryDirectory()
     tmp_path = Path(tmpdir_obj.name)
     container = None
+    
+    final_command = lang_config["command"]
+    volumes_to_mount = {str(tmp_path): {'bind': '/app', 'mode': 'rw'}}
+    code_to_run = code
+
+    if language.lower() == 'python':
+        code = re.sub(r'^\s*plt\.show\(\s*\)\s*$', '', code, flags=re.MULTILINE)
+        
+        packages_to_install = find_python_imports(code)
+        volumes_to_mount['tesseracs-uv-cache'] = {'bind': '/root/.cache/uv', 'mode': 'rw'}
+        
+        # --- MODIFIED: Harness now uses the correct mpld3.fig_to_dict() function ---
+        python_harness_script = f"""
+import sys
+import json
+import traceback
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import mpld3
+
+user_code = '''
+{code}
+'''
+
+try:
+    exec(user_code, globals())
+
+finally:
+    fignums = plt.get_fignums()
+    if fignums:
+        print(f"[Harness] {{len(fignums)}} Matplotlib plots detected. Capturing all.", file=sys.stderr)
+        all_plots_data = []
+        for i in fignums:
+            fig = plt.figure(i)
+            try:
+                # 1. Convert the figure to a dictionary using the correct function
+                plot_dict = mpld3.fig_to_dict(fig)
+                all_plots_data.append(plot_dict)
+            except Exception as e:
+                print(f"[Harness] Error capturing plot figure {{i}}: {{e}}", file=sys.stderr)
+            finally:
+                plt.close(fig)
+        
+        if all_plots_data:
+            # 2. Save the list of dictionaries to the file using the json library
+            with open('/app/plot_output.json', 'w') as f:
+                json.dump(all_plots_data, f)
+"""
+        code_to_run = python_harness_script
+        # --- End of modification ---
+        # --- End of modification ---
+        # --- End of modification ---
+
+        install_command_parts = []
+        if packages_to_install:
+            install_command_parts.append(f"uv pip install --system --no-cache-dir {' '.join(packages_to_install)}")
+        
+        run_command = "stdbuf -o0 python -u /app/script.py"
+        install_command_parts.append(run_command)
+        
+        final_command = ["sh", "-c", " && ".join(install_command_parts)]
+        print(f"[DockerRun-{code_block_id}] Modified command for Python: {final_command}")
 
     try:
-        (tmp_path / lang_config["filename"]).write_text(code, encoding="utf-8")
+        (tmp_path / lang_config["filename"]).write_text(code_to_run, encoding="utf-8")
         
         is_interactive = lang_config.get("interactive", True)
         
         container = local_docker_client.containers.run(
             image=lang_config["image"],
-            command=lang_config["command"],
-            volumes={str(tmp_path): {'bind': '/app', 'mode': 'rw'}},
+            command=final_command,
+            volumes=volumes_to_mount,
             working_dir='/app',
             mem_limit=config.DOCKER_MEM_LIMIT,
             stdin_open=True,
@@ -196,8 +299,6 @@ async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_b
 
         if is_interactive:
             params = {'stdin': 1, 'stdout': 1, 'stderr': 1, 'stream': 1}
-            # On Windows, this is an NpipeSocket; on Linux, a regular socket.
-            # We use it directly without accessing ._sock
             interactive_socket = container.attach_socket(params=params)
 
             async with state.running_containers_lock:
@@ -212,12 +313,7 @@ async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_b
             await asyncio.wait_for(reader_task, timeout=config.DOCKER_TIMEOUT_SECONDS)
 
         else: # Batch mode for non-interactive
-            result = container.wait(timeout=config.DOCKER_TIMEOUT_SECONDS)
-            exit_code = result.get("StatusCode", 0)
-            error_msg = result.get("Error")
-            output = container.logs(stdout=True, stderr=True).decode('utf-8', errors='replace')
-            await send_ws_message(websocket, "code_output", {"code_block_id": code_block_id, "stream": "stdout", "data": output})
-            await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": exit_code, "error": error_msg})
+            container.wait(timeout=config.DOCKER_TIMEOUT_SECONDS)
 
     except asyncio.TimeoutError:
         print(f"[DockerRun-{code_block_id}] Session timed out after {config.DOCKER_TIMEOUT_SECONDS}s.")
@@ -228,6 +324,19 @@ async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_b
         traceback.print_exc()
         await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": error_payload})
     finally:
+        plot_output_path = tmp_path / "plot_output.json"
+        if plot_output_path.exists():
+            print(f"[DockerRun-{code_block_id}] Found plot_output.json. Sending to client.")
+            try:
+                with open(plot_output_path, 'r') as f:
+                    plot_data = json.load(f) # This will now be a list
+                await send_ws_message(websocket, "plot_output", {
+                    "code_block_id": code_block_id,
+                    "plot_data": plot_data
+                })
+            except Exception as e:
+                print(f"[DockerRun-{code_block_id}] Error reading or sending plot data: {e}")
+        
         print(f"[DockerRun-{code_block_id}] === CLEANUP PHASE ===")
         await stop_docker_container(code_block_id)
         if tmpdir_obj:
@@ -239,14 +348,11 @@ async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_b
         print(f"[DockerRun-{code_block_id}] === DOCKER EXECUTION COMPLETE ===")
 
 async def send_input_to_container(code_block_id: str, user_input: str):
-    """
-    Finds the interactive socket for a container and sends user input to it.
-    """
+    # This function remains unchanged...
     async with state.running_containers_lock:
         container_info = state.running_containers.get(code_block_id)
         if container_info and (socket := container_info.get("socket")):
             try:
-                # Use a thread to send data on the blocking socket
                 await asyncio.to_thread(socket.sendall, user_input.encode('utf-8'))
                 print(f"Sent input to {code_block_id}: {user_input.strip()}")
             except Exception as e:
@@ -255,6 +361,7 @@ async def send_input_to_container(code_block_id: str, user_input: str):
             print(f"Send input failed: No active container or socket for {code_block_id}")
 
 async def stop_docker_container(code_block_id: str):
+    # This function remains unchanged...
     container_info = None
     async with state.running_containers_lock:
         container_info = state.running_containers.pop(code_block_id, None)
@@ -271,7 +378,6 @@ async def stop_docker_container(code_block_id: str):
 
     if container := container_info.get("container"):
         try:
-            # Check if container is still running before trying to kill it
             await asyncio.to_thread(container.reload)
             if container.status == 'running':
                 await asyncio.to_thread(container.kill)
@@ -279,13 +385,13 @@ async def stop_docker_container(code_block_id: str):
             else:
                 print(f"Container for {code_block_id} already stopped (status: {container.status}).")
             
-            # Always try to remove the container
             await asyncio.to_thread(container.remove, force=True)
             print(f"Container for {code_block_id} removed.")
         except Exception as e:
             print(f"Error stopping/removing container for {code_block_id}: {e}")
 
 async def cleanup_client_containers(client_id: str):
+    # This function remains unchanged...
     async with state.running_containers_lock:
         ids_for_client = [cb_id for cb_id, info in state.running_containers.items() if info.get("client_id") == client_id]
     

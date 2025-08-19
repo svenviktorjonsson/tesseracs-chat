@@ -230,7 +230,6 @@ async function loadLanguagesConfig() {
             return;
         }
         supportedLanguagesConfig = await response.json();
-        console.log("Successfully loaded language config:", supportedLanguagesConfig);
     } catch (error) {
         console.error('Error loading languages.json:', error);
     }
@@ -392,8 +391,6 @@ function setupNewAiTurn() {
     currentAnswerElement = null;
     currentCodeBlocksArea = null;
 
-    console.log(`[setupNewAiTurn] Starting setup for Turn ID: ${currentTurnId}. thinkingRequestedForCurrentTurn is: ${thinkingRequestedForCurrentTurn}`);
-
     currentAiTurnContainer = document.createElement('div');
     currentAiTurnContainer.classList.add('ai-turn-container');
     currentAiTurnContainer.dataset.turnId = currentTurnId;
@@ -457,7 +454,6 @@ function setupNewAiTurn() {
     currentAiTurnContainer.appendChild(currentCodeBlocksArea);
 
     chatHistory.appendChild(currentAiTurnContainer);
-    console.log(`[setupNewAiTurn] Finished setup for Turn ID: ${currentTurnId}.`);
 }
 
 // --- Live Rendering ---
@@ -963,6 +959,417 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
    return container;
 }
 
+function createPlotBlock(codeBlockId, plotData, uniquePlotBlockId, plotIndex) {
+    const codeContainer = document.getElementById(codeBlockId);
+    if (!codeContainer) return;
+
+    // Remove existing plot
+    const existingPlot = document.getElementById(uniquePlotBlockId);
+    if (existingPlot) {
+        existingPlot.remove();
+    }
+
+    // Find where to insert - after output block if it exists, otherwise after code block
+    const outputBlock = document.getElementById(`output-for-${codeBlockId}`);
+    const insertAfter = outputBlock || codeContainer;
+
+    const plotContainer = document.createElement('div');
+    plotContainer.id = uniquePlotBlockId;
+    plotContainer.className = 'block-container';
+
+    const blockNumber = codeBlockId.split('-').pop();
+
+    const plotHeader = document.createElement('div');
+    plotHeader.className = 'block-header';
+    plotHeader.innerHTML = `
+        <div class="block-buttons">
+            <button class="toggle-output-btn block-action-btn">Hide</button>
+            <button class="copy-plot-btn block-action-btn">Copy SVG</button>
+        </div>
+        <span class="block-title">Plot Output ${plotIndex}</span>
+        <span class="block-status success">Rendered</span>
+    `;
+
+    const plotDivId = `plot-div-${uniquePlotBlockId}`;
+    const plotDiv = document.createElement('div');
+    plotDiv.id = plotDivId;
+    plotDiv.className = 'mpld3-plot-container';
+
+    plotContainer.appendChild(plotHeader);
+    plotContainer.appendChild(plotDiv);
+
+    // Insert after the right element (output block or code block)
+    insertAfter.insertAdjacentElement('afterend', plotContainer);
+
+    // Add event listeners
+    plotHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+        const isHidden = plotDiv.classList.toggle('hidden');
+        e.target.textContent = isHidden ? 'Show' : 'Hide';
+    });
+
+    plotHeader.querySelector('.copy-plot-btn').addEventListener('click', async (e) => {
+        try {
+            const svgElement = plotDiv.querySelector('svg');
+            if (svgElement) {
+                const svgString = new XMLSerializer().serializeToString(svgElement);
+                await navigator.clipboard.writeText(svgString);
+                e.target.textContent = 'Copied!';
+                setTimeout(() => { e.target.textContent = 'Copy SVG'; }, 1500);
+            }
+        } catch (err) {
+            console.error('Failed to copy SVG:', err);
+        }
+    });
+
+    renderPlotWhenReady(plotDivId, plotData);
+}
+
+function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
+    const startTime = Date.now();
+    const interval = setInterval(() => {
+        if (typeof mpld3 !== 'undefined' && typeof mpld3.draw_figure === 'function') {
+            clearInterval(interval);
+            
+            try {
+                // Render the plot first
+                mpld3.draw_figure(plotDivId, plotData);
+                
+            } catch (error) {
+                console.error('Error in mpld3.draw_figure:', error);
+                mpld3.draw_figure(plotDivId, plotData);
+            }
+            
+            // Apply styling fixes AFTER successful render
+            setTimeout(() => {
+                const plotDiv = document.getElementById(plotDivId);
+                if (!plotDiv) return;
+                
+                const svgElement = plotDiv.querySelector('svg');
+                if (!svgElement) return;
+                
+                // Get original dimensions
+                const originalWidth = parseFloat(svgElement.getAttribute('width')) || 800;
+                const originalHeight = parseFloat(svgElement.getAttribute('height')) || 600;
+                
+                // Set up responsive scaling with proper centering
+                svgElement.setAttribute('viewBox', `0 0 ${originalWidth} ${originalHeight}`);
+                svgElement.removeAttribute('width');
+                svgElement.removeAttribute('height');
+                svgElement.style.width = '100%';
+                svgElement.style.height = 'auto';
+                svgElement.style.maxWidth = '100%';
+                svgElement.style.display = 'block';
+                svgElement.style.margin = '0 auto';
+                svgElement.style.backgroundColor = 'white';
+                
+                // Remove any transform on the SVG itself that might cause offset
+                svgElement.removeAttribute('transform');
+                svgElement.style.transform = 'none';
+                
+                // Fix text visibility
+                const textElements = svgElement.querySelectorAll('text');
+                textElements.forEach(text => {
+                    const currentFill = text.getAttribute('fill');
+                    if (!currentFill || currentFill === 'white' || currentFill === '#ffffff' || currentFill === 'none') {
+                        text.setAttribute('fill', '#333333');
+                    }
+                });
+                
+                // Fix axhline and axvline positioning using the plot data structure
+                if (plotData && plotData.axes && plotData.axes.length > 0) {
+                    const axesData = plotData.axes[0]; // Get the first (main) axes
+                    
+                    if (axesData.xlim && axesData.ylim) {
+                        const [xmin, xmax] = axesData.xlim;
+                        const [ymin, ymax] = axesData.ylim;
+                        
+                        // Find the axes group in the SVG
+                        const axesGroup = svgElement.querySelector('.mpld3-axes');
+                        if (axesGroup) {
+                            // Calculate the plot area bounds
+                            const axesTransform = axesGroup.getAttribute('transform');
+                            let plotX = 0, plotY = 0;
+                            
+                            if (axesTransform) {
+                                const translateMatch = axesTransform.match(/translate\(([^,]+),([^)]+)\)/);
+                                if (translateMatch) {
+                                    plotX = parseFloat(translateMatch[1]);
+                                    plotY = parseFloat(translateMatch[2]);
+                                }
+                            }
+                            
+                            // Get plot dimensions from the data or estimate
+                            const plotWidth = (axesData.bbox && axesData.bbox[2]) ? axesData.bbox[2] * originalWidth : originalWidth * 0.7;
+                            const plotHeight = (axesData.bbox && axesData.bbox[3]) ? axesData.bbox[3] * originalHeight : originalHeight * 0.7;
+                            
+                            // Fix reference lines within this axes group
+                            const lines = axesGroup.querySelectorAll('line');
+                            lines.forEach(line => {
+                                const stroke = line.getAttribute('stroke');
+                                const strokeDasharray = line.getAttribute('stroke-dasharray');
+                                const opacity = line.getAttribute('opacity');
+                                
+                                // Identify reference lines (black dashed lines)
+                                if (stroke === 'black' && strokeDasharray && (opacity === '0.5' || !opacity)) {
+                                    const x1 = parseFloat(line.getAttribute('x1') || 0);
+                                    const x2 = parseFloat(line.getAttribute('x2') || 0);
+                                    const y1 = parseFloat(line.getAttribute('y1') || 0);
+                                    const y2 = parseFloat(line.getAttribute('y2') || 0);
+                                    
+                                    // Check if this is a horizontal line (axhline)
+                                    if (Math.abs(y2 - y1) < 5) {
+                                        // Calculate the correct screen Y for data Y = 0.5
+                                        const dataY = 0.5;
+                                        const normalizedY = (dataY - ymin) / (ymax - ymin);
+                                        const screenY = plotY + plotHeight * (1 - normalizedY); // Flip Y axis
+                                        
+                                        // Set line to span the full plot width at the correct Y position
+                                        line.setAttribute('x1', plotX);
+                                        line.setAttribute('x2', plotX + plotWidth);
+                                        line.setAttribute('y1', screenY);
+                                        line.setAttribute('y2', screenY);
+                                    }
+                                    // Check if this is a vertical line (axvline)
+                                    else if (Math.abs(x2 - x1) < 5) {
+                                        // Calculate the correct screen X for data X = 0
+                                        const dataX = 0;
+                                        const normalizedX = (dataX - xmin) / (xmax - xmin);
+                                        const screenX = plotX + plotWidth * normalizedX;
+                                        
+                                        // Set line to span the full plot height at the correct X position
+                                        line.setAttribute('x1', screenX);
+                                        line.setAttribute('x2', screenX);
+                                        line.setAttribute('y1', plotY);
+                                        line.setAttribute('y2', plotY + plotHeight);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+                
+                // Position toolbar properly to avoid being cut off
+                const toolbar = svgElement.querySelector('.mpld3-toolbar');
+                if (toolbar) {
+                    toolbar.style.pointerEvents = 'auto';
+                    toolbar.style.display = 'block';
+                    
+                    // Position toolbar in top-left corner with safe offset to avoid clipping
+                    toolbar.setAttribute('transform', `translate(15, 15)`);
+                    
+                    // Ensure toolbar has proper z-index and visibility
+                    toolbar.style.zIndex = '1000';
+                    
+                    // Make sure toolbar buttons are properly styled and visible
+                    const toolbarButtons = toolbar.querySelectorAll('image, rect');
+                    toolbarButtons.forEach(btn => {
+                        btn.style.pointerEvents = 'auto';
+                        btn.style.cursor = 'pointer';
+                    });
+                }
+                
+                // Enable proper mouse interactions
+                svgElement.style.pointerEvents = 'auto';
+                svgElement.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }, { passive: false });
+                
+                console.log('Plot rendered and styled successfully');
+                
+            }, 200);
+            
+        } else if (Date.now() - startTime > timeout) {
+            clearInterval(interval);
+            const plotDiv = document.getElementById(plotDivId);
+            if (plotDiv) {
+                plotDiv.textContent = "Error: Timed out waiting for mpld3.js library to load.";
+            }
+            console.error("Timed out waiting for mpld3 to become available.");
+        }
+    }, 50);
+}
+
+function handleStructuredMessage(messageData) {
+    const { type, payload } = messageData;
+    console.log(`[handleStructuredMessage] Processing ${type} for ${payload?.code_block_id || 'unknown'}`);
+    
+    if (!payload || !payload.code_block_id) return;
+    
+    const codeBlockId = payload.code_block_id;
+    const codeContainer = document.getElementById(codeBlockId);
+    const outputBlockId = `output-for-${codeBlockId}`;
+    let outputContainer = document.getElementById(outputBlockId);
+
+    if (!outputContainer && (type === 'code_output' || type === 'code_waiting_input')) {
+        outputContainer = document.createElement('div');
+        outputContainer.id = outputBlockId;
+        outputContainer.className = 'block-container';
+        outputContainer.style.display = 'none'; // Start hidden
+        
+        const blockNumber = codeBlockId.split('-').pop();
+        const outputHeader = document.createElement('div');
+        outputHeader.className = 'block-header';
+        outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
+        const outputConsoleDiv = document.createElement('div');
+        outputConsoleDiv.className = 'block-output-console';
+        const outputPre = document.createElement('pre');
+        outputConsoleDiv.appendChild(outputPre);
+        outputContainer.appendChild(outputHeader);
+        outputContainer.appendChild(outputConsoleDiv);
+        codeContainer.insertAdjacentElement('afterend', outputContainer);
+
+        outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+            const isHidden = outputConsoleDiv.classList.toggle('hidden');
+            e.target.textContent = isHidden ? 'Show' : 'Hide';
+        });
+        outputContainer.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
+            try {
+                await navigator.clipboard.writeText(outputPre.textContent || '');
+                e.target.textContent = 'Copied!';
+                setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+            } catch (err) { console.error('Failed to copy output:', err); }
+        });
+    }
+
+    if (!codeContainer) return;
+    
+    switch (type) {
+        case 'plot_output': {
+            if (payload.plot_data) {
+                // Check if the data is an array (for multiple plots) or a single object
+                const plots = Array.isArray(payload.plot_data) ? payload.plot_data : [payload.plot_data];
+                plots.forEach((plotData, index) => {
+                    // Create a unique ID for each plot block to avoid conflicts
+                    const uniquePlotBlockId = `${codeBlockId}-plot-${index}`;
+                    createPlotBlock(codeBlockId, plotData, uniquePlotBlockId, index + 1);
+                });
+            }
+            break;
+        }
+
+        case 'code_output': {
+            if (!outputContainer) return;
+            const outputPre = outputContainer.querySelector('.block-output-console pre');
+            const language = codeContainer.dataset.language;
+            const outputText = payload.data;
+            
+            // Filter out harness messages AND library warnings
+            const isHarnessOutput = /Using Python|Audited|packages in|Matplotlib plots detected|Capturing all|\[Harness\]|UserWarning.*Blended transforms not yet supported|warnings\.warn|mplexporter\/exporter\.py/i.test(outputText);
+            
+            if (isHarnessOutput) {
+                // Skip harness output and library warnings completely
+                return;
+            }
+            
+            const isInstallerOutput = /Resolving|Downloading|Installing|Installed|uv pip install/.test(outputText);
+
+            if (isInstallerOutput) {
+                let statusMessage = outputText.trim();
+                if (statusMessage.startsWith('uv pip install')) { statusMessage = 'Preparing to install packages...'; }
+                updateHeaderStatus(outputContainer, statusMessage, 'running');
+            } else {
+                if (outputPre) { 
+                    addCodeOutput(outputPre, payload.stream, outputText, language); 
+                    // Make sure the output block is visible since we have real content
+                    outputContainer.style.display = '';
+                }
+            }
+            break;
+        }
+
+        case 'code_waiting_input': {
+            if (!outputContainer) return;
+            updateHeaderStatus(outputContainer, 'Waiting for input...', 'waiting-input');
+            const outputPre = outputContainer.querySelector('.block-output-console pre');
+            if (outputPre) { 
+                addTerminalPrompt(outputPre, payload.prompt || '');
+                // Show output block when waiting for input
+                outputContainer.style.display = '';
+            }
+            break;
+        }
+
+        case 'code_finished': {
+            if (!outputContainer) return;
+            const runStopBtn = codeContainer.querySelector('.run-code-btn');
+            const outputConsoleDiv = outputContainer.querySelector('.block-output-console');
+            const outputPre = outputConsoleDiv ? outputConsoleDiv.querySelector('pre') : null;
+
+            if (!runStopBtn || !outputConsoleDiv || !outputPre) { return; }
+
+            const { exit_code, error } = payload;
+            let finishMessage = '';
+            let statusClass = '';
+            const language = codeContainer.dataset.language;
+            const codeElement = codeContainer.querySelector('code');
+            const codeContent = codeElement ? codeElement.textContent || '' : '';
+            let outputContent = null;
+            let htmlContent = null;
+            
+            // Check if we actually have any real output (not just whitespace)
+            const hasRealOutput = outputPre.textContent && outputPre.textContent.trim().length > 0;
+            
+            if (error) {
+                finishMessage = 'Failed';
+                statusClass = 'error';
+                const helpfulHint = error.includes("Docker service is unavailable") ? "\n\nHint: Is Docker Desktop running?" : "";
+                addCodeOutput(outputPre, 'stderr', `Error: ${error}${helpfulHint}`, language);
+                outputContent = outputPre.textContent;
+                outputContainer.style.display = ''; // Show on error
+            } else if (language === 'html') {
+                const iframe = document.createElement('iframe');
+                iframe.className = 'html-render-iframe';
+                htmlContent = outputPre.htmlBuffer || '';
+                const style = `<style>body { margin: 0; background-color: white; color: black; font-family: sans-serif; padding: 1rem; }</style>`;
+                iframe.srcdoc = style + htmlContent;
+                iframe.onload = () => { try { /* iframe resize logic */ } catch (e) { iframe.style.height = '400px'; } };
+                outputPre.replaceWith(iframe);
+                outputConsoleDiv.style.maxHeight = 'none';
+                finishMessage = `Finished (Rendered HTML)`;
+                statusClass = 'success';
+                outputContainer.style.display = ''; // Show for HTML
+            } else {
+                finishMessage = `Finished (Exit: ${exit_code})`;
+                statusClass = (exit_code === 0) ? 'success' : 'error';
+                outputContent = outputPre.textContent;
+                
+                // Hide output block if no real output and no error
+                if (!hasRealOutput && exit_code === 0) {
+                    outputContainer.style.display = 'none';
+                } else {
+                    outputContainer.style.display = '';
+                }
+            }
+            
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                const codeBlockParts = codeBlockId.split('-');
+                const extractedTurnId = codeBlockParts[2].replace('turn', '');
+                websocket.send(JSON.stringify({
+                    type: 'save_code_result',
+                    payload: {
+                        code_block_id: codeBlockId,
+                        language: language,
+                        code_content: codeContent,
+                        output_content: outputContent,
+                        html_content: htmlContent,
+                        exit_code: exit_code,
+                        error_message: error,
+                        execution_status: error ? 'error' : 'completed',
+                        turn_id: parseInt(extractedTurnId)
+                    }
+                }));
+            }
+            
+            updateHeaderStatus(outputContainer, finishMessage, statusClass);
+            runStopBtn.dataset.status = 'idle';
+            runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
+            runStopBtn.title = 'Run Code';
+            break;
+        }
+    }
+}
+
 function saveCodeBlockContent(blockId, content) {
     const container = document.getElementById(blockId);
     if (!container) return;
@@ -1237,221 +1644,6 @@ function saveCodeBlockState(blockId, content) {
 }
 
 
-function handleStructuredMessage(messageData) {
-    const { type, payload } = messageData;
-    console.log(`[handleStructuredMessage] Processing ${type} for ${payload?.code_block_id || 'unknown'}`);
-    
-    if (!payload || !payload.code_block_id) return;
-    
-    const codeBlockId = payload.code_block_id;
-    const codeContainer = document.getElementById(codeBlockId);
-    const outputBlockId = `output-for-${codeBlockId}`;
-    let outputContainer = document.getElementById(outputBlockId);
-
-    console.log(`[handleStructuredMessage] Found container for ${codeBlockId}:`, codeContainer);
-    console.log(`[handleStructuredMessage] Found output container for ${outputBlockId}:`, outputContainer);
-
-    if (!outputContainer && type === 'code_output') {
-        console.log(`[DEBUG] Creating new output container for ${codeBlockId}`);
-        outputContainer = document.createElement('div');
-        outputContainer.id = outputBlockId;
-        outputContainer.className = 'block-container';
-
-        const blockNumber = codeBlockId.split('-').pop();
-        console.log(`[DEBUG] Block number: ${blockNumber}`);
-
-        const outputHeader = document.createElement('div');
-        outputHeader.className = 'block-header';
-        
-        const headerHTML = createOutputHeaderHTML(blockNumber);
-        console.log(`[DEBUG] Generated header HTML:`, headerHTML);
-        outputHeader.innerHTML = headerHTML;
-        console.log(`[DEBUG] Header after innerHTML:`, outputHeader);
-        
-        const outputConsoleDiv = document.createElement('div');
-        outputConsoleDiv.className = 'block-output-console';
-        const outputPre = document.createElement('pre');
-        outputConsoleDiv.appendChild(outputPre);
-
-        outputContainer.appendChild(outputHeader);
-        outputContainer.appendChild(outputConsoleDiv);
-
-        codeContainer.insertAdjacentElement('afterend', outputContainer);
-
-        outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-            const isHidden = outputConsoleDiv.classList.toggle('hidden');
-            e.target.textContent = isHidden ? 'Show' : 'Hide';
-        });
-        outputContainer.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
-            try {
-                await navigator.clipboard.writeText(outputPre.textContent || '');
-                e.target.textContent = 'Copied!';
-                setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-            } catch (err) { console.error('Failed to copy output:', err); }
-        });
-    } else if (outputContainer && type === 'code_output') {
-        // Check if existing output container has proper header structure
-        const existingStatusSpan = outputContainer.querySelector('.block-status');
-        if (!existingStatusSpan) {
-            console.log(`[DEBUG] Existing output container missing status span, fixing header...`);
-            const existingHeader = outputContainer.querySelector('.block-header');
-            if (existingHeader) {
-                const blockNumber = codeBlockId.split('-').pop();
-                const headerHTML = createOutputHeaderHTML(blockNumber);
-                console.log(`[DEBUG] Replacing header HTML with:`, headerHTML);
-                existingHeader.innerHTML = headerHTML;
-                console.log(`[DEBUG] Header after fix:`, existingHeader);
-                
-                // Re-add event listeners
-                outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-                    const outputConsoleDiv = outputContainer.querySelector('.block-output-console');
-                    const isHidden = outputConsoleDiv.classList.toggle('hidden');
-                    e.target.textContent = isHidden ? 'Show' : 'Hide';
-                });
-                outputContainer.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
-                    try {
-                        const outputPre = outputContainer.querySelector('.block-output-console pre');
-                        await navigator.clipboard.writeText(outputPre.textContent || '');
-                        e.target.textContent = 'Copied!';
-                        setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-                    } catch (err) { console.error('Failed to copy output:', err); }
-                });
-            }
-        }
-    }
-
-    if (!outputContainer || !codeContainer) return;
-    
-    switch (type) {
-        case 'code_output': {
-            const outputPre = outputContainer.querySelector('.block-output-console pre');
-            const language = codeContainer.dataset.language;
-            if (outputPre) {
-                addCodeOutput(outputPre, payload.stream, payload.data, language);
-            }
-            break;
-        }
-
-        case 'code_waiting_input': {
-            updateHeaderStatus(outputContainer, 'Waiting for input...', 'waiting-input');
-            const outputPre = outputContainer.querySelector('.block-output-console pre');
-            if (outputPre) {
-                addTerminalPrompt(outputPre, payload.prompt || '');
-            }
-            break;
-        }
-
-        case 'code_finished': {
-            console.log(`[handleStructuredMessage] Processing code_finished for ${codeBlockId}`);
-            const runStopBtn = codeContainer.querySelector('.run-code-btn');
-            const statusSpan = outputContainer.querySelector('.block-status');
-            const outputConsoleDiv = outputContainer.querySelector('.block-output-console');
-            const outputPre = outputConsoleDiv ? outputConsoleDiv.querySelector('pre') : null;
-
-            console.log(`[handleStructuredMessage] Found run button:`, runStopBtn);
-            console.log(`[handleStructuredMessage] Found status span:`, statusSpan);
-            console.log(`[handleStructuredMessage] Found output console div:`, outputConsoleDiv);
-
-            if (!runStopBtn || !statusSpan || !outputConsoleDiv || !outputPre) {
-                console.log(`[handleStructuredMessage] Missing elements - runStopBtn: ${!!runStopBtn}, statusSpan: ${!!statusSpan}, outputConsoleDiv: ${!!outputConsoleDiv}, outputPre: ${!!outputPre}`);
-                return;
-            }
-
-            const { exit_code, error } = payload;
-            let finishMessage = '';
-            let statusClass = '';
-            
-            const language = codeContainer.dataset.language;
-            const codeElement = codeContainer.querySelector('code');
-            const codeContent = codeElement ? codeElement.textContent || '' : '';
-            
-            let outputContent = null;
-            let htmlContent = null;
-            
-            if (error) {
-                finishMessage = 'Failed';
-                statusClass = 'error';
-                const helpfulHint = error.includes("Docker service is unavailable") 
-                    ? "\n\nHint: Is Docker Desktop running?" 
-                    : "";
-                addCodeOutput(outputPre, 'stderr', `Error: ${error}${helpfulHint}`, language);
-                outputContent = outputPre.textContent;
-            } else if (language === 'html') {
-                const iframe = document.createElement('iframe');
-                iframe.className = 'html-render-iframe';
-                iframe.style.width = '100%';
-                iframe.style.border = '1px solid #e2e8f0';
-                iframe.setAttribute('scrolling', 'no');
-                iframe.style.overflow = 'hidden';
-                iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-                
-                htmlContent = outputPre.htmlBuffer || '';
-                const style = `<style>body { margin: 0; background-color: white; color: black; font-family: sans-serif; padding: 1rem; }</style>`;
-                iframe.srcdoc = style + htmlContent;
-                
-                iframe.onload = () => {
-                    try {
-                        const iWin = iframe.contentWindow;
-                        const iDoc = iWin.document;
-                        const updateHeight = () => {
-                            if (!iDoc || !iDoc.body) return;
-                            const newHeight = Math.max(
-                                iDoc.body.scrollHeight, iDoc.documentElement.scrollHeight,
-                                iDoc.body.offsetHeight, iDoc.documentElement.offsetHeight
-                            );
-                            iframe.style.height = `${newHeight}px`;
-                        };
-                        updateHeight();
-                        const observer = new ResizeObserver(updateHeight);
-                        if (iDoc.body) observer.observe(iDoc.body);
-                        setTimeout(updateHeight, 150);
-                        setTimeout(updateHeight, 500);
-                    } catch (e) {
-                        iframe.style.height = '400px';
-                    }
-                };
-                
-                outputPre.replaceWith(iframe);
-                outputConsoleDiv.style.maxHeight = 'none';
-
-                finishMessage = `Finished (Rendered HTML)`;
-                statusClass = 'success';
-            } else {
-                finishMessage = `Finished (Exit: ${exit_code})`;
-                statusClass = (exit_code === 0) ? 'success' : 'error';
-                outputContent = outputPre.textContent;
-            }
-            
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                const codeBlockParts = codeBlockId.split('-');
-                const extractedTurnId = codeBlockParts[2].replace('turn', '');
-                
-                websocket.send(JSON.stringify({
-                    type: 'save_code_result',
-                    payload: {
-                        code_block_id: codeBlockId,
-                        language: language,
-                        code_content: codeContent,
-                        output_content: outputContent,
-                        html_content: htmlContent,
-                        exit_code: exit_code,
-                        error_message: error,
-                        execution_status: error ? 'error' : 'completed',
-                        turn_id: parseInt(extractedTurnId)
-                    }
-                }));
-            }
-            
-            console.log(`[handleStructuredMessage] About to update button status to idle and set finish message: ${finishMessage}`);
-            updateHeaderStatus(outputContainer, finishMessage, statusClass);
-            runStopBtn.dataset.status = 'idle';
-            runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
-            runStopBtn.title = 'Run Code';
-            console.log(`[handleStructuredMessage] Button and status updated successfully`);
-            break;
-        }
-    }
-}
 
 function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
     if (!parentElement || !msg) return;
@@ -1555,7 +1747,6 @@ function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBl
 function restoreCodeExecutionResult(result) {
     const codeContainer = document.getElementById(result.code_block_id);
     if (!codeContainer) {
-        console.log(`Code container not found for ${result.code_block_id}, skipping restore`);
         return;
     }
 
@@ -1715,7 +1906,6 @@ async function loadAndDisplayChatHistory(sessionId) {
 
             chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
         }
-        console.log(`Successfully loaded ${messages.length} messages for session ${sessionId}.`);
 
     } catch (error){
         console.error(`Failed to fetch or display chat history for session ${sessionId}:`, error);
@@ -1724,7 +1914,6 @@ async function loadAndDisplayChatHistory(sessionId) {
 }
 // --- WebSocket Connection ---
 function resetAllCodeButtonsOnErrorOrClose() {
-    console.log("Resetting all code run/stop buttons and statuses due to connection issue.");
     const playIconSvg = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
 
     document.querySelectorAll('.block-container').forEach(container => {
@@ -1897,14 +2086,12 @@ function connectWebSocket() {
     
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/${sessionId}/${clientId}`;
-    console.log(`[WebSocket] Attempting to connect: ${wsUrl}`);
 
     try {
         const ws = new WebSocket(wsUrl);
         websocket = ws;
 
         ws.onopen = () => {
-            console.log("[WebSocket] Connection opened.");
             setInputDisabledState(false, false);
             addSystemMessage("Connected to the chat server.");
             updateAllRunButtonStates();
@@ -1913,7 +2100,6 @@ function connectWebSocket() {
 
         ws.onclose = (event) => {
             if (window.isNavigatingAway) return;
-            console.log("WebSocket connection closed.", event);
             addSystemMessage(`Connection closed: ${event.reason || 'Normal closure'} (Code: ${event.code})`);
             finalizeTurnOnErrorOrClose();
             resetAllCodeButtonsOnErrorOrClose();
@@ -1941,18 +2127,15 @@ function connectWebSocket() {
             let messageData;
             try {
                 messageData = JSON.parse(event.data);
-                console.log("[WebSocket] Received structured message:", messageData); // ADD THIS
             } catch (e) {
                 messageData = null;
             }
 
             if (messageData && messageData.type) {
-                console.log("[WebSocket] Handling structured message type:", messageData.type); // ADD THIS
                 handleStructuredMessage(messageData);
             } else {
                 const chunk = event.data;
                 if (chunk === "<EOS>" || chunk === "<EOS_STOPPED>") {
-                    console.log(`%c[WebSocket] Received ${chunk}. Finalizing turn.`, 'color: green; font-weight: bold;');
                     renderLiveMessage(accumulatedAnswerText);
                     finalizeTurnOnErrorOrClose();
                     return;

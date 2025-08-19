@@ -4,8 +4,6 @@ Relevant files and folders (excluding specified patterns):
 
 .
 ├── Readme.md
-├── change_names.py
-├── check_database.py
 ├── fetch_assets.py
 ├── generate_secret_key.py
 ├── package.json
@@ -50,256 +48,6 @@ Relevant files and folders (excluding specified patterns):
 === Readme.md ===
 Readme
 
-
-=== change_names.py ===
-#!/usr/bin/env python3
-"""
-CSS Class Name Replacer Script
-Replaces old CSS class names with new unified block class names throughout the project.
-"""
-
-import os
-import re
-from pathlib import Path
-
-# Define the replacement mappings
-REPLACEMENTS = {
-    # Container classes
-    'code-block-container': 'block-container',
-    'output-block-container': 'block-container',
-    
-    # Header classes
-    'code-block-header': 'block-header',
-    'code-output-header': 'block-header',
-    
-    # Button and UI classes
-    'code-block-buttons': 'block-buttons',
-    'code-block-title': 'block-title',
-    'code-status-span': 'block-status',
-    'code-action-btn': 'block-action-btn',
-    
-    # Console class
-    'code-output-console': 'block-output-console',
-    
-    # Title classes
-    'output-header-title': 'block-title',
-}
-
-# Files to process
-FILES_TO_PROCESS = [
-    'app/static/script.js',
-    'app/static/input.css',
-    'app/static/chat-session.html',
-    'app/static/_sidebar.html',
-    'app/static/session-choice.html',
-    'app/static/settings.html',
-    'app/static/login.html',
-    'app/static/js/app-ui.js',
-    'app/static/js/settings.js',
-    'app/static/js/temp.js',
-]
-
-def replace_in_file(file_path, replacements, dry_run=False):
-    """Replace class names in a single file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        original_content = content
-        changes_made = []
-        
-        for old_class, new_class in replacements.items():
-            # Pattern to match class names in various contexts
-            patterns = [
-                # CSS selectors: .class-name
-                (rf'\.{re.escape(old_class)}\b', f'.{new_class}'),
-                
-                # JavaScript/HTML class strings: 'class-name' or "class-name"
-                (rf"'{re.escape(old_class)}'", f"'{new_class}'"),
-                (rf'"{re.escape(old_class)}"', f'"{new_class}"'),
-                
-                # classList operations: addClass('class-name'), removeClass('class-name')
-                (rf"(addClass|removeClass|contains|toggle)\s*\(\s*['\"]({re.escape(old_class)})['\"]", 
-                 lambda m: f"{m.group(1)}('{new_class}'"),
-                
-                # querySelector operations: querySelector('.class-name')
-                (rf"(querySelector|querySelectorAll)\s*\(\s*['\"]\.({re.escape(old_class)})['\"]",
-                 lambda m: f"{m.group(1)}('.{new_class}'"),
-                
-                # HTML class attributes: class="class-name"
-                (rf'class\s*=\s*["\']([^"\']*\b){re.escape(old_class)}\b([^"\']*)["\']',
-                 lambda m: f'class="{m.group(1)}{new_class}{m.group(2)}"'),
-            ]
-            
-            for pattern, replacement in patterns:
-                if callable(replacement):
-                    new_content = re.sub(pattern, replacement, content)
-                else:
-                    new_content = re.sub(pattern, replacement, content)
-                
-                if new_content != content:
-                    changes_made.append(f"  {old_class} → {new_class}")
-                    content = new_content
-        
-        if content != original_content:
-            if not dry_run:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                print(f"✓ Updated {file_path}")
-                for change in changes_made:
-                    print(change)
-            else:
-                print(f"Would update {file_path}:")
-                for change in changes_made:
-                    print(change)
-        else:
-            print(f"- No changes needed in {file_path}")
-            
-    except FileNotFoundError:
-        print(f"⚠ File not found: {file_path}")
-    except Exception as e:
-        print(f"✗ Error processing {file_path}: {e}")
-
-def main():
-    """Main function to process all files."""
-    print("CSS Class Name Replacer")
-    print("=" * 50)
-    
-    # Check if we're in the right directory
-    if not os.path.exists('app/static/script.js'):
-        print("Error: Please run this script from the project root directory.")
-        print("Expected to find 'app/static/script.js' from current directory.")
-        return
-    
-    # Ask for confirmation
-    print("This script will replace the following class names:")
-    for old, new in REPLACEMENTS.items():
-        print(f"  {old} → {new}")
-    
-    print(f"\nFiles to be processed:")
-    for file_path in FILES_TO_PROCESS:
-        if os.path.exists(file_path):
-            print(f"  ✓ {file_path}")
-        else:
-            print(f"  ⚠ {file_path} (not found)")
-    
-    response = input("\nProceed with replacements? (y/N): ").strip().lower()
-    if response != 'y':
-        print("Operation cancelled.")
-        return
-    
-    # Optional dry run
-    dry_run_response = input("Do a dry run first? (Y/n): ").strip().lower()
-    dry_run = dry_run_response != 'n'
-    
-    if dry_run:
-        print("\n" + "=" * 50)
-        print("DRY RUN - No files will be modified")
-        print("=" * 50)
-        
-        for file_path in FILES_TO_PROCESS:
-            if os.path.exists(file_path):
-                replace_in_file(file_path, REPLACEMENTS, dry_run=True)
-        
-        real_run_response = input("\nProceed with actual replacements? (y/N): ").strip().lower()
-        if real_run_response != 'y':
-            print("Operation cancelled.")
-            return
-    
-    print("\n" + "=" * 50)
-    print("PROCESSING FILES")
-    print("=" * 50)
-    
-    # Process each file
-    for file_path in FILES_TO_PROCESS:
-        if os.path.exists(file_path):
-            replace_in_file(file_path, REPLACEMENTS, dry_run=False)
-    
-    print("\n" + "=" * 50)
-    print("REPLACEMENT COMPLETE!")
-    print("=" * 50)
-    print("\nNext steps:")
-    print("1. Replace your input.css with the new unified CSS")
-    print("2. Test the application to ensure everything works")
-    print("3. Update your JavaScript selectors to use '.block-header' for sticky functionality")
-
-if __name__ == "__main__":
-    main()
-
-=== check_database.py ===
-import sqlite3
-from pathlib import Path
-
-# Assuming the database is in the project root
-DATABASE_PATH = Path("tesseracs_chat.db")
-
-def check_database():
-    if not DATABASE_PATH.exists():
-        print(f"Database not found at {DATABASE_PATH}")
-        return
-    
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    print("=== Recent AI Messages ===")
-    cursor.execute("""
-        SELECT id, turn_id, session_id, content, timestamp 
-        FROM chat_messages 
-        WHERE sender_type = 'ai' 
-        ORDER BY id DESC 
-        LIMIT 5
-    """)
-    
-    ai_messages = cursor.fetchall()
-    for msg in ai_messages:
-        print(f"ID: {msg['id']}, Turn ID: {msg['turn_id']}, Session: {msg['session_id'][:8]}...")
-        print(f"Content preview: {msg['content'][:50]}...")
-        print(f"Timestamp: {msg['timestamp']}")
-        print("-" * 50)
-    
-    print("\n=== Code Execution Results ===")
-    cursor.execute("""
-        SELECT code_block_id, session_id, language, exit_code, executed_at
-        FROM code_execution_results 
-        ORDER BY executed_at DESC 
-        LIMIT 5
-    """)
-    
-    code_results = cursor.fetchall()
-    for result in code_results:
-        print(f"Block ID: {result['code_block_id']}")
-        print(f"Session: {result['session_id'][:8]}...")
-        print(f"Language: {result['language']}, Exit Code: {result['exit_code']}")
-        print(f"Executed: {result['executed_at']}")
-        print("-" * 50)
-    
-    print("\n=== Checking Turn ID vs Code Block ID Matches ===")
-    cursor.execute("""
-        SELECT cm.id, cm.turn_id, cm.session_id, cer.code_block_id
-        FROM chat_messages cm
-        LEFT JOIN code_execution_results cer ON cm.session_id = cer.session_id
-        WHERE cm.sender_type = 'ai' AND cer.code_block_id IS NOT NULL
-        ORDER BY cm.id DESC
-        LIMIT 5
-    """)
-    
-    matches = cursor.fetchall()
-    for match in matches:
-        expected_block_id = f"code-block-turn{match['turn_id']}-1"
-        actual_block_id = match['code_block_id']
-        matches_expected = expected_block_id == actual_block_id
-        
-        print(f"Message ID: {match['id']}, Turn ID: {match['turn_id']}")
-        print(f"Expected Block ID: {expected_block_id}")
-        print(f"Actual Block ID: {actual_block_id}")
-        print(f"Match: {matches_expected}")
-        print("-" * 50)
-    
-    conn.close()
-
-if __name__ == "__main__":
-    check_database()
 
 === fetch_assets.py ===
 import os
@@ -469,235 +217,6 @@ module.exports = {
 }
 
 === project_content.txt ===
-=== Project Directory Structure ===
-Root: C:\Users\viktor.jonsson\OneDrive - CellMax Technologies AB\Documents\Repositories\svenviktorjonsson\tesseracs-chat
-Relevant files and folders (excluding specified patterns):
-
-.
-├── Readme.md
-├── change_names.py
-├── check_database.py
-├── fetch_assets.py
-├── generate_secret_key.py
-├── package.json
-├── postcss.config.js
-├── project_content.txt
-├── pyproject.toml
-├── tailwind.config.js
-├── write_project_content_to_file.py
-├── app/
-│   ├── __init__.py
-│   ├── auth.py
-│   ├── config.py
-│   ├── database.py
-│   ├── docker_utils.py
-│   ├── email_utils.py
-│   ├── encryption_utils.py
-│   ├── main.py
-│   ├── models.py
-│   ├── state.py
-│   ├── utils.py
-│   ├── static/
-│   │   ├── _sidebar.html
-│   │   ├── chat-session.html
-│   │   ├── languages.json
-│   │   ├── login.html
-│   │   ├── script.js
-│   │   ├── session-choice.html
-│   │   ├── settings.html
-│   │   ├── email_templates/
-│   │   │   ├── password_reset_email.html
-│   │   │   ├── registration_email.html
-│   │   ├── js/
-│   │   │   ├── app-ui.js
-│   │   │   ├── settings.js
-│   │   │   ├── temp.js
-├── tests/
-│   ├── test_coding.py
-
-
-=== File Contents ===
-
-=== Readme.md ===
-Readme
-
-
-=== change_names.py ===
-#!/usr/bin/env python3
-"""
-CSS Class Name Replacer Script
-Replaces old CSS class names with new unified block class names throughout the project.
-"""
-
-import os
-import re
-from pathlib import Path
-
-# Define the replacement mappings
-REPLACEMENTS = {
-    # Container classes
-    'code-block-container': 'block-container',
-    'output-block-container': 'block-container',
-    
-    # Header classes
-    'code-block-header': 'block-header',
-    'code-output-header': 'block-header',
-    
-    # Button and UI classes
-    'code-block-buttons': 'block-buttons',
-    'code-block-title': 'block-title',
-    'code-status-span': 'block-status',
-    'code-action-btn': 'block-action-btn',
-    
-    # Console class
-    'code-output-console': 'block-output-console',
-    
-    # Title classes
-    'output-header-title': 'block-title',
-}
-
-# Files to process
-FILES_TO_PROCESS = [
-    'app/static/script.js',
-    'app/static/input.css',
-    'app/static/chat-session.html',
-    'app/static/_sidebar.html',
-    'app/static/session-choice.html',
-    'app/static/settings.html',
-    'app/static/login.html',
-    'app/static/js/app-ui.js',
-    'app/static/js/settings.js',
-    'app/static/js/temp.js',
-]
-
-def replace_in_file(file_path, replacements, dry_run=False):
-    """Replace class names in a single file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        original_content = content
-        changes_made = []
-        
-        for old_class, new_class in replacements.items():
-            # Pattern to match class names in various contexts
-            patterns = [
-                # CSS selectors: .class-name
-                (rf'\.{re.escape(old_class)}\b', f'.{new_class}'),
-                
-                # JavaScript/HTML class strings: 'class-name' or "class-name"
-                (rf"'{re.escape(old_class)}'", f"'{new_class}'"),
-                (rf'"{re.escape(old_class)}"', f'"{new_class}"'),
-                
-                # classList operations: addClass('class-name'), removeClass('class-name')
-                (rf"(addClass|removeClass|contains|toggle)\s*\(\s*['\"]({re.escape(old_class)})['\"]", 
-                 lambda m: f"{m.group(1)}('{new_class}'"),
-                
-                # querySelector operations: querySelector('.class-name')
-                (rf"(querySelector|querySelectorAll)\s*\(\s*['\"]\.({re.escape(old_class)})['\"]",
-                 lambda m: f"{m.group(1)}('.{new_class}'"),
-                
-                # HTML class attributes: class="class-name"
-                (rf'class\s*=\s*["\']([^"\']*\b){re.escape(old_class)}\b([^"\']*)["\']',
-                 lambda m: f'class="{m.group(1)}{new_class}{m.group(2)}"'),
-            ]
-            
-            for pattern, replacement in patterns:
-                if callable(replacement):
-                    new_content = re.sub(pattern, replacement, content)
-                else:
-                    new_content = re.sub(pattern, replacement, content)
-                
-                if new_content != content:
-                    changes_made.append(f"  {old_class} → {new_class}")
-                    content = new_content
-        
-        if content != original_content:
-            if not dry_run:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                print(f"✓ Updated {file_path}")
-                for change in changes_made:
-                    print(change)
-            else:
-                print(f"Would update {file_path}:")
-                for change in changes_made:
-                    print(change)
-        else:
-            print(f"- No changes needed in {file_path}")
-            
-    except FileNotFoundError:
-        print(f"⚠ File not found: {file_path}")
-    except Exception as e:
-        print(f"✗ Error processing {file_path}: {e}")
-
-def main():
-    """Main function to process all files."""
-    print("CSS Class Name Replacer")
-    print("=" * 50)
-    
-    # Check if we're in the right directory
-    if not os.path.exists('app/static/script.js'):
-        print("Error: Please run this script from the project root directory.")
-        print("Expected to find 'app/static/script.js' from current directory.")
-        return
-    
-    # Ask for confirmation
-    print("This script will replace the following class names:")
-    for old, new in REPLACEMENTS.items():
-        print(f"  {old} → {new}")
-    
-    print(f"\nFiles to be processed:")
-    for file_path in FILES_TO_PROCESS:
-        if os.path.exists(file_path):
-            print(f"  ✓ {file_path}")
-        else:
-            print(f"  ⚠ {file_path} (not found)")
-    
-    response = input("\nProceed with replacements? (y/N): ").strip().lower()
-    if response != 'y':
-        print("Operation cancelled.")
-        return
-    
-    # Optional dry run
-    dry_run_response = input("Do a dry run first? (Y/n): ").strip().lower()
-    dry_run = dry_run_response != 'n'
-    
-    if dry_run:
-        print("\n" + "=" * 50)
-        print("DRY RUN - No files will be modified")
-        print("=" * 50)
-        
-        for file_path in FILES_TO_PROCESS:
-            if os.path.exists(file_path):
-                replace_in_file(file_path, REPLACEMENTS, dry_run=True)
-        
-        real_run_response = input("\nProceed with actual replacements? (y/N): ").strip().lower()
-        if real_run_response != 'y':
-            print("Operation cancelled.")
-            return
-    
-    print("\n" + "=" * 50)
-    print("PROCESSING FILES")
-    print("=" * 50)
-    
-    # Process each file
-    for file_path in FILES_TO_PROCESS:
-        if os.path.exists(file_path):
-            replace_in_file(file_path, REPLACEMENTS, dry_run=False)
-    
-    print("\n" + "=" * 50)
-    print("REPLACEMENT COMPLETE!")
-    print("=" * 50)
-    print("\nNext steps:")
-    print("1. Replace your input.css with the new unified CSS")
-    print("2. Test the application to ensure everything works")
-    print("3. Update your JavaScript selectors to use '.block-header' for sticky functionality")
-
-if __name__ == "__main__":
-    main()
-
-=== check_database.py ===
 
 
 === pyproject.toml ===
@@ -1569,32 +1088,45 @@ def get_code_execution_results(session_id):
     finally:
         conn.close()
 
-def delete_code_block_data(session_id, code_block_id):
+def get_edited_code_blocks(session_id: str) -> dict:
     """
-    Deletes code block data from both edited_code_blocks and code_execution_results tables.
+    Retrieves a dictionary of all edited code blocks for a given session.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+    edited_blocks = {}
     try:
-        # Delete from edited_code_blocks table
+        cursor.execute(
+            "SELECT code_block_id, edited_content FROM edited_code_blocks WHERE session_id = ?",
+            (session_id,)
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            edited_blocks[row['code_block_id']] = row['edited_content']
+        return edited_blocks
+    except Exception as e:
+        print(f"Error retrieving edited code blocks for session {session_id}: {e}")
+        return {} # Return empty dict on error
+    finally:
+        conn.close()
+
+def delete_edited_code_block(session_id, code_block_id):
+    """
+    Deletes a specific edited code block record from the database.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
         cursor.execute(
             "DELETE FROM edited_code_blocks WHERE session_id = ? AND code_block_id = ?",
             (session_id, code_block_id)
         )
-        
-        # Delete from code_execution_results table
-        cursor.execute(
-            "DELETE FROM code_execution_results WHERE session_id = ? AND code_block_id = ?",
-            (session_id, code_block_id)
-        )
-        
         conn.commit()
-        print(f"Successfully deleted data for code block {code_block_id} in session {session_id}")
+        print(f"Successfully deleted edited content for {code_block_id} in session {session_id}")
         return True
     except Exception as e:
         conn.rollback()
-        print(f"Error deleting code block data for {code_block_id}: {e}")
+        print(f"Error deleting edited code block for {code_block_id}: {e}")
         return False
     finally:
         conn.close()
@@ -1946,71 +1478,58 @@ async def read_from_socket_and_stream(
     """
     import struct
 
-    line_buffer = ""
+    # Use a buffer to handle partial lines and multiple lines in one read
+    buffer = b''
     try:
         while True:
-            # 1. Read the 8-byte header from the Docker stream
+            # 1. Read raw data from the socket
             try:
-                header_bytes = await asyncio.to_thread(socket.recv, 8)
-            except PIPE_ENDED_ERROR as e:
-                # This is normal when the container finishes - not an error
+                raw_data = await asyncio.to_thread(socket.recv, 8192)
+            except PIPE_ENDED_ERROR:
                 print(f"[SocketStreamer-{code_block_id}] Container finished normally (pipe ended)")
                 break
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 print(f"[SocketStreamer-{code_block_id}] Connection closed: {e}")
                 break
-                
-            if not header_bytes:
+
+            if not raw_data:
                 print(f"[SocketStreamer-{code_block_id}] No more data, container finished")
                 break
-            if len(header_bytes) < 8:
-                print(f"[SocketStreamer-{code_block_id}] Incomplete header received, closing stream.")
-                break
 
-            # 2. Unpack the header to get stream type and content size
-            stream_type, size = struct.unpack('>BxxxL', header_bytes)
-            
-            # 3. Read the exact amount of data specified in the header
-            payload_bytes = b''
-            bytes_to_read = size
-            while bytes_to_read > 0:
-                try:
-                    chunk = await asyncio.to_thread(socket.recv, bytes_to_read)
-                except PIPE_ENDED_ERROR:
-                    print(f"[SocketStreamer-{code_block_id}] Container finished while reading payload")
-                    break
-                    
-                if not chunk:
-                    print(f"[SocketStreamer-{code_block_id}] Socket closed unexpectedly while reading payload")
-                    break
-                payload_bytes += chunk
-                bytes_to_read -= len(chunk)
+            buffer += raw_data
 
-            if bytes_to_read > 0:
-                # Didn't read all expected data, container likely finished
-                break
+            # 2. Process the buffer to extract complete Docker stream frames
+            while len(buffer) >= 8:
+                # Unpack header to get size
+                header_bytes = buffer[:8]
+                stream_type, size = struct.unpack('>BxxxL', header_bytes)
 
-            stream_name = 'stdout' if stream_type == 1 else 'stderr'
-            chunk_str = payload_bytes.decode('utf-8', 'replace')
+                # Check if the full frame is in the buffer
+                if len(buffer) < 8 + size:
+                    break # Wait for more data
 
-            # Send the output to WebSocket
-            await send_ws_message(websocket, "code_output", {
-                "code_block_id": code_block_id, "stream": stream_name, "data": chunk_str
-            })
+                # Extract the payload
+                payload_bytes = buffer[8 : 8 + size]
 
-            # Check for input prompts only on stdout
-            if stream_name == 'stdout':
-                line_buffer += chunk_str
-                if '\n' in line_buffer or '\r' in line_buffer:
-                    line_buffer = ""
-                    continue
-                
-                prompt_indicators = [':', '?', '>', 'input', 'enter']
-                line_lower = line_buffer.lower().strip()
-                if line_lower and any(indicator in line_lower for indicator in prompt_indicators):
-                    print(f"[SocketStreamer-{code_block_id}] Detected input prompt: '{line_buffer}'")
-                    await send_ws_message(websocket, "code_waiting_input", {"code_block_id": code_block_id, "prompt": line_buffer})
-                    line_buffer = ""
+                # Remove the processed frame from the buffer
+                buffer = buffer[8 + size:]
+
+                # Decode and send to WebSocket
+                stream_name = 'stdout' if stream_type == 1 else 'stderr'
+                chunk_str = payload_bytes.decode('utf-8', 'replace')
+
+                await send_ws_message(websocket, "code_output", {
+                    "code_block_id": code_block_id, "stream": stream_name, "data": chunk_str
+                })
+
+                # Check for input prompts only on stdout
+                if stream_name == 'stdout':
+                    # The last part of the output might be an input prompt without a newline
+                    # A simple heuristic: check if the chunk ends with common prompt indicators.
+                    stripped_chunk = chunk_str.rstrip()
+                    if stripped_chunk and stripped_chunk.endswith((':', '?', '>')):
+                        print(f"[SocketStreamer-{code_block_id}] Detected input prompt: '{chunk_str}'")
+                        await send_ws_message(websocket, "code_waiting_input", {"code_block_id": code_block_id, "prompt": chunk_str})
 
     except Exception as e:
         print(f"[SocketStreamer-{code_block_id}] Unexpected error in stream: {e}")
@@ -2018,55 +1537,51 @@ async def read_from_socket_and_stream(
     finally:
         print(f"[SocketStreamer-{code_block_id}] Stream finished - entering finally block")
         try:
-            # Check if container is still running before waiting
+            # This block remains the same, handling the final exit code
             print(f"[SocketStreamer-{code_block_id}] Reloading container to check status...")
             await asyncio.to_thread(container.reload)
             container_status = container.status
             print(f"[SocketStreamer-{code_block_id}] Container status: {container_status}")
-            
+
             if container_status == 'running':
                 print(f"[SocketStreamer-{code_block_id}] Container still running, getting state without waiting...")
-                # Don't wait for running containers, just send completion with exit code 0
                 result = {"StatusCode": 0, "Error": None}
             else:
-                # Container already finished, get its exit code
                 print(f"[SocketStreamer-{code_block_id}] Container already finished, getting exit code...")
                 container_state = container.attrs.get('State', {})
                 exit_code = container_state.get('ExitCode', 0)
                 error_detail = container_state.get('Error')
                 result = {"StatusCode": exit_code, "Error": error_detail}
                 print(f"[SocketStreamer-{code_block_id}] Exit code: {exit_code}, Error: {error_detail}")
-                
+
             exit_code = result.get("StatusCode", 0)
             error_msg = result.get("Error")
-            
+
             print(f"[SocketStreamer-{code_block_id}] About to send code_finished with exit_code: {exit_code}")
-            
-            # Check WebSocket state before sending
+
             if websocket.client_state.name != 'CONNECTED':
                 print(f"[SocketStreamer-{code_block_id}] WARNING: WebSocket not connected (state: {websocket.client_state.name})")
-            
+
             await send_ws_message(websocket, "code_finished", {
                 "code_block_id": code_block_id, 
                 "exit_code": exit_code, 
                 "error": error_msg
             })
             print(f"[SocketStreamer-{code_block_id}] ✓ code_finished message sent successfully")
-            
+
         except Exception as e:
             print(f"[SocketStreamer-{code_block_id}] ERROR in finally block: {e}")
             traceback.print_exc()
-            # Send a completion message anyway to unblock the UI
             try:
                 await send_ws_message(websocket, "code_finished", {
                     "code_block_id": code_block_id, 
                     "exit_code": 0, 
-                    "error": None  # Don't include the cleanup error in the UI
+                    "error": None
                 })
                 print(f"[SocketStreamer-{code_block_id}] ✓ Fallback code_finished message sent")
             except Exception as fallback_error:
                 print(f"[SocketStreamer-{code_block_id}] ✗ Even fallback message failed: {fallback_error}")
-        
+
         try:
             socket.close()
             print(f"[SocketStreamer-{code_block_id}] Socket closed")
@@ -3876,6 +3391,22 @@ async def get_user_sessions(
         if conn:
             conn.close()
 
+@app.get("/api/sessions/{session_id}/edited-blocks", response_model=Dict[str, str], tags=["Sessions"])
+async def get_session_edited_blocks(
+    session_id: str = FastApiPath(..., description="The ID of the session to fetch edited code blocks for."),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user)
+):
+    # User access verification
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user['id']))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this session's data.")
+    conn.close()
+
+    return database.get_edited_code_blocks(session_id)
+
 @app.get("/api/sessions/{session_id}/messages", response_model=List[models.MessageItem], tags=["Messages"])
 async def get_chat_messages_for_session(
     session_id: str = FastApiPath(..., description="The ID of the session to fetch messages for."),
@@ -4319,15 +3850,6 @@ async def websocket_endpoint(
                     code_block_id = payload.get("code_block_id")
                     print(f"---- WS LOG: Received 'stop_code' for block {code_block_id} from {user_id}")
                     asyncio.create_task(docker_utils.stop_docker_container(code_block_id))
-                elif message_type == "delete_code_block" and payload and payload.get("code_block_id"):
-                    session_id_from_payload = payload.get("session_id")
-                    code_block_id = payload.get("code_block_id")
-                    
-                    if session_id_from_payload == session_id_ws:
-                        print(f"---- WS LOG: Received 'delete_code_block' for block {code_block_id} from {user_id}")
-                        database.delete_code_block_data(session_id_ws, code_block_id)
-                    else:
-                        print(f"---- WS WARNING: Ignoring 'delete_code_block' with mismatched session.")
                 elif message_type == "save_code_content" and payload and payload.get("code_block_id"):
                     session_id_from_payload = payload.get("session_id")
                     code_block_id = payload.get("code_block_id")
@@ -4390,6 +3912,34 @@ async def websocket_endpoint(
                 print(f"---- WS INFO: Explicitly closing WebSocket connection for client {client_js_id}, session {session_id_ws}.")
                 await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
             except Exception: pass
+
+@app.delete("/api/sessions/{session_id}/edited-blocks/{code_block_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Code Execution"])
+async def delete_edited_code_block_route(
+    request: Request,
+    session_id: str = FastApiPath(..., description="The session ID."),
+    code_block_id: str = FastApiPath(..., description="The code block ID to restore."),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user),
+    csrf_protect: CsrfProtect = Depends()
+):
+    await csrf_protect.validate_csrf(request)
+    
+    # User access verification
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user['id']))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this session's data.")
+    conn.close()
+
+    success = database.delete_edited_code_block(session_id, code_block_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to restore code block.")
+    
+    # Invalidate the in-memory cache for this session
+    state.remove_memory_for_client(session_id)
+    
+    return
 
 @app.delete("/api/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Sessions"])
 async def delete_session_route(
@@ -4734,65 +4284,102 @@ running_containers_lock = asyncio.Lock()
 active_ai_streams: Dict[str, asyncio.Event] = {}
 active_ai_streams_lock = asyncio.Lock() # Lock for safe concurrent access to active_ai_streams
 
+import re
+
 def get_memory_for_client(session_id: str) -> ConversationBufferMemory:
     """
     Retrieves or creates ConversationBufferMemory for a specific session_id.
-    Loads from DB if available, otherwise creates a new one.
+    Loads from DB, and for the LLM's context, appends any user-edited code blocks 
+    after the original block in the history.
     """
     global client_memory
     if session_id in client_memory:
-        # Return from in-memory cache if available
         return client_memory[session_id]
 
-    # Attempt to load from database
     conn = None
     try:
         conn = database.get_db_connection()
         cursor = conn.cursor()
+
+        # 1. Fetch all messages for the session
         cursor.execute(
-            "SELECT memory_state_json FROM session_memory_state WHERE session_id = ?",
+            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
             (session_id,)
         )
-        row = cursor.fetchone()
+        messages_rows = cursor.fetchall()
 
-        if row and row["memory_state_json"]:
-            try:
-                memory_data_list = json.loads(row["memory_state_json"]) # Expecting a list of message dicts
-                if isinstance(memory_data_list, list):
-                    # Create a new memory instance
-                    memory_instance = ConversationBufferMemory(
-                        return_messages=True, 
-                        memory_key="history" # Default memory key for ConversationBufferMemory
-                    )
-                    # Load messages into the new instance
-                    loaded_messages = messages_from_dict(memory_data_list)
-                    memory_instance.chat_memory.messages = loaded_messages
-                    
-                    client_memory[session_id] = memory_instance # Store in cache
-                    print(f"STATE: Memory loaded from DB for session {session_id}")
-                    return memory_instance
-                else:
-                    # Log if the stored JSON is not in the expected list format
-                    print(f"STATE WARNING: Memory data for session {session_id} is not a list. Creating new memory.")
-            except (json.JSONDecodeError, TypeError, Exception) as e:
-                # Catch errors during JSON loading or message reconstruction
-                print(f"STATE ERROR: Failed to load/parse memory for session {session_id} from DB: {e}")
-                traceback.print_exc() # Log full traceback for debugging
-                # Fall through to create new memory if parsing fails
-    except sqlite3.Error as db_err:
-        # Catch database errors during the query
-        print(f"STATE DB ERROR: Could not query session_memory_state for session {session_id}: {db_err}")
-        traceback.print_exc() # Log full traceback
-        # Fall through to create new memory if DB query fails
+        # 2. Fetch all edited code blocks for the session
+        edited_blocks = database.get_edited_code_blocks(session_id)
+
+        # 3. Reconstruct message history, applying edits for context
+        reconstructed_messages = []
+        for row in messages_rows:
+            msg = dict(row)
+            if msg['sender_type'] == 'ai' and msg['content'] and edited_blocks:
+                code_block_counter = 0
+
+                def process_code_block_for_context(match):
+                    nonlocal code_block_counter
+                    code_block_counter += 1
+
+                    turn_id = msg.get('turn_id')
+                    if turn_id is None:
+                        return match.group(0)
+
+                    block_id = f"code-block-turn{turn_id}-{code_block_counter}"
+                    original_block_text = match.group(0)
+
+                    # Check if an edit exists for this block
+                    edited_code = edited_blocks.get(block_id)
+
+                    if edited_code is not None:
+                        # Append the edited version for the LLM's context
+                        language = match.group(1)
+                        edited_block_text = f"```{language}\n{edited_code}\n```"
+                        return f"{original_block_text}\n\n(after edit by user:...)\n\n{edited_block_text}"
+                    else:
+                        # No edit, return the original block
+                        return original_block_text
+
+                # Use regex to find and amend code blocks in the content
+                code_block_regex = r"```(\w*)\n([\s\S]*?)\n```"
+                msg['content'] = re.sub(code_block_regex, process_code_block_for_context, msg['content'])
+
+            reconstructed_messages.append(msg)
+
+        if reconstructed_messages:
+            memory_instance = ConversationBufferMemory(return_messages=True, memory_key="history")
+
+            langchain_messages = []
+            for msg in reconstructed_messages:
+                if msg['sender_type'] == 'user':
+                    langchain_messages.append({"type": "human", "data": {"content": msg['content']}})
+                elif msg['sender_type'] == 'ai':
+                    langchain_messages.append({"type": "ai", "data": {"content": msg['content']}})
+
+            memory_instance.chat_memory.messages = messages_from_dict(langchain_messages)
+            client_memory[session_id] = memory_instance
+            print(f"STATE: Memory loaded from DB and reconstructed for session {session_id}")
+            return memory_instance
+
+    except Exception as e:
+        print(f"STATE ERROR: Failed to load/reconstruct memory for session {session_id}: {e}")
+        traceback.print_exc()
     finally:
         if conn:
             conn.close()
 
-    # If not found in cache or DB, or if loading failed, create and cache new memory
     print(f"STATE: Creating new memory for session {session_id}")
     new_memory = ConversationBufferMemory(return_messages=True, memory_key="history")
     client_memory[session_id] = new_memory
     return new_memory
+
+def remove_memory_for_client(session_id: str):
+    """Removes memory for a specific session_id from the in-memory cache."""
+    global client_memory
+    if session_id in client_memory:
+        del client_memory[session_id]
+        print(f"STATE: Memory cache cleared for session {session_id} due to data change.")
 
 def save_memory_state_to_db(session_id: str, memory: Optional[ConversationBufferMemory]):
     """
@@ -6063,7 +5650,7 @@ function renderLiveMessage(fullContent) {
     scrollToBottom('auto');
 }
 
-function parseAndRenderAiContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix) {
+function parseAndRenderAiContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix, editedCodeBlocks = {}) {
     if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
 
     const KATEX_PLACEHOLDER_PREFIX_HISTORICAL = `%%HISTORICAL_KATEX_PLACEHOLDER_${turnIdSuffix}_`;
@@ -6082,22 +5669,36 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
     while ((matchCode = codeBlockRegex.exec(tempContentForCodeExtraction)) !== null) {
         historicalCodeBlockCounter++;
         const language = matchCode[1] || 'plaintext';
-        const code = matchCode[2];
+        const originalCode = matchCode[2];
         const placeholder = `%%HISTORICAL_CODE_BLOCK_${historicalCodeBlockCounter}%%`;
-        extractedCodeBlocks.push({ language, code, placeholder, index: historicalCodeBlockCounter });
+
+        const blockId = `code-block-turn${turnIdSuffix}-${historicalCodeBlockCounter}`;
+
+        extractedCodeBlocks.push({ 
+            language, 
+            originalCode, 
+            placeholder, 
+            index: historicalCodeBlockCounter,
+            id: blockId 
+        });
+
         contentAfterCodeExtraction += tempContentForCodeExtraction.substring(lastCodeMatchEndIndex, matchCode.index);
         contentAfterCodeExtraction += placeholder;
         lastCodeMatchEndIndex = codeBlockRegex.lastIndex;
     }
     contentAfterCodeExtraction += tempContentForCodeExtraction.substring(lastCodeMatchEndIndex);
     contentForProcessing = contentAfterCodeExtraction;
-    
+
     extractedCodeBlocks.forEach(block => {
-        const newBlockElement = createCodeBlock(block.language, block.code, turnIdSuffix, block.index, codeBlocksDivElement, false);
-        const blockId = `code-block-turn${turnIdSuffix}-${block.index}`;
-        initializeCodeBlockHistory(blockId, block.code);
-        const linkHTML = `<a href="#${blockId}" class="code-block-link text-blue-600 hover:underline">[Code Block ${block.index}]</a>`;
-        contentForProcessing = contentForProcessing.replace(block.placeholder, linkHTML);
+        const finalCodeContent = editedCodeBlocks[block.id] || block.originalCode;
+
+        // CORRECTED CALL: Pass BOTH the final content for display AND the true original content for the dataset
+        createCodeBlock(block.language, finalCodeContent, block.originalCode, turnIdSuffix, block.index, codeBlocksDivElement, false);
+
+        initializeCodeBlockHistory(block.id, finalCodeContent);
+        const replacementHTML = `<a href="#${block.id}" class="code-block-link text-blue-600 hover:underline">[Code Block ${block.index}]</a>`;
+
+        contentForProcessing = contentForProcessing.replace(block.placeholder, replacementHTML);
     });
 
     const storedKatex = {};
@@ -6174,13 +5775,21 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
         const [fullMatch, language, code] = match;
         const isComplete = fullMatch.endsWith('\n```') || fullMatch.endsWith('```');
         const startIndex = match.index;
-        
+
         contentWithPlaceholders += contentString.substring(lastIndex, startIndex);
-        
+
         if (!activeStreamingCodeBlocks.has(startIndex)) {
             streamingCodeBlockCounter++;
-            // Use the new, unified function
-            const newBlockElement = createCodeBlock(language || 'plaintext', code, turnIdSuffix, streamingCodeBlockCounter, codeBlocksDivElement, true);
+            // Create the new block, passing the code as both the display content AND the original dataset content
+            const newBlockElement = createCodeBlock(
+                language || 'plaintext', 
+                code, 
+                code, // The new originalCodeForDataset argument
+                turnIdSuffix, 
+                streamingCodeBlockCounter, 
+                codeBlocksDivElement, 
+                true
+            );
             activeStreamingCodeBlocks.set(startIndex, {
                 blockId: newBlockElement.id,
                 language: language || 'plaintext',
@@ -6195,7 +5804,7 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
             blockData.isComplete = isComplete;
             updateStreamingCodeBlockContent(blockData.blockId, newLanguage, code, isComplete);
         }
-        
+
         const blockData = activeStreamingCodeBlocks.get(startIndex);
         const blockNumber = blockData.blockId.split('-').pop();
         const blockId = `code-block-turn${turnIdSuffix}-${blockNumber}`;
@@ -6203,13 +5812,13 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
         contentWithPlaceholders += linkHTML;
         lastIndex = codeBlockRegex.lastIndex;
     }
-    
+
     contentWithPlaceholders += contentString.substring(lastIndex);
 
     const KATEX_PLACEHOLDER_PREFIX_STREAMING = `%%STREAMING_KATEX_PLACEHOLDER_${turnIdSuffix}_`;
     const storedKatex = {};
     let katexPlaceholderIndex = 0;
-    
+
     const katexRegexGlobal = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$((?:\\\$|[^$])+?)(?<!\\)\$/g;
     let textForMarkdownParsing = contentWithPlaceholders.replace(katexRegexGlobal, (match, displayContent, inlineContent) => {
         const isDisplayMode = !!displayContent;
@@ -6269,7 +5878,6 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
         });
     }
 }
-
 
 function updateStreamingCodeBlockContent(blockId, language, content, isComplete) {
     const container = document.getElementById(blockId);
@@ -6354,7 +5962,7 @@ function updateAllRunButtonStates() {
     });
 }
 
-function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isStreaming = false) {
+function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isStreaming = false) {
    if (!codeBlocksAreaElement) {
        console.error("createCodeBlock: Code blocks area element is null!");
        return;
@@ -6366,12 +5974,13 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
 
    const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
-   
+
    const container = document.createElement('div');
    container.classList.add('block-container');
    container.id = blockId;
    container.dataset.language = canonicalLang;
-   container.dataset.originalContent = codeContent;
+   // Set the dataset to the TRUE original content, not the potentially edited content
+   container.dataset.originalContent = originalCodeForDataset;
 
    const codeHeader = document.createElement('div');
    codeHeader.classList.add('block-header');
@@ -6396,11 +6005,6 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    restoreBtn.textContent = 'Restore';
    restoreBtn.title = 'Restore Original Code';
 
-   const deleteBtn = document.createElement('button');
-   deleteBtn.classList.add('delete-code-btn', 'block-action-btn');
-   deleteBtn.textContent = 'Delete';
-   deleteBtn.title = 'Delete Code Block';
-
    const toggleCodeBtn = document.createElement('button');
    toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
    toggleCodeBtn.textContent = 'Hide';
@@ -6410,10 +6014,9 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
    copyCodeBtn.textContent = 'Copy';
    copyCodeBtn.title = 'Copy Code';
-   
+
    codeButtonsDiv.appendChild(runStopBtn);
    codeButtonsDiv.appendChild(restoreBtn);
-   codeButtonsDiv.appendChild(deleteBtn);
    codeButtonsDiv.appendChild(toggleCodeBtn);
    codeButtonsDiv.appendChild(copyCodeBtn);
 
@@ -6423,14 +6026,14 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    titleTextSpan.classList.add('title-text');
    titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${canonicalLang})`;
    codeTitle.appendChild(titleTextSpan);
-   
+
    if (isStreaming) {
        const dotsSpan = document.createElement('span');
        dotsSpan.classList.add('streaming-dots');
        dotsSpan.textContent = '...';
        codeTitle.appendChild(dotsSpan);
    }
-   
+
    codeHeader.appendChild(codeButtonsDiv);
    codeHeader.appendChild(codeTitle);
 
@@ -6440,6 +6043,7 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    codeElement.className = `language-${prismLang}`;
    codeElement.setAttribute('contenteditable', 'true');
    codeElement.setAttribute('spellcheck', 'false');
+   // Display the final content (which could be an edit)
    codeElement.textContent = codeContent;
 
    initializeCodeBlockHistory(blockId, codeContent);
@@ -6448,7 +6052,7 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    container.appendChild(codeHeader);
    container.appendChild(preElement);
    codeBlocksAreaElement.appendChild(container);
-   
+
    toggleCodeBtn.addEventListener('click', () => {
        const isHidden = preElement.classList.toggle('hidden');
        toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide';
@@ -6464,29 +6068,39 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
        }
    });
 
-   restoreBtn.addEventListener('click', () => {
-       const originalContent = container.dataset.originalContent;
-       const cursorPos = getCursorPosition(codeElement);
-       codeElement.textContent = originalContent;
-       
-       if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-           try {
-               Prism.highlightElement(codeElement);
-               setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length));
-           } catch (e) {
-               console.error(`Prism highlight error:`, e);
-           }
-       }
-       
-       saveCodeBlockContent(blockId, originalContent);
+   restoreBtn.addEventListener('click', async () => {
+        const originalContent = container.dataset.originalContent;
+        const sessionId = getSessionIdFromPath();
+        if (!sessionId || !window.csrfTokenRaw) return;
+
+        try {
+            const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${blockId}`, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-Token': window.csrfTokenRaw }
+            });
+
+            if (response.ok) {
+                const cursorPos = getCursorPosition(codeElement);
+                codeElement.textContent = originalContent;
+
+                if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+                    try {
+                        Prism.highlightElement(codeElement);
+                        setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length));
+                    } catch (e) { console.error(`Prism highlight error:`, e); }
+                }
+                // Add the restored state to the undo history instead of wiping it
+                saveCodeBlockState(blockId, originalContent);
+            } else {
+                const error = await response.json();
+                alert(`Failed to restore code block: ${error.detail || 'Server error'}`);
+            }
+        } catch (error) {
+            console.error("Error restoring code block:", error);
+            alert("An error occurred while restoring the code block.");
+        }
    });
 
-   deleteBtn.addEventListener('click', () => {
-       if (confirm('Are you sure you want to delete this code block? This action cannot be undone.')) {
-           deleteCodeBlock(blockId);
-       }
-   });
-   
    codeElement.addEventListener('keydown', (event) => {
        handleCodeBlockKeydown(event, blockId);
    });
@@ -6499,7 +6113,7 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
    codeElement.addEventListener('input', () => {
        const cursorPos = getCursorPosition(codeElement);
        const content = codeElement.textContent || '';
-       
+
        setTimeout(() => {
            if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
                try {
@@ -6510,74 +6124,11 @@ function createCodeBlock(language, codeContent, turnIdSuffix, codeBlockIndex, co
                }
            }
        }, 10);
-       
+
        saveCodeBlockState(blockId, content);
    });
 
    return container;
-}
-
-function deleteCodeBlock(blockId) {
-    const container = document.getElementById(blockId);
-    if (!container) return;
-    
-    // Clean up sticky header if this block has one
-    const header = container.querySelector('.block-header');
-    if (header) {
-        unstickHeader(header);
-    }
-    
-    // Find and remove the associated output container
-    const outputContainer = document.getElementById(`output-for-${blockId}`);
-    if (outputContainer) {
-        // Clean up sticky header for output container too
-        const outputHeader = outputContainer.querySelector('.block-header');
-        if (outputHeader) {
-            unstickHeader(outputHeader);
-        }
-        outputContainer.remove();
-    }
-    
-    // Update chat message to indicate deletion
-    updateChatMessageForDeletedCodeBlock(blockId);
-    
-    // Remove the main code block container
-    container.remove();
-    
-    // Clean up from code block histories
-    if (window.codeBlockHistories && window.codeBlockHistories.has(blockId)) {
-        window.codeBlockHistories.delete(blockId);
-    }
-    
-    // Send deletion message to server
-    const sessionId = getSessionIdFromPath();
-    if (sessionId && websocket && websocket.readyState === WebSocket.OPEN) {
-        websocket.send(JSON.stringify({
-            type: 'delete_code_block',
-            payload: {
-                session_id: sessionId,
-                code_block_id: blockId
-            }
-        }));
-    }
-}
-
-function updateChatMessageForDeletedCodeBlock(blockId) {
-    // Find the code block link in the chat message and replace it with deletion notice
-    const codeBlockLinks = document.querySelectorAll(`a[href="#${blockId}"]`);
-    
-    codeBlockLinks.forEach(link => {
-        if (link.classList.contains('code-block-link')) {
-            // Replace the link with a deleted indicator
-            const deletedSpan = document.createElement('span');
-            deletedSpan.className = 'deleted-code-block text-gray-500 italic line-through';
-            deletedSpan.textContent = '[Code Block Deleted]';
-            deletedSpan.title = `Original code block ${blockId} was deleted`;
-            
-            // Replace the link with the deleted indicator
-            link.parentNode.replaceChild(deletedSpan, link);
-        }
-    });
 }
 
 function saveCodeBlockContent(blockId, content) {
@@ -7070,7 +6621,7 @@ function handleStructuredMessage(messageData) {
     }
 }
 
-function renderSingleMessage(msg, parentElement, isHistory = false) {
+function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
     if (!parentElement || !msg) return;
 
     const senderType = msg.sender_type;
@@ -7082,7 +6633,7 @@ function renderSingleMessage(msg, parentElement, isHistory = false) {
         messageDiv.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
         messageDiv.setAttribute('data-sender', senderType);
         if (msg.id) messageDiv.setAttribute('data-message-id', String(msg.id));
-        
+
         if (senderType === 'user') {
             messageDiv.classList.add('bg-emerald-100', 'self-end', 'ml-auto');
         } else {
@@ -7119,7 +6670,7 @@ function renderSingleMessage(msg, parentElement, isHistory = false) {
 
     } else if (senderType === 'ai') {
         const turnIdSuffix = (msg.turn_id !== null && msg.turn_id !== undefined) ? String(msg.turn_id) : (msg.id ? `msg${msg.id}` : `hist-${Date.now()}`);
-        
+
         const aiTurnContainer = document.createElement('div');
         aiTurnContainer.classList.add('ai-turn-container');
         if (msg.id) aiTurnContainer.setAttribute('data-message-id', String(msg.id));
@@ -7127,7 +6678,7 @@ function renderSingleMessage(msg, parentElement, isHistory = false) {
         const thinkingArea = document.createElement('div');
         thinkingArea.classList.add('thinking-area');
         thinkingArea.style.display = msg.thinking_content ? 'block' : 'none';
-        
+
         const details = document.createElement('details');
         const summary = document.createElement('summary');
         summary.classList.add('thinking-summary');
@@ -7140,20 +6691,20 @@ function renderSingleMessage(msg, parentElement, isHistory = false) {
 
         const answerElement = document.createElement('div');
         answerElement.classList.add('message', 'ai-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-sky-100', 'self-start', 'mr-auto');
-        
+
         const senderElem = document.createElement('p');
         senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-sky-700');
         senderElem.textContent = 'AI';
         answerElement.appendChild(senderElem);
-        
+
         const contentDiv = document.createElement('div');
         contentDiv.classList.add('text-gray-800', 'text-sm', 'message-content');
         answerElement.appendChild(contentDiv);
 
         const codeBlocksArea = document.createElement('div');
         codeBlocksArea.classList.add('code-blocks-area');
-        
-        parseAndRenderAiContent(msg.content, contentDiv, codeBlocksArea, turnIdSuffix);
+
+        parseAndRenderAiContent(msg.content, contentDiv, codeBlocksArea, turnIdSuffix, editedCodeBlocks);
 
         if (timestamp) {
             const timestampElem = document.createElement('p');
@@ -7293,30 +6844,33 @@ async function loadAndDisplayChatHistory(sessionId) {
     }
 
     streamingCodeBlockCounter = 0;
-
-    chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>'; 
+    chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>';
 
     try {
-        const response = await fetch(`/api/sessions/${sessionId}/messages`);
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ detail: "Failed to load chat history." }));
-            console.error(`Error fetching chat history for session ${sessionId}:`, response.status, errorData.detail);
-            chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">Error loading history: ${escapeHTML(errorData.detail || response.statusText)}</p>`;
-            return;
+        // Fetch all data concurrently
+        const [messagesResponse, codeResultsResponse, editedBlocksResponse] = await Promise.all([
+            fetch(`/api/sessions/${sessionId}/messages`),
+            fetch(`/api/sessions/${sessionId}/code-results`),
+            fetch(`/api/sessions/${sessionId}/edited-blocks`)
+        ]);
+
+        if (!messagesResponse.ok) {
+            const errorData = await messagesResponse.json().catch(() => ({ detail: "Failed to load chat history." }));
+            throw new Error(errorData.detail || messagesResponse.statusText);
         }
 
-        const messages = await response.json();
-        
-        const codeResultsResponse = await fetch(`/api/sessions/${sessionId}/code-results`);
+        const messages = await messagesResponse.json();
         const codeResults = codeResultsResponse.ok ? await codeResultsResponse.json() : [];
-        
+        const editedCodeBlocks = editedBlocksResponse.ok ? await editedBlocksResponse.json() : {};
+
         chatHistoryDiv.innerHTML = '';
 
         if (messages.length === 0) {
             chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">No messages in this session yet. Start chatting!</p>';
         } else {
             messages.forEach(msg => {
-                renderSingleMessage(msg, chatHistoryDiv, true);
+                // Pass the fetched data down to the rendering function
+                renderSingleMessage(msg, chatHistoryDiv, true, editedCodeBlocks);
             });
 
             codeResults.forEach(result => {
@@ -7327,16 +6881,15 @@ async function loadAndDisplayChatHistory(sessionId) {
                 Prism.highlightAll();
             }
 
-            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight; 
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
         }
         console.log(`Successfully loaded ${messages.length} messages for session ${sessionId}.`);
 
     } catch (error){
         console.error(`Failed to fetch or display chat history for session ${sessionId}:`, error);
-        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An unexpected error occurred while loading history. Check console.</p>`;
+        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An unexpected error occurred while loading history: ${escapeHTML(error.message)}</p>`;
     }
 }
-
 // --- WebSocket Connection ---
 function resetAllCodeButtonsOnErrorOrClose() {
     console.log("Resetting all code run/stop buttons and statuses due to connection issue.");

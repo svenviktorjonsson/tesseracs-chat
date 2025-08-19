@@ -26,14 +26,14 @@
 
     <div class="flex h-screen overflow-hidden">
         <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col overflow-hidden shrink-0">
-            </aside>
+        </aside>
 
         <main class="flex-1 flex flex-col overflow-hidden">
             <header class="bg-white border-b border-gray-200 p-4 shadow-sm">
                 <h1 id="chat-session-title" class="text-lg font-semibold text-gray-800 truncate">%%SESSION_NAME_PLACEHOLDER%%</h1>
             </header>
             <div id="chat-history" class="flex-1 overflow-y-auto p-4 space-y-4 bg-white shadow-inner m-2 md:m-4 rounded-lg">
-                </div>
+            </div>
             <footer class="p-4 bg-gray-200 border-t border-gray-300">
                 <form id="chat-form" class="flex items-center space-x-2">
                     <div class="think-checkbox-container flex items-center text-sm text-gray-600 mr-1 md:mr-2">
@@ -82,6 +82,9 @@
             }
         });
     </script>
-    <script src="/dist/script.js" defer></script> 
+    
+    <script src="/static/js/d3.min.js" defer></script>
+    <script src="/static/js/mpld3.min.js" defer></script>
+    <script src="/dist/script.js" defer></script>
 </body>
 </html>

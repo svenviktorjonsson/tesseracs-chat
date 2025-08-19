@@ -173,6 +173,69 @@ async def serve_html_with_csrf(
 
 # --- Authentication & Page Routes ---
 
+@app.patch("/api/sessions/{session_id}", response_model=models.SessionResponseModel, tags=["Sessions"])
+async def update_session_name(
+    request: Request,
+    session_id: str = FastApiPath(..., description="The ID of the session to update."),
+    update_data: models.SessionUpdateRequest = Body(...),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user),
+    csrf_protect: CsrfProtect = Depends()
+):
+    await csrf_protect.validate_csrf(request)
+    user_id = user['id']
+    new_name = update_data.name
+
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
+        # Verify user has access to this session
+        cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user_id))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to modify this session.")
+
+        # Update the session name
+        cursor.execute(
+            "UPDATE sessions SET name = ?, last_accessed_at = datetime('now', 'utc') WHERE id = ?",
+            (new_name, session_id)
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+        
+        # Fetch the updated session to return it
+        cursor.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        updated_session_row = cursor.fetchone()
+        conn.commit()
+
+        if not updated_session_row:
+             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found after update.")
+
+        state.remove_memory_for_client(session_id)
+
+        session_data = dict(updated_session_row)
+        return models.SessionResponseModel(
+            id=session_data["id"],
+            name=session_data["name"],
+            created_at=session_data["created_at"],
+            last_active=session_data["last_accessed_at"],
+            host_user_id=session_data["host_user_id"]
+        )
+
+    except HTTPException as http_exc:
+        if conn: conn.rollback()
+        raise http_exc
+    except sqlite3.Error as db_err:
+        if conn: conn.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error while updating session.")
+    except Exception as e:
+        if conn: conn.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected error occurred.")
+    finally:
+        if conn: conn.close()
+
 @app.get("/login", response_class=HTMLResponse, name="get_login_page_route", tags=["Pages"])
 async def get_login_page_route(
     request: Request,
@@ -1936,11 +1999,9 @@ async def delete_session_route(
     Deletes a specific chat session (marks it as inactive).
     Requires the user to be authenticated and provide a valid CSRF token.
     """
-    print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - Attempt by user ID: {user.get('id')} ----")
     
     # Perform CSRF validation. This is crucial for state-changing operations.
     await csrf_protect.validate_csrf(request)
-    print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - CSRF validation PASSED ----")
 
     user_id = user.get('id') # Get the ID of the authenticated user
     conn = None
@@ -1948,7 +2009,6 @@ async def delete_session_route(
         conn = database.get_db_connection()
         cursor = conn.cursor()
 
-        print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - Fetching session data from DB.")
         # Fetch necessary session details, ensuring it's active
         cursor.execute("SELECT host_user_id, name FROM sessions WHERE id = ? AND is_active = 1", (session_id,))
         session_data = cursor.fetchone()
@@ -1958,58 +2018,40 @@ async def delete_session_route(
             cursor.execute("SELECT id, name, is_active FROM sessions WHERE id = ?", (session_id,))
             already_exists_data = cursor.fetchone()
             if not already_exists_data:
-                print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - Session ID truly not found in database.")
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
             else:
                 # Session exists but was already inactive. Consider this a "successful" delete.
                 # Use dictionary-style access for sqlite3.Row
                 name_val = already_exists_data['name'] if 'name' in already_exists_data.keys() else 'N/A'
                 is_active_val = already_exists_data['is_active'] if 'is_active' in already_exists_data.keys() else 'N/A'
-                print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - Session found but is already inactive. Name: {name_val}, Active: {is_active_val}")
                 conn.commit() # Commit if any prior transaction was started, though unlikely here
                 return # Return 204 as it's effectively "deleted" or already in that state
         
-        print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - Session data fetched: Type={type(session_data)}, Keys={list(session_data.keys()) if hasattr(session_data, 'keys') else 'N/A (not dict-like)'}")
-
-        # Use dictionary-style access for sqlite3.Row
-        # Ensure 'name' is in keys before accessing, or handle potential None if name can be NULL
         session_name_from_db = session_data["name"] if "name" in session_data.keys() and session_data["name"] is not None else None
-        # session_host_id = session_data["host_user_id"] # Access directly if needed for permission check
-
-        # Example permission check (if you want to re-enable it):
-        # if session_host_id != user_id:
-        #     print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - User {user_id} is not host ({session_host_id}). Forbidden.")
-        #     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to delete this session.")
-
+        
         current_time_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         
         deleted_session_name = f"Deleted: {session_name_from_db if session_name_from_db else session_id[:8]} ({current_time_iso})"
         
-        print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - Updating session to inactive. New name: '{deleted_session_name}'")
         cursor.execute(
             "UPDATE sessions SET is_active = 0, name = ?, last_accessed_at = ? WHERE id = ?",
             (deleted_session_name, current_time_iso, session_id)
         )
         
         if cursor.rowcount == 0:
-            # This case implies the session was active when fetched but couldn't be updated (e.g., race condition or DB issue).
-            print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - Session was found active but UPDATE operation affected 0 rows. This is unexpected.")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update session state during deletion.")
 
         conn.commit()
-        print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - Session marked as inactive by user ID: {user_id}.")
 
     except HTTPException as http_exc:
         if conn: conn.rollback()
         raise http_exc
     except sqlite3.Error as e_db:
         if conn: conn.rollback()
-        print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - SQLite Error ----")
         traceback.print_exc()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database error processing delete request: {e_db}")
-    except Exception as e_general: # This will catch other errors like KeyError or IndexError
+    except Exception as e_general:
         if conn: conn.rollback()
-        print(f"---- SERVER LOG: DELETE /api/sessions/{session_id} - Unexpected General Error ----")
         traceback.print_exc() 
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected server error occurred: {e_general}")
     finally:

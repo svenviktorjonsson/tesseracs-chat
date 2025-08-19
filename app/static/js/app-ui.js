@@ -162,6 +162,101 @@ export async function loadSidebarHTML(sidebarHtmlPath = '/static/_sidebar.html',
     }
 }
 
+/**
+ * Saves the new name of a session to the backend.
+ * @param {HTMLElement} linkElement The anchor element being edited.
+ * @param {string} sessionId The ID of the session.
+ * @param {string} originalName The original name before editing.
+ */
+async function saveSessionName(linkElement, sessionId, originalName) {
+    const newName = linkElement.textContent.trim();
+    linkElement.contentEditable = 'false';
+    linkElement.classList.remove('editing', 'bg-gray-600', 'p-1', 'rounded');
+
+    if (newName === originalName || newName === "") {
+        linkElement.textContent = originalName; // Revert if no change or empty
+        return;
+    }
+
+    const csrfToken = window.csrfTokenRaw;
+    if (!csrfToken || csrfToken === "%%CSRF_TOKEN_RAW%%") {
+        alert("Error: Security token missing. Cannot rename session.");
+        linkElement.textContent = originalName; // Revert on error
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/sessions/${sessionId}`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': csrfToken,
+            },
+            body: JSON.stringify({ name: newName }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.detail || "Failed to save session name.");
+        }
+        
+        const updatedSession = await response.json();
+        linkElement.title = `${updatedSession.name}\nLast active: ${new Date(updatedSession.last_active).toLocaleString()}`;
+        linkElement.textContent = updatedSession.name;
+
+        // If on the chat page for the session being renamed, update the main title
+        const chatTitle = document.getElementById('chat-session-title');
+        const currentSessionId = window.location.pathname.split('/')[2];
+        if (chatTitle && currentSessionId === sessionId) {
+            chatTitle.textContent = updatedSession.name;
+        }
+
+    } catch (error) {
+        console.error("Error saving session name:", error);
+        alert(`Error: ${error.message}`);
+        linkElement.textContent = originalName; // Revert on failure
+    }
+}
+
+
+/**
+ * Makes a session name in the sidebar editable.
+ * @param {HTMLElement} linkElement The anchor element for the session.
+ * @param {string} sessionId The ID of the session.
+ * @param {string} originalName The current name of the session.
+ */
+function makeSessionNameEditable(linkElement, sessionId, originalName) {
+    linkElement.contentEditable = 'true';
+    linkElement.classList.add('editing', 'bg-gray-600', 'p-1', 'rounded');
+    linkElement.focus();
+    
+    const range = document.createRange();
+    range.selectNodeContents(linkElement);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const handleKeyDown = (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            linkElement.blur(); // Triggers the save
+        } else if (event.key === 'Escape') {
+            linkElement.textContent = originalName;
+            linkElement.blur(); // Cancels and triggers blur without saving
+        }
+    };
+
+    const handleBlur = () => {
+        linkElement.classList.remove('editing', 'bg-gray-600', 'p-1', 'rounded');
+        saveSessionName(linkElement, sessionId, originalName);
+        linkElement.removeEventListener('blur', handleBlur);
+        linkElement.removeEventListener('keydown', handleKeyDown);
+    };
+
+    linkElement.addEventListener('blur', handleBlur);
+    linkElement.addEventListener('keydown', handleKeyDown);
+}
+
 export async function handleDeleteSession(sessionId, sessionName, apiEndpointForList, listElementId, chatPageBaseUrl) {
     if (!window.confirm(`Are you sure you want to delete the session "${sessionName}"? This action cannot be undone.`)) {
         return;
@@ -219,12 +314,6 @@ export async function handleDeleteSession(sessionId, sessionName, apiEndpointFor
     }
 }
 
-/**
- * Fetches and populates the list of user sessions in the sidebar.
- * @param {string} apiEndpoint - API endpoint to fetch sessions (e.g., '/api/sessions').
- * @param {string} listElementId - ID of the ul element to populate.
- * @param {string} chatPageBaseUrl - Base URL for constructing chat page links (e.g., '/chat/').
- */
 export async function populateSessionList(apiEndpoint = '/api/sessions', listElementId = 'session-list', chatPageBaseUrl = '/chat/') {
     const sessionListElement = document.getElementById(listElementId);
     if (!sessionListElement) {
@@ -262,14 +351,12 @@ export async function populateSessionList(apiEndpoint = '/api/sessions', listEle
                 }
 
                 const listItem = document.createElement('li');
-                // Added group for hover effects on children (like the delete button)
                 listItem.className = 'flex items-center justify-between pr-2 group hover:bg-gray-700 rounded-md transition-colors duration-100';
 
                 const link = document.createElement('a');
                 const base = chatPageBaseUrl.endsWith('/') ? chatPageBaseUrl : chatPageBaseUrl + '/';
                 link.href = `${base}${session.id}`;
                 
-                // Apply active state styling if this session's link matches the current page path
                 const currentPath = window.location.pathname;
                 const isActive = currentPath === link.pathname || currentPath === `${link.pathname}/`;
                 
@@ -281,7 +368,6 @@ export async function populateSessionList(apiEndpoint = '/api/sessions', listEle
                 let lastActiveDisplay = "Never";
                 if (session.last_active) {
                     try {
-                        // Format date for better readability; toLocaleString can be verbose
                         const date = new Date(session.last_active);
                         lastActiveDisplay = `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
                     } catch (e) {
@@ -294,18 +380,52 @@ export async function populateSessionList(apiEndpoint = '/api/sessions', listEle
                 
                 const deleteButton = document.createElement('button');
                 deleteButton.innerHTML = '&#x2715;'; // Multiplication X, a common delete symbol
-                deleteButton.className = 'ml-2 p-1 text-gray-500 hover:text-red-400 focus:outline-none rounded-full hover:bg-gray-600 transition-colors duration-150 ease-in-out text-xs opacity-0 group-hover:opacity-100 focus:opacity-100 flex-shrink-0'; 
+                deleteButton.className = 'ml-2 p-1 text-gray-500 hover:text-red-400 focus:outline-none rounded-full hover:bg-gray-600 transition-colors duration-150 ease-in-out text-xs opacity-0 group-hover:opacity-100 focus:opacity-100 flex-shrink-0';
                 deleteButton.title = `Delete session: ${session.name || 'Unnamed Session'}`;
                 deleteButton.setAttribute('aria-label', `Delete session: ${session.name || 'Unnamed Session'}`);
                 
                 deleteButton.onclick = (event) => {
-                    event.preventDefault(); // Prevent link navigation if button is somehow inside <a> or form
-                    event.stopPropagation(); // Prevent triggering link navigation or other parent events
+                    event.preventDefault();
+                    event.stopPropagation();
                     handleDeleteSession(session.id, session.name || 'Unnamed Session', apiEndpoint, listElementId, base);
                 };
 
                 listItem.appendChild(link);
                 listItem.appendChild(deleteButton);
+                
+                // --- This is the new part being added ---
+                listItem.addEventListener('contextmenu', (event) => {
+                    event.preventDefault();
+                    document.querySelectorAll('.custom-context-menu').forEach(menu => menu.remove());
+
+                    const contextMenu = document.createElement('div');
+                    contextMenu.className = 'custom-context-menu absolute bg-white text-gray-800 border border-gray-300 rounded-md shadow-lg z-50';
+                    contextMenu.style.top = `${event.clientY}px`;
+                    contextMenu.style.left = `${event.clientX}px`;
+
+                    const renameButton = document.createElement('button');
+                    renameButton.className = 'block w-full text-left px-4 py-2 text-sm hover:bg-gray-100';
+                    renameButton.textContent = 'Rename';
+                    renameButton.onclick = () => {
+                        makeSessionNameEditable(link, session.id, session.name);
+                        contextMenu.remove();
+                    };
+
+                    contextMenu.appendChild(renameButton);
+                    document.body.appendChild(contextMenu);
+
+                    const closeMenu = (e) => {
+                        if (!contextMenu.contains(e.target)) {
+                            contextMenu.remove();
+                            document.removeEventListener('click', closeMenu);
+                        }
+                    };
+                    setTimeout(() => {
+                        document.addEventListener('click', closeMenu);
+                    }, 0);
+                });
+                // --- End of new part ---
+
                 sessionListElement.appendChild(listItem);
             });
         }

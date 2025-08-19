@@ -7,7 +7,7 @@
     "interactive": false
   },
   "python": {
-    "image": "python:3.11-slim",
+    "image": "python-runner-with-uv",
     "filename": "script.py",
     "command": ["stdbuf", "-o0", "python", "-u", "/app/script.py"],
     "executable": true,
