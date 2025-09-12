@@ -100,15 +100,24 @@ async def read_from_socket_and_stream(
     websocket: WebSocket,
     code_block_id: str,
     container: Container,
-    socket: socket.socket
+    socket: socket.socket,
+    timeout_seconds: int  # <-- MODIFICATION: Added timeout parameter
 ):
-    # This function remains unchanged...
     import struct
     buffer = b''
     try:
         while True:
             try:
-                raw_data = await asyncio.to_thread(socket.recv, 8192)
+                # --- MODIFICATION START: Wrap the blocking call in a timeout ---
+                raw_data = await asyncio.wait_for(
+                    asyncio.to_thread(socket.recv, 8192),
+                    timeout=timeout_seconds
+                )
+                # --- MODIFICATION END ---
+            except asyncio.TimeoutError:
+                # Re-raise the timeout to be caught by the calling function
+                print(f"[SocketStreamer-{code_block_id}] Inactivity timeout after {timeout_seconds}s.")
+                raise
             except PIPE_ENDED_ERROR:
                 print(f"[SocketStreamer-{code_block_id}] Container finished normally (pipe ended)")
                 break
@@ -145,6 +154,9 @@ async def read_from_socket_and_stream(
                         await send_ws_message(websocket, "code_waiting_input", {"code_block_id": code_block_id, "prompt": chunk_str})
 
     except Exception as e:
+        # Re-raising asyncio.TimeoutError will be caught here, but we pass it up
+        if isinstance(e, asyncio.TimeoutError):
+            raise
         print(f"[SocketStreamer-{code_block_id}] Unexpected error in stream: {e}")
         traceback.print_exc()
     finally:
@@ -200,6 +212,8 @@ async def read_from_socket_and_stream(
         except Exception as socket_error:
             print(f"[SocketStreamer-{code_block_id}] Error closing socket: {socket_error}")
 
+
+
 async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_block_id: str, language: str, code: str):
     print(f"[DockerRun-{code_block_id}] === STARTING DOCKER CODE EXECUTION ===")
     
@@ -225,9 +239,13 @@ async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_b
         code = re.sub(r'^\s*plt\.show\(\s*\)\s*$', '', code, flags=re.MULTILINE)
         
         packages_to_install = find_python_imports(code)
+        required_plot_packages = {'matplotlib', 'mpld3'}
+        for pkg in required_plot_packages:
+            if pkg not in packages_to_install:
+                packages_to_install.append(pkg)
+
         volumes_to_mount['tesseracs-uv-cache'] = {'bind': '/root/.cache/uv', 'mode': 'rw'}
         
-        # --- MODIFIED: Harness now uses the correct mpld3.fig_to_dict() function ---
         python_harness_script = f"""
 import sys
 import json
@@ -252,7 +270,6 @@ finally:
         for i in fignums:
             fig = plt.figure(i)
             try:
-                # 1. Convert the figure to a dictionary using the correct function
                 plot_dict = mpld3.fig_to_dict(fig)
                 all_plots_data.append(plot_dict)
             except Exception as e:
@@ -261,15 +278,10 @@ finally:
                 plt.close(fig)
         
         if all_plots_data:
-            # 2. Save the list of dictionaries to the file using the json library
             with open('/app/plot_output.json', 'w') as f:
                 json.dump(all_plots_data, f)
 """
         code_to_run = python_harness_script
-        # --- End of modification ---
-        # --- End of modification ---
-        # --- End of modification ---
-
         install_command_parts = []
         if packages_to_install:
             install_command_parts.append(f"uv pip install --system --no-cache-dir {' '.join(packages_to_install)}")
@@ -307,17 +319,18 @@ finally:
                 }
 
             loop = asyncio.get_running_loop()
+            # --- MODIFICATION: Pass timeout and remove wait_for wrapper ---
             reader_task = loop.create_task(
-                read_from_socket_and_stream(loop, websocket, code_block_id, container, interactive_socket)
+                read_from_socket_and_stream(loop, websocket, code_block_id, container, interactive_socket, timeout_seconds=config.DOCKER_TIMEOUT_SECONDS)
             )
-            await asyncio.wait_for(reader_task, timeout=config.DOCKER_TIMEOUT_SECONDS)
-
+            await reader_task
         else: # Batch mode for non-interactive
             container.wait(timeout=config.DOCKER_TIMEOUT_SECONDS)
 
     except asyncio.TimeoutError:
-        print(f"[DockerRun-{code_block_id}] Session timed out after {config.DOCKER_TIMEOUT_SECONDS}s.")
-        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": 137, "error": "Execution timed out."})
+        # This block now catches the inactivity timeout from the reader task
+        print(f"[DockerRun-{code_block_id}] Session timed out after {config.DOCKER_TIMEOUT_SECONDS}s of inactivity.")
+        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": 137, "error": "Execution timed out due to inactivity."})
     except Exception as e:
         error_payload = f"Server Execution Error: {e}"
         print(f"[DockerRun-{code_block_id}] CRITICAL ERROR: {error_payload}")

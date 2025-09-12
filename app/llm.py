@@ -1,10 +1,10 @@
+# In app/llm.py
+# Replace the entire file content with this updated version.
+
 import sys
 import os
 import traceback
 from typing import List, Callable, Optional, Any
-
-# Add these new imports for the safety settings
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
@@ -20,16 +20,15 @@ from . import config
 
 # --- System Prompt Definition ---
 SYSTEM_PROMPT = (
-    "You are a helpful and skilled AI assistant with expertise in programming and code generation. "
-    "Your responses should be clear, concise, and directly address the user's query. "
-    "When generating a plot, you may inform the user that it will be interactive.\n\n"
-    "## Rules for Code Generation:\n"
-    "1.  **Primary Goal:** Your main goal is to provide accurate, runnable code snippets in response to user requests.\n"
-    "2.  **No Sample Outputs:** NEVER provide a sample output in plain text (e.g., in a separate block or after the code). The user has a tool to run the code and will see the output themselves. Your task is to provide ONLY the code.\n"
-    "3.  **Single Code Block:** Unless the user explicitly asks for multiple examples or variations, provide only ONE code block that best solves their problem.\n"
-    "4.  **Clarity:** Ensure the code is well-formatted and easy to understand. Use standard markdown for code blocks (e.g., ```python ... ```).\n"
-    "5.  **Thinking Process:** If you need to explain your reasoning or the steps you're taking, use the special `\\think` command at the beginning of your response. This will place your explanation in a separate, collapsible 'thinking' area.\n"
-    "6.  **Generating Plots:** To create plots, you must use the `matplotlib.pyplot` library. The system can capture and display multiple plots from a single code block."
+    "You are a versatile and helpful AI assistant with expertise in programming and data visualization.\n\n"
+    "## Your Core Directives:\n"
+    "1.  **Interpret the User's Goal:** First, determine if the user is asking for information, a plot, or code in a specific language.\n"
+    "2.  **Provide Direct Answers:** For general questions, facts, explanations, or summaries, provide the answer directly using clear text and Markdown formatting (like tables and lists).\n"
+    "3.  **Generate Code in the Requested Language:** If the user asks for a script, a webpage, or mentions a language (e.g., 'Python', 'HTML', 'JavaScript'), you MUST generate code in that specific language. Use the correct language identifier in the fenced code block (e.g., ```python, ```html).\n"
+    "4.  **Code-Only Responses:** When the user's request is primarily for a code snippet, your response must contain ONLY the Markdown-fenced code block. Do not include any extra explanatory text or conversational phrases before or after the code block.\n"
+    "5.  **Never Wrap Code in Python:** Your environment can render `html` code blocks directly. Therefore, NEVER write Python code to print or display another language's code (e.g., do not use `IPython.display` or `print(html_code)`). If the final desired output is HTML, write it in an `html` code block.\n"
+    "6.  **Use `matplotlib` for Plots:** All plotting must be done using the `matplotlib.pyplot` library in a Python code block. The system will render the plots automatically.\n"
+    "7.  **Use the Thinking Process:** For complex requests, explain your reasoning using the `\\think` command at the start of your response."
 )
 
 
@@ -43,7 +42,7 @@ def get_model(
     Initializes and returns an LLM instance.
     - User-provided api_key takes precedence.
     - For "openai_compatible", if no user api_key, it checks the ENV var defined in config.
-    - For "google_genai" and "anthropic", api_key MUST be provided (either by user or system ENV if that was the design, but current design is user-only for these).
+    - For "google_genai" and "anthropic", api_key MUST be provided.
     """
     print(f"LLM: Attempting to get model for provider='{provider_id}', model='{model_id}', base_url_override='{base_url_override}'")
     provider_config = config.get_provider_config(provider_id)
@@ -102,13 +101,7 @@ def get_model(
             
             model_instance = ChatGoogleGenerativeAI(
                 model=model_id,
-                google_api_key=resolved_api_key,
-                safety_settings={
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                }
+                google_api_key=resolved_api_key
             )
             return model_instance
 

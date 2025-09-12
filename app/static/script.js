@@ -383,7 +383,7 @@ function setupNewAiTurn() {
 
     // This map is for tracking blocks within a single turn and MUST be cleared.
     activeStreamingCodeBlocks.clear();
-    // The main counter variable is NOT reset here, allowing it to be session-wide.
+    // streamingCodeBlockCounter is now session-wide and is NOT reset here.
 
     currentAiTurnContainer = null;
     currentThinkingArea = null;
@@ -482,10 +482,10 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
     if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
 
     const KATEX_PLACEHOLDER_PREFIX_HISTORICAL = `%%HISTORICAL_KATEX_PLACEHOLDER_${turnIdSuffix}_`;
+    const codeBlockRegex = /```(\w*)\n([\s\S]*?)\n```/g;
 
     let contentForProcessing = contentString;
     let historicalCodeBlockCounter = 0;
-    const codeBlockRegex = /```(\w*)\n([\s\S]*?)\n```/g;
     const extractedCodeBlocks = [];
     let tempContentForCodeExtraction = contentForProcessing;
     let contentAfterCodeExtraction = "";
@@ -495,23 +495,27 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
     codeBlocksDivElement.innerHTML = '';
 
     while ((matchCode = codeBlockRegex.exec(tempContentForCodeExtraction)) !== null) {
-        historicalCodeBlockCounter++;
-        const language = matchCode[1] || 'plaintext';
+        const language = (matchCode[1] || 'plaintext').toLowerCase();
         const originalCode = matchCode[2];
         const placeholder = `%%HISTORICAL_CODE_BLOCK_${historicalCodeBlockCounter}%%`;
 
-        const blockId = `code-block-turn${turnIdSuffix}-${historicalCodeBlockCounter}`;
-
-        extractedCodeBlocks.push({ 
-            language, 
-            originalCode, 
-            placeholder, 
-            index: historicalCodeBlockCounter,
-            id: blockId 
-        });
-
         contentAfterCodeExtraction += tempContentForCodeExtraction.substring(lastCodeMatchEndIndex, matchCode.index);
-        contentAfterCodeExtraction += placeholder;
+
+        if (language === 'markdown' || language === 'md') {
+            contentAfterCodeExtraction += originalCode;
+        } else {
+            historicalCodeBlockCounter++;
+            const blockId = `code-block-turn${turnIdSuffix}-${historicalCodeBlockCounter}`;
+
+            extractedCodeBlocks.push({ 
+                language, 
+                originalCode, 
+                placeholder, 
+                index: historicalCodeBlockCounter,
+                id: blockId 
+            });
+            contentAfterCodeExtraction += placeholder;
+        }
         lastCodeMatchEndIndex = codeBlockRegex.lastIndex;
     }
     contentAfterCodeExtraction += tempContentForCodeExtraction.substring(lastCodeMatchEndIndex);
@@ -519,13 +523,9 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
 
     extractedCodeBlocks.forEach(block => {
         const finalCodeContent = editedCodeBlocks[block.id] || block.originalCode;
-
-        // CORRECTED CALL: Pass BOTH the final content for display AND the true original content for the dataset
         createCodeBlock(block.language, finalCodeContent, block.originalCode, turnIdSuffix, block.index, codeBlocksDivElement, false);
-
         initializeCodeBlockHistory(block.id, finalCodeContent);
         const replacementHTML = `<a href="#${block.id}" class="code-block-link text-blue-600 hover:underline">[Code Block ${block.index}]</a>`;
-
         contentForProcessing = contentForProcessing.replace(block.placeholder, replacementHTML);
     });
 
@@ -595,6 +595,7 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
     if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
 
     const codeBlockRegex = /```(\w*)\n?([\s\S]*?)(?:\n```|$)/g;
+
     let match;
     let lastIndex = 0;
     let contentWithPlaceholders = '';
@@ -606,38 +607,46 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
 
         contentWithPlaceholders += contentString.substring(lastIndex, startIndex);
 
-        if (!activeStreamingCodeBlocks.has(startIndex)) {
-            streamingCodeBlockCounter++;
-            // Create the new block, passing the code as both the display content AND the original dataset content
-            const newBlockElement = createCodeBlock(
-                language || 'plaintext', 
-                code, 
-                code, // The new originalCodeForDataset argument
-                turnIdSuffix, 
-                streamingCodeBlockCounter, 
-                codeBlocksDivElement, 
-                true
-            );
-            activeStreamingCodeBlocks.set(startIndex, {
-                blockId: newBlockElement.id,
-                language: language || 'plaintext',
-                content: code,
-                isComplete: isComplete
-            });
-        } else {
-            const blockData = activeStreamingCodeBlocks.get(startIndex);
-            const newLanguage = language || 'plaintext';
-            blockData.language = newLanguage;
-            blockData.content = code;
-            blockData.isComplete = isComplete;
-            updateStreamingCodeBlockContent(blockData.blockId, newLanguage, code, isComplete);
-        }
+        const safeLanguage = (language || 'plaintext').trim().toLowerCase();
 
-        const blockData = activeStreamingCodeBlocks.get(startIndex);
-        const blockNumber = blockData.blockId.split('-').pop();
-        const blockId = `code-block-turn${turnIdSuffix}-${blockNumber}`;
-        const linkHTML = `<a href="#${blockId}" class="code-block-link text-blue-600 hover:underline">[Code Block ${blockNumber}]</a>`;
-        contentWithPlaceholders += linkHTML;
+        if (safeLanguage === 'markdown' || safeLanguage === 'md') {
+            contentWithPlaceholders += code;
+            if (isComplete) {
+                contentWithPlaceholders += '\n';
+            }
+        } else {
+            if (!activeStreamingCodeBlocks.has(startIndex)) {
+                streamingCodeBlockCounter++;
+                const newBlockElement = createCodeBlock(
+                    language || 'plaintext', 
+                    code, 
+                    code,
+                    turnIdSuffix, 
+                    streamingCodeBlockCounter, 
+                    codeBlocksDivElement, 
+                    true
+                );
+                activeStreamingCodeBlocks.set(startIndex, {
+                    blockId: newBlockElement.id,
+                    language: language || 'plaintext',
+                    content: code,
+                    isComplete: isComplete
+                });
+            } else {
+                const blockData = activeStreamingCodeBlocks.get(startIndex);
+                const newLanguage = language || 'plaintext';
+                blockData.language = newLanguage;
+                blockData.content = code;
+                blockData.isComplete = isComplete;
+                updateStreamingCodeBlockContent(blockData.blockId, newLanguage, code, isComplete);
+            }
+
+            const blockData = activeStreamingCodeBlocks.get(startIndex);
+            const blockNumber = blockData.blockId.split('-').pop();
+            const blockId = `code-block-turn${turnIdSuffix}-${blockNumber}`;
+            const linkHTML = `<a href="#${blockId}" class="code-block-link text-blue-600 hover:underline">[Code Block ${blockNumber}]</a>`;
+            contentWithPlaceholders += linkHTML;
+        }
         lastIndex = codeBlockRegex.lastIndex;
     }
 
@@ -1024,6 +1033,9 @@ function createPlotBlock(codeBlockId, plotData, uniquePlotBlockId, plotIndex) {
     renderPlotWhenReady(plotDivId, plotData);
 }
 
+// In app/static/script.js
+// Replace the existing renderPlotWhenReady function with this one.
+
 function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
     const startTime = Date.now();
     const interval = setInterval(() => {
@@ -1031,154 +1043,41 @@ function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
             clearInterval(interval);
             
             try {
-                // Render the plot first
+                // Let mpld3 handle the initial drawing.
                 mpld3.draw_figure(plotDivId, plotData);
-                
-            } catch (error) {
-                console.error('Error in mpld3.draw_figure:', error);
-                mpld3.draw_figure(plotDivId, plotData);
-            }
-            
-            // Apply styling fixes AFTER successful render
-            setTimeout(() => {
+
+                // --- NEW LOGIC START: Make the generated SVG responsive ---
                 const plotDiv = document.getElementById(plotDivId);
-                if (!plotDiv) return;
-                
-                const svgElement = plotDiv.querySelector('svg');
-                if (!svgElement) return;
-                
-                // Get original dimensions
-                const originalWidth = parseFloat(svgElement.getAttribute('width')) || 800;
-                const originalHeight = parseFloat(svgElement.getAttribute('height')) || 600;
-                
-                // Set up responsive scaling with proper centering
-                svgElement.setAttribute('viewBox', `0 0 ${originalWidth} ${originalHeight}`);
-                svgElement.removeAttribute('width');
-                svgElement.removeAttribute('height');
-                svgElement.style.width = '100%';
-                svgElement.style.height = 'auto';
-                svgElement.style.maxWidth = '100%';
-                svgElement.style.display = 'block';
-                svgElement.style.margin = '0 auto';
-                svgElement.style.backgroundColor = 'white';
-                
-                // Remove any transform on the SVG itself that might cause offset
-                svgElement.removeAttribute('transform');
-                svgElement.style.transform = 'none';
-                
-                // Fix text visibility
-                const textElements = svgElement.querySelectorAll('text');
-                textElements.forEach(text => {
-                    const currentFill = text.getAttribute('fill');
-                    if (!currentFill || currentFill === 'white' || currentFill === '#ffffff' || currentFill === 'none') {
-                        text.setAttribute('fill', '#333333');
-                    }
-                });
-                
-                // Fix axhline and axvline positioning using the plot data structure
-                if (plotData && plotData.axes && plotData.axes.length > 0) {
-                    const axesData = plotData.axes[0]; // Get the first (main) axes
-                    
-                    if (axesData.xlim && axesData.ylim) {
-                        const [xmin, xmax] = axesData.xlim;
-                        const [ymin, ymax] = axesData.ylim;
-                        
-                        // Find the axes group in the SVG
-                        const axesGroup = svgElement.querySelector('.mpld3-axes');
-                        if (axesGroup) {
-                            // Calculate the plot area bounds
-                            const axesTransform = axesGroup.getAttribute('transform');
-                            let plotX = 0, plotY = 0;
+                if (plotDiv) {
+                    const svg = plotDiv.querySelector('svg');
+                    if (svg) {
+                        const originalWidth = svg.getAttribute('width');
+                        const originalHeight = svg.getAttribute('height');
+
+                        if (originalWidth && originalHeight) {
+                            // Set the viewBox to the original dimensions
+                            svg.setAttribute('viewBox', `0 0 ${originalWidth} ${originalHeight}`);
+                            // Ensure aspect ratio is maintained
+                            svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
                             
-                            if (axesTransform) {
-                                const translateMatch = axesTransform.match(/translate\(([^,]+),([^)]+)\)/);
-                                if (translateMatch) {
-                                    plotX = parseFloat(translateMatch[1]);
-                                    plotY = parseFloat(translateMatch[2]);
-                                }
-                            }
-                            
-                            // Get plot dimensions from the data or estimate
-                            const plotWidth = (axesData.bbox && axesData.bbox[2]) ? axesData.bbox[2] * originalWidth : originalWidth * 0.7;
-                            const plotHeight = (axesData.bbox && axesData.bbox[3]) ? axesData.bbox[3] * originalHeight : originalHeight * 0.7;
-                            
-                            // Fix reference lines within this axes group
-                            const lines = axesGroup.querySelectorAll('line');
-                            lines.forEach(line => {
-                                const stroke = line.getAttribute('stroke');
-                                const strokeDasharray = line.getAttribute('stroke-dasharray');
-                                const opacity = line.getAttribute('opacity');
-                                
-                                // Identify reference lines (black dashed lines)
-                                if (stroke === 'black' && strokeDasharray && (opacity === '0.5' || !opacity)) {
-                                    const x1 = parseFloat(line.getAttribute('x1') || 0);
-                                    const x2 = parseFloat(line.getAttribute('x2') || 0);
-                                    const y1 = parseFloat(line.getAttribute('y1') || 0);
-                                    const y2 = parseFloat(line.getAttribute('y2') || 0);
-                                    
-                                    // Check if this is a horizontal line (axhline)
-                                    if (Math.abs(y2 - y1) < 5) {
-                                        // Calculate the correct screen Y for data Y = 0.5
-                                        const dataY = 0.5;
-                                        const normalizedY = (dataY - ymin) / (ymax - ymin);
-                                        const screenY = plotY + plotHeight * (1 - normalizedY); // Flip Y axis
-                                        
-                                        // Set line to span the full plot width at the correct Y position
-                                        line.setAttribute('x1', plotX);
-                                        line.setAttribute('x2', plotX + plotWidth);
-                                        line.setAttribute('y1', screenY);
-                                        line.setAttribute('y2', screenY);
-                                    }
-                                    // Check if this is a vertical line (axvline)
-                                    else if (Math.abs(x2 - x1) < 5) {
-                                        // Calculate the correct screen X for data X = 0
-                                        const dataX = 0;
-                                        const normalizedX = (dataX - xmin) / (xmax - xmin);
-                                        const screenX = plotX + plotWidth * normalizedX;
-                                        
-                                        // Set line to span the full plot height at the correct X position
-                                        line.setAttribute('x1', screenX);
-                                        line.setAttribute('x2', screenX);
-                                        line.setAttribute('y1', plotY);
-                                        line.setAttribute('y2', plotY + plotHeight);
-                                    }
-                                }
-                            });
+                            // Remove fixed dimensions and use CSS for responsive scaling
+                            svg.removeAttribute('width');
+                            svg.removeAttribute('height');
+                            svg.style.width = '100%';
+                            svg.style.height = 'auto';
                         }
                     }
                 }
-                
-                // Position toolbar properly to avoid being cut off
-                const toolbar = svgElement.querySelector('.mpld3-toolbar');
-                if (toolbar) {
-                    toolbar.style.pointerEvents = 'auto';
-                    toolbar.style.display = 'block';
-                    
-                    // Position toolbar in top-left corner with safe offset to avoid clipping
-                    toolbar.setAttribute('transform', `translate(15, 15)`);
-                    
-                    // Ensure toolbar has proper z-index and visibility
-                    toolbar.style.zIndex = '1000';
-                    
-                    // Make sure toolbar buttons are properly styled and visible
-                    const toolbarButtons = toolbar.querySelectorAll('image, rect');
-                    toolbarButtons.forEach(btn => {
-                        btn.style.pointerEvents = 'auto';
-                        btn.style.cursor = 'pointer';
-                    });
+                // --- NEW LOGIC END ---
+
+            } catch (error) {
+                console.error('Error during mpld3.draw_figure:', error);
+                const plotDiv = document.getElementById(plotDivId);
+                if (plotDiv) {
+                    plotDiv.textContent = "Error rendering plot. See browser console for details.";
                 }
-                
-                // Enable proper mouse interactions
-                svgElement.style.pointerEvents = 'auto';
-                svgElement.addEventListener('wheel', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                }, { passive: false });
-                
-                console.log('Plot rendered and styled successfully');
-                
-            }, 200);
-            
+            }
+
         } else if (Date.now() - startTime > timeout) {
             clearInterval(interval);
             const plotDiv = document.getElementById(plotDivId);
@@ -1404,6 +1303,44 @@ function createOutputHeaderHTML(blockNumber, statusText = 'Running...', statusCl
     `;
 }
 
+
+function setupIframeResizing(iframe) {
+    iframe.setAttribute('scrolling', 'no');
+    iframe.style.overflow = 'hidden';
+
+    iframe.onload = () => {
+        try {
+            const iWin = iframe.contentWindow;
+            const iDoc = iWin.document;
+
+            const updateHeight = () => {
+                if (!iDoc || !iDoc.body) return;
+                // The +2 is a small buffer to prevent scrollbars from appearing in some edge cases
+                const newHeight = Math.max(
+                    iDoc.body.scrollHeight, iDoc.documentElement.scrollHeight,
+                    iDoc.body.offsetHeight, iDoc.documentElement.offsetHeight
+                ) + 2;
+                iframe.style.height = `${newHeight}px`;
+            };
+
+            updateHeight(); // Initial resize
+
+            // Use ResizeObserver to automatically adjust height if iframe content changes
+            const observer = new ResizeObserver(updateHeight);
+            if (iDoc.body) observer.observe(iDoc.body);
+
+            // Fallback resizes for dynamic content that might not trigger observer
+            setTimeout(updateHeight, 150);
+            setTimeout(updateHeight, 500);
+
+        } catch (e) {
+            console.error("Error resizing iframe:", e);
+            // Fallback to a reasonable default height on error
+            iframe.style.height = '400px'; 
+        }
+    };
+}
+
 async function handleRunStopCodeClick(event) {
     const button = event.currentTarget;
     const container = button.closest('.block-container');
@@ -1414,61 +1351,92 @@ async function handleRunStopCodeClick(event) {
     const codeElement = container.querySelector('code');
     const code = codeElement ? codeElement.textContent || '' : '';
 
-    saveCodeBlockContent(codeBlockId, code);
-
-    let outputContainer = document.getElementById(`output-for-${codeBlockId}`);
-    if (!outputContainer) {
-        outputContainer = document.createElement('div');
-        outputContainer.id = `output-for-${codeBlockId}`;
-        outputContainer.className = 'block-container';
-
-        const blockNumber = codeBlockId.split('-').pop();
-
-        const outputHeader = document.createElement('div');
-        outputHeader.className = 'block-header';
-        outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
-        const outputConsoleDiv = document.createElement('div');
-        outputConsoleDiv.className = 'block-output-console';
-        const outputPre = document.createElement('pre');
-        outputConsoleDiv.appendChild(outputPre);
-
-        outputContainer.appendChild(outputHeader);
-        outputContainer.appendChild(outputConsoleDiv);
-
-        container.insertAdjacentElement('afterend', outputContainer);
-
-        outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-            const isHidden = outputConsoleDiv.classList.toggle('hidden');
-            e.target.textContent = isHidden ? 'Show' : 'Hide';
-        });
-        outputContainer.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
-            try {
-                await navigator.clipboard.writeText(outputPre.textContent || '');
-                e.target.textContent = 'Copied!';
-                setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-            } catch (err) { console.error('Failed to copy output:', err); }
-        });
-    } else {
-        const outputPre = outputContainer.querySelector('.block-output-console pre, .block-output-console iframe');
-        if (outputPre) {
-            if (outputPre.tagName === 'IFRAME') {
-                const newPre = document.createElement('pre');
-                outputPre.parentNode.replaceChild(newPre, outputPre);
-            } else {
-                outputPre.textContent = '';
-                outputPre.innerHTML = '';
-                if (outputPre.htmlBuffer) {
-                    delete outputPre.htmlBuffer;
-                }
+    // --- FIX: Handle STOP action ---
+    if (button.dataset.status === 'running') {
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+            console.log(`Sending stop_code for ${codeBlockId}`);
+            websocket.send(JSON.stringify({
+                type: 'stop_code',
+                payload: { code_block_id: codeBlockId }
+            }));
+            // The `code_finished` message from the server will reset the button state.
+            // Visually update the output header to show it's stopping.
+            const outputContainer = document.getElementById(`output-for-${codeBlockId}`);
+            if (outputContainer) {
+                updateHeaderStatus(outputContainer, 'Stopping...', 'running');
             }
         }
-        const statusSpan = outputContainer.querySelector('.block-status');
-        if (statusSpan) {
-            statusSpan.textContent = 'Running...';
-            statusSpan.className = 'code-status-span running';
-        }
+        return; // Exit after sending the stop command.
+    }
+
+    // --- FIX: Handle RUN action ---
+    saveCodeBlockContent(codeBlockId, code);
+
+    // Always create a fresh output container, removing any old one.
+    let outputContainer = document.getElementById(`output-for-${codeBlockId}`);
+    if (outputContainer) {
+        outputContainer.remove();
     }
     
+    outputContainer = document.createElement('div');
+    outputContainer.id = `output-for-${codeBlockId}`;
+    outputContainer.className = 'block-container';
+    const blockNumber = codeBlockId.split('-').pop();
+    const outputHeader = document.createElement('div');
+    outputHeader.className = 'block-header';
+    const outputConsoleDiv = document.createElement('div');
+    outputConsoleDiv.className = 'block-output-console';
+    outputContainer.appendChild(outputHeader);
+    outputContainer.appendChild(outputConsoleDiv);
+    container.insertAdjacentElement('afterend', outputContainer);
+
+    if (language === 'html') {
+        outputHeader.innerHTML = createOutputHeaderHTML(blockNumber, 'Rendered HTML', 'success');
+        const iframe = document.createElement('iframe');
+        iframe.className = 'html-render-iframe';
+        const style = `<style>body { margin: 0; background-color: white; color: black; font-family: sans-serif; padding: 1rem; }</style>`;
+        iframe.srcdoc = style + code;
+
+        // --- MODIFICATION START ---
+        setupIframeResizing(iframe); // Call the new helper function
+        // --- MODIFICATION END ---
+
+        outputConsoleDiv.appendChild(iframe);
+
+        // Save the rendered HTML to the database for chat history.
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+            const codeBlockParts = codeBlockId.split('-');
+            const extractedTurnId = codeBlockParts[2].replace('turn', '');
+            websocket.send(JSON.stringify({
+                type: 'save_code_result',
+                payload: {
+                    code_block_id: codeBlockId, language: language, code_content: code,
+                    html_content: code, execution_status: 'completed', turn_id: parseInt(extractedTurnId)
+                }
+            }));
+        }
+        return; // Exit here, no need to change button state as it's instant.
+    }
+    
+    // --- Existing logic for other languages ---
+    outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
+    const outputPre = document.createElement('pre');
+    outputConsoleDiv.appendChild(outputPre);
+    
+    // Add event listeners for the new output block's buttons
+    outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+        const isHidden = outputConsoleDiv.classList.toggle('hidden');
+        e.target.textContent = isHidden ? 'Show' : 'Hide';
+    });
+    outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
+        try {
+            await navigator.clipboard.writeText(outputPre.textContent || '');
+            e.target.textContent = 'Copied!';
+            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+        } catch (err) { console.error('Failed to copy output:', err); }
+    });
+    
+    // Set button to "running" state
     button.dataset.status = 'running';
     button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><rect width="100" height="100" rx="15"/></svg>`;
     button.title = 'Stop Execution';
@@ -1479,13 +1447,10 @@ async function handleRunStopCodeClick(event) {
             payload: { code_block_id: codeBlockId, language: language, code: code }
         }));
         
+        // Scroll to the new output block
         setTimeout(() => {
-            const outputBlock = document.getElementById(`output-for-${codeBlockId}`);
-            if (outputBlock) {
-                outputBlock.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'start'
-                });
+            if (outputContainer) {
+                outputContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }
         }, 100);
     } else {
@@ -1866,7 +1831,7 @@ async function loadAndDisplayChatHistory(sessionId) {
         return;
     }
 
-    streamingCodeBlockCounter = 0;
+    // Do NOT reset the counter here. It will be set after history is loaded.
     chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>';
 
     try {
@@ -1904,6 +1869,18 @@ async function loadAndDisplayChatHistory(sessionId) {
                 Prism.highlightAll();
             }
 
+            // New logic to set the streaming counter correctly after history loads
+            const allCodeBlocks = chatHistoryDiv.querySelectorAll('.block-container[id^="code-block-turn"]');
+            let maxBlockIndex = 0;
+            allCodeBlocks.forEach(block => {
+                const parts = block.id.split('-');
+                const blockIndex = parseInt(parts[parts.length - 1], 10);
+                if (!isNaN(blockIndex) && blockIndex > maxBlockIndex) {
+                    maxBlockIndex = blockIndex;
+                }
+            });
+            streamingCodeBlockCounter = maxBlockIndex; // Set the global counter
+
             chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
         }
 
@@ -1912,6 +1889,7 @@ async function loadAndDisplayChatHistory(sessionId) {
         chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An unexpected error occurred while loading history: ${escapeHTML(error.message)}</p>`;
     }
 }
+
 // --- WebSocket Connection ---
 function resetAllCodeButtonsOnErrorOrClose() {
     const playIconSvg = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
