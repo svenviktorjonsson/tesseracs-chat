@@ -15,11 +15,29 @@ css_dir = os.path.join(assets_dir, 'css')
 fonts_dir = os.path.join(assets_dir, 'fonts')
 js_dir = os.path.join(static_dir, 'js')
 
+# --- Base URL for KaTeX assets ---
+KATEX_VERSION = "0.16.9"
+KATEX_BASE_URL = f"https://cdn.jsdelivr.net/npm/katex@{KATEX_VERSION}/dist/"
+
+# --- List of KaTeX font files to download ---
+katex_fonts = [
+    "KaTeX_Main-Regular.woff2", "KaTeX_Main-Italic.woff2", "KaTeX_Main-Bold.woff2",
+    "KaTeX_Math-Italic.woff2", "KaTeX_Math-BoldItalic.woff2",
+    "KaTeX_Size1-Regular.woff2", "KaTeX_Size2-Regular.woff2",
+    "KaTeX_Size3-Regular.woff2", "KaTeX_Size4-Regular.woff2",
+    "KaTeX_AMS-Regular.woff2", "KaTeX_Caligraphic-Regular.woff2", "KaTeX_Caligraphic-Bold.woff2",
+    "KaTeX_Fraktur-Regular.woff2", "KaTeX_Fraktur-Bold.woff2",
+    "KaTeX_SansSerif-Regular.woff2", "KaTeX_SansSerif-Bold.woff2", "KaTeX_SansSerif-Italic.woff2",
+    "KaTeX_Script-Regular.woff2", "KaTeX_Typewriter-Regular.woff2",
+    "KaTeX_Main-Regular.woff", "KaTeX_Math-Italic.woff", "KaTeX_Caligraphic-Regular.woff",
+    "KaTeX_Main-Regular.ttf", "KaTeX_Math-Italic.ttf", "KaTeX_Caligraphic-Regular.ttf"
+]
+
 # --- Files to download directly from the web ---
 files_to_download = [
     {
         'name': 'katex.min.css',
-        'url': 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css',
+        'url': f"{KATEX_BASE_URL}katex.min.css", # CORRECTED: Use forward slashes for URL
         'dest': os.path.join(css_dir, 'katex.min.css')
     },
     {
@@ -29,10 +47,19 @@ files_to_download = [
     },
     {
         'name': 'd3.min.js',
-        'url': 'https://cdnjs.cloudflare.com/ajax/libs/d3/4.13.0/d3.min.js',  # D3 v4 for mpld3 compatibility
+        'url': 'https://cdnjs.cloudflare.com/ajax/libs/d3/4.13.0/d3.min.js',
         'dest': os.path.join(js_dir, 'd3.min.js')
     }
 ]
+
+# Add all the KaTeX font files to the download list
+for font_filename in katex_fonts:
+    files_to_download.append({
+        'name': font_filename,
+        'url': f"{KATEX_BASE_URL}fonts/{font_filename}", # CORRECTED: Use forward slashes for URL
+        'dest': os.path.join(fonts_dir, font_filename)
+    })
+
 
 # --- Files to extract from Python packages ---
 files_to_extract_from_packages = [
@@ -43,7 +70,7 @@ files_to_extract_from_packages = [
     }
 ]
 
-# --- Helper Functions ---
+# --- Helper Functions (No changes needed below this line) ---
 def ensure_dir_exists(dir_path):
     if not os.path.exists(dir_path):
         print(f"Creating directory: {dir_path}")
@@ -64,14 +91,9 @@ def download_file(url, destination_path):
         return False
 
 def extract_from_package(package_name, file_to_find, dest_path):
-    """
-    Downloads a package, intelligently finds a versioned file within it,
-    extracts it, and then cleans up.
-    """
     print(f"Attempting to extract {os.path.basename(dest_path)} from '{package_name}' package...")
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
-            # Step 1: Download the package wheel to the temporary directory
             print(f"  - Downloading '{package_name}' package...")
             subprocess.run(
                 [sys.executable, '-m', 'pip', 'download', '--no-deps', package_name, '-d', tmpdir],
@@ -85,32 +107,23 @@ def extract_from_package(package_name, file_to_find, dest_path):
             wheel_file_path = wheel_files[0]
             print(f"  - Found package file: {os.path.basename(wheel_file_path)}")
 
-            # Step 2: Open the wheel and intelligently search for the target file
             source_path_in_archive = None
-            # Construct a search pattern, e.g., 'mpld3.v' and '.min.js'
             base_name, extension = os.path.splitext(file_to_find)
             base_name, min_ext = os.path.splitext(base_name)
 
             with zipfile.ZipFile(wheel_file_path, 'r') as wheel_zip:
                 file_list = wheel_zip.namelist()
                 for member in file_list:
-                    # Look for a file that starts with the base name and version prefix
-                    # and ends with the correct minified extension.
                     if member.startswith(f'{package_name}/js/{base_name}.v') and member.endswith(f'{min_ext}{extension}'):
                         source_path_in_archive = member
                         break
                 
                 if not source_path_in_archive:
                     print(f"Error: Could not find a version of '{file_to_find}' inside the package archive.", file=sys.stderr)
-                    print("\n--- Archive Contents ---")
-                    for file_name in sorted(file_list):
-                        print(file_name)
-                    print("------------------------\n")
                     return False
                 
                 print(f"  - Found asset at dynamic path: '{source_path_in_archive}'")
 
-                # Step 3: Extract the found file to the final destination
                 with wheel_zip.open(source_path_in_archive) as source_file:
                     with open(dest_path, 'wb') as dest_file:
                         shutil.copyfileobj(source_file, dest_file)

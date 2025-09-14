@@ -1,4 +1,3 @@
-# app/config.py
 import os
 import sys
 from pathlib import Path
@@ -15,7 +14,8 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost:8001")
 CSRF_PROTECT_SECRET_KEY = os.getenv("CSRF_PROTECT_SECRET_KEY")
 
 DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() in ('true', '1', 't', 'yes')
-DATABASE_PATH = Path(os.getenv("DATABASE_PATH","./tesseracs_chat.db")) # Corrected typo from DATABSE_PATH
+DATABASE_PATH = Path(os.getenv("DATABASE_PATH","./tesseracs_chat.db"))
+
 # --- Secret Key for Encryption ---
 APP_SECRET_KEY = os.getenv("APP_SECRET_KEY")
 if not APP_SECRET_KEY:
@@ -29,52 +29,33 @@ elif len(APP_SECRET_KEY) < 32:
 
 
 # --- LLM Configuration ---
-
-ENV_DEFAULT_OLLAMA_MODEL_ID = os.getenv("DEFAULT_OLLAMA_MODEL_ID", "qwen3:8B")
-ENV_DEFAULT_OLLAMA_MODEL_DISPLAY_NAME = os.getenv("DEFAULT_OLLAMA_MODEL_DISPLAY_NAME", "Qwen3 8B (Local Default)")
-ENV_DEFAULT_OLLAMA_MODEL_CONTEXT_WINDOW = int(os.getenv("DEFAULT_OLLAMA_MODEL_CONTEXT_WINDOW", 32768))
-
 LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
-    "ollama_local": {
-        "display_name": "Ollama (Local)",
-        "type": "ollama",
-        "base_url_env_var": "OLLAMA_BASE_URL",
-        "api_key_env_var": None, # Ollama does not use API keys in this manner
-        "available_models": [
-            {
-                "model_id": ENV_DEFAULT_OLLAMA_MODEL_ID,
-                "display_name": ENV_DEFAULT_OLLAMA_MODEL_DISPLAY_NAME,
-                "context_window": ENV_DEFAULT_OLLAMA_MODEL_CONTEXT_WINDOW
-            },
-        ],
-    },
     "google_gemini": {
         "display_name": "Google Gemini",
         "type": "google_genai",
         "base_url_env_var": None, # Google SDK handles the endpoint
-        "api_key_env_var": "GOOGLE_API_KEY", # User's original: None, changed to GOOGLE_API_KEY to align with get_provider_config usage
+        "api_key_env_var": "GOOGLE_API_KEY",
         "available_models": [
             {
-                "model_id": "gemini-2.5-pro", # User's original model ID
+                "model_id": "gemini-2.5-pro",
                 "display_name": "Gemini 2.5 Pro", 
                 "context_window": 1048576 
             },
             {
-                "model_id": "gemini-2.5-flash", # User's original model ID
+                "model_id": "gemini-2.5-flash",
                 "display_name": "Gemini 2.5 Flash", 
                 "context_window": 1048576 
             }
-
         ],
     },
     "anthropic_claude": {
         "display_name": "Anthropic Claude",
         "type": "anthropic",
         "base_url_env_var": None, # Anthropic SDK handles the endpoint
-        "api_key_env_var": "ANTHROPIC_API_KEY", # User's original: None, changed to ANTHROPIC_API_KEY
+        "api_key_env_var": "ANTHROPIC_API_KEY",
         "available_models": [
             {
-                "model_id": "claude-sonnet-4-20250514", # User's original model ID
+                "model_id": "claude-sonnet-4-20250514",
                 "display_name": "Claude 4.0 Sonnet", 
                 "context_window": 200000 
             }
@@ -84,7 +65,7 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "display_name": "OpenAI-Compatible API",
         "type": "openai_compatible",
         "base_url_env_var": "OPENAI_COMPATIBLE_BASE_URL",
-        "api_key_env_var": "OPENAI_COMPATIBLE_API_KEY", # User's original: None, changed to OPENAI_COMPATIBLE_API_KEY
+        "api_key_env_var": "OPENAI_COMPATIBLE_API_KEY",
         "available_models": [
             {
                 "model_id": "gpt-4o-2024-08-06", 
@@ -95,37 +76,17 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# --- Default LLM Selection ---
-DEFAULT_LLM_PROVIDER_ID: str = os.getenv("DEFAULT_LLM_PROVIDER_ID", "ollama_local") # User's original default
-# Logic to set DEFAULT_LLM_MODEL_ID based on DEFAULT_LLM_PROVIDER_ID and its available models
-_default_provider_config_for_model_fallback = LLM_PROVIDERS.get(DEFAULT_LLM_PROVIDER_ID, {})
-_default_provider_models_for_fallback = _default_provider_config_for_model_fallback.get("available_models", [])
-_default_model_id_env_candidate = os.getenv("DEFAULT_LLM_MODEL_ID")
-
-if _default_model_id_env_candidate and any(m["model_id"] == _default_model_id_env_candidate for m in _default_provider_models_for_fallback):
-    DEFAULT_LLM_MODEL_ID: str = _default_model_id_env_candidate
-elif _default_provider_models_for_fallback:
-    DEFAULT_LLM_MODEL_ID: str = _default_provider_models_for_fallback[0]["model_id"]
-else:
-    DEFAULT_LLM_MODEL_ID: str = "qwen3:8B" # Fallback to user's original hardcoded default if provider/models not found
-    if DEFAULT_LLM_PROVIDER_ID == "ollama_local":
-        DEFAULT_LLM_MODEL_ID = ENV_DEFAULT_OLLAMA_MODEL_ID # Ensure it uses the ollama default if provider is ollama
-    print(f"WARNING: Could not determine a valid DEFAULT_LLM_MODEL_ID for provider '{DEFAULT_LLM_PROVIDER_ID}' from its 'available_models'. Using '{DEFAULT_LLM_MODEL_ID}'.")
-
-
 # --- Provider Characteristics ---
-# ADDED THESE AS THEY WERE MISSING AND CAUSING AttributeErrors
 PROVIDERS_TYPICALLY_USING_API_KEYS = {
     "google_gemini",
     "anthropic_claude",
     "openai_compatible_server"
-    # Add "openai" here if you add a direct OpenAI provider definition
 }
 
 PROVIDERS_ALLOWING_USER_KEYS_EVEN_IF_SYSTEM_CONFIGURED = {
-    "google_gemini",                # User might want to use their own project quota/key
-    "anthropic_claude",             # User might want to use their own key
-    "openai_compatible_server"      # For this type, user often provides key and base_url
+    "google_gemini",
+    "anthropic_claude",
+    "openai_compatible_server"
 }
 
 
@@ -138,29 +99,17 @@ def get_provider_config(provider_id: str) -> Optional[Dict[str, Any]]:
     runtime_config = provider_info_template.copy()
 
     base_url_env_name = provider_info_template.get("base_url_env_var")
-    resolved_base_url = None # Initialize
+    resolved_base_url = None
     if base_url_env_name:
         resolved_base_url = os.getenv(base_url_env_name)
     
-    # Specific handling for Ollama's common OLLAMA_BASE_URL if its own provider-specific env var isn't set
-    if provider_info_template.get("type") == "ollama" and not resolved_base_url:
-        resolved_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    
-    runtime_config["base_url"] = resolved_base_url if resolved_base_url else provider_info_template.get("base_url") # Fallback to static base_url in template if any
+    runtime_config["base_url"] = resolved_base_url if resolved_base_url else provider_info_template.get("base_url")
 
-    # This key in runtime_config is what main.py's list_llm_providers expects
     runtime_config["api_key_env_var_name"] = provider_info_template.get("api_key_env_var")
 
     if "available_models" not in runtime_config or not isinstance(runtime_config["available_models"], list):
         runtime_config["available_models"] = []
     return runtime_config
-
-# --- Ollama Base URL (General fallback if not specified per provider) ---
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-
-# --- Chat Behavior Prefixes ---
-NO_THINK_PREFIX = "\\no_think"
-THINK_PREFIX = "\\think"
 
 
 # --- Static Files Configuration ---
@@ -183,7 +132,6 @@ else:
     
     if not STATIC_DIR or not STATIC_DIR.is_dir(): 
         print(f"CRITICAL ERROR: Static directory not found. Checked standard locations relative to {APP_DIR}, {PROJECT_ROOT}, and {current_working_dir}. Application may not serve frontend assets.")
-        # sys.exit(1) # Consider if exiting is appropriate or just log error
 
 # --- Docker Configuration ---
 LANGUAGES_CONFIG_PATH = APP_DIR / "static" / "languages.json"
@@ -193,7 +141,6 @@ try:
     print(f"DEBUG config: Successfully loaded {len(SUPPORTED_LANGUAGES)} languages from {LANGUAGES_CONFIG_PATH}")
 except Exception as e:
     print(f"CRITICAL ERROR: Could not load or parse languages.json: {e}")
-    # Fallback to an empty dict if the file is missing or corrupt
     SUPPORTED_LANGUAGES = {}
 
 DOCKER_TIMEOUT_SECONDS = int(os.getenv("DOCKER_TIMEOUT_SECONDS", 30))
@@ -218,8 +165,8 @@ if not all([MAIL_CONFIG["MAIL_USERNAME"], MAIL_CONFIG["MAIL_PASSWORD"], MAIL_CON
     print("WARNING: Essential email configuration (USERNAME, PASSWORD, SERVER, FROM) missing in .env file. Email functionalities will likely fail.")
 
 # --- Rate Limiting Configuration ---
-FORGOT_PASSWORD_ATTEMPT_LIMIT = int(os.getenv("FORGOT_PASSWORD_ATTEMPT_LIMIT", 3)) # User's original
-FORGOT_PASSWORD_ATTEMPT_WINDOW_HOURS = int(os.getenv("FORGOT_PASSWORD_ATTEMPT_WINDOW_HOURS", 24)) # User's original
+FORGOT_PASSWORD_ATTEMPT_LIMIT = int(os.getenv("FORGOT_PASSWORD_ATTEMPT_LIMIT", 3))
+FORGOT_PASSWORD_ATTEMPT_WINDOW_HOURS = int(os.getenv("FORGOT_PASSWORD_ATTEMPT_WINDOW_HOURS", 24))
 
 # --- Debug Logging for Configuration ---
 print(f"DEBUG config: Application DEBUG_MODE: {DEBUG_MODE}")
@@ -229,20 +176,10 @@ if STATIC_DIR:
 else:
      print("DEBUG config: Static files directory NOT RESOLVED.")
 print(f"DEBUG config: Email VALIDATE_CERTS: {MAIL_CONFIG['VALIDATE_CERTS']}, SSL_TLS: {MAIL_CONFIG['MAIL_SSL_TLS']}, STARTTLS: {MAIL_CONFIG['MAIL_STARTTLS']}")
-print(f"DEBUG config: Default LLM Provider ID (system default): {DEFAULT_LLM_PROVIDER_ID}")
-print(f"DEBUG config: Default LLM Model ID (system default): {DEFAULT_LLM_MODEL_ID}")
-
-default_provider_runtime_details = get_provider_config(DEFAULT_LLM_PROVIDER_ID)
-if default_provider_runtime_details:
-    print(f"DEBUG config: Default Provider Type: {default_provider_runtime_details.get('type')}")
-    print(f"DEBUG config: Default Provider Resolved Base URL: {default_provider_runtime_details.get('base_url')}")
-    print(f"DEBUG config: Default Provider API Key Env Var Name (from LLM_PROVIDERS 'api_key_env_var'): {default_provider_runtime_details.get('api_key_env_var_name')}")
-else:
-    print(f"WARNING config: Default LLM Provider '{DEFAULT_LLM_PROVIDER_ID}' could not be resolved by get_provider_config.")
 
 if not CSRF_PROTECT_SECRET_KEY:
      print("WARNING config: CSRF_PROTECT_SECRET_KEY is not set in environment. main.py will use a fallback (insecure for production).")
-    
+ 
 print("-" * 50)
 print(f"DEBUG: APP_SECRET_KEY loaded in config.py: {APP_SECRET_KEY}")
 print("-" * 50)

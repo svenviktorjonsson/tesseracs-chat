@@ -5,6 +5,7 @@ from fastapi.websockets import WebSocketState
 import re
 import html
 import traceback
+from typing import Any
 
 def escape_html(s: str) -> str:
     """
@@ -27,20 +28,18 @@ def is_valid_email(email: str) -> bool:
         return True
     return False
 
-async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict):
+async def send_ws_message(websocket: WebSocket, message_type: str, payload: Any):
     """Safely sends a JSON message over the WebSocket."""
-    code_block_id = payload.get('code_block_id', 'N/A')
+    code_block_id = payload.get('code_block_id', 'N/A') if isinstance(payload, dict) else 'N/A'
     
     print(f"[utils] Attempting to send {message_type} for {code_block_id}")
     
-    # Check state before sending
     if websocket.client_state != WebSocketState.CONNECTED:
         print(f"[utils] ✗ WebSocket not connected (state: {websocket.client_state.name}), cannot send {message_type} for {code_block_id}")
         return False
         
     try:
         message = {"type": message_type, "payload": payload}
-        print(f"[utils] Sending message: {message}")
         await websocket.send_json(message)
         print(f"[utils] ✓ Successfully sent {message_type} for {code_block_id}")
         return True
@@ -48,7 +47,6 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: dict
         print(f"[utils] ✗ WebSocket disconnected while trying to send {message_type} for {code_block_id}")
         return False
     except Exception as e:
-        # Catch other potential errors like Runtime Error if connection closed during send
         print(f"[utils] ✗ Error sending WebSocket message ({message_type}) for {code_block_id}: {e}")
-        traceback.print_exc() # Enable this to see full error details
+        traceback.print_exc()
         return False

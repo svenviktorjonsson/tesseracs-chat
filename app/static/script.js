@@ -2,6 +2,7 @@
 import { marked } from 'marked';
 import katex from 'katex';
 import Prism from 'prismjs';
+import { updateAndDisplayParticipants } from './js/session-manager.js';
 
 // --- Prism Components ---
 import 'prismjs/components/prism-clike';
@@ -309,47 +310,125 @@ function setInputDisabledState(inputsDisabled, aiResponding) {
     }
 }
 
-// --- Message Display Functions ---
+
 function addUserMessage(text) {
-    if (!chatHistory) {
-        console.error("addUserMessage: chatHistory element not found.");
-        return;
-    }
+    if (!chatHistory) return;
 
     const messageElement = document.createElement('div');
-    messageElement.classList.add('message', 'user-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-emerald-100', 'self-end', 'ml-auto');
-    messageElement.setAttribute('data-sender', 'user');
+    messageElement.classList.add('message', 'user-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'self-end', 'ml-auto');
+    
+    const currentUser = window.currentUserInfo;
+    const participantData = currentUser && window.participantInfo ? window.participantInfo[currentUser.id] : null;
+
+    if (participantData && participantData.color) {
+        messageElement.style.backgroundColor = participantData.color;
+    } else {
+        messageElement.classList.add('bg-gray-200'); // Fallback color
+    }
 
     const senderElem = document.createElement('p');
-    senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-emerald-700');
-    let userName = 'User';
-
-    if (typeof window.currentUserInfo === 'object' && window.currentUserInfo !== null && window.currentUserInfo.name) {
-        userName = window.currentUserInfo.name;
-    }
-    senderElem.textContent = escapeHTML(userName);
+    senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800');
+    senderElem.textContent = escapeHTML(currentUser ? currentUser.name : 'User');
     messageElement.appendChild(senderElem);
 
     const contentElem = document.createElement('div');
     contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
     
     let displayedText = text;
-    if (displayedText.startsWith(NO_THINK_PREFIX)) {
-        displayedText = displayedText.substring(NO_THINK_PREFIX.length);
-    } else if (displayedText.startsWith(THINK_PREFIX)) {
-        displayedText = displayedText.substring(THINK_PREFIX.length);
+    // Always strip the prefix for display, regardless of who the message is for.
+    if (text.startsWith(NO_THINK_PREFIX)) {
+        displayedText = text.substring(NO_THINK_PREFIX.length).trim();
     }
-
-    contentElem.textContent = displayedText;
+    contentElem.textContent = displayedText.replace(/@\w+/g, '').trim(); 
     messageElement.appendChild(contentElem);
-
-    const timestampElem = document.createElement('p');
-    timestampElem.classList.add('text-xs', 'text-slate-500', 'mt-1', 'text-right');
-    timestampElem.textContent = new Date().toLocaleString();
-    messageElement.appendChild(timestampElem);
 
     chatHistory.appendChild(messageElement);
     setTimeout(() => scrollToBottom('smooth'), 50);
+}
+
+function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
+    if (!parentElement || !msg) return;
+
+    const senderType = msg.sender_type;
+    const senderName = msg.sender_name || (senderType === 'ai' ? 'AI' : 'User');
+    const currentUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
+    const isCurrentUser = msg.user_id === currentUserId;
+
+    if (senderType === 'ai') {
+        const aiTurnContainer = document.createElement('div');
+        aiTurnContainer.classList.add('ai-turn-container');
+        if (msg.turn_id) aiTurnContainer.dataset.turnId = msg.turn_id;
+
+        const messageBubble = document.createElement('div');
+        messageBubble.classList.add('message', 'ai-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-sky-100', 'self-start', 'mr-auto');
+        if (msg.id) messageBubble.setAttribute('data-message-id', String(msg.id));
+        
+        const senderElem = document.createElement('p');
+        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-sky-700');
+        senderElem.textContent = escapeHTML(senderName);
+        messageBubble.appendChild(senderElem);
+
+        const contentElem = document.createElement('div');
+        contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
+
+        const codeBlocksArea = document.createElement('div');
+        codeBlocksArea.classList.add('code-blocks-area');
+
+        parseAndRenderAiContent(msg.content, contentElem, codeBlocksArea, msg.turn_id, editedCodeBlocks);
+
+        messageBubble.appendChild(contentElem);
+        aiTurnContainer.appendChild(messageBubble);
+        aiTurnContainer.appendChild(codeBlocksArea);
+
+        parentElement.appendChild(aiTurnContainer);
+
+    } else if (senderType === 'user' || senderType === 'system') {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
+        messageDiv.setAttribute('data-sender', senderType);
+        if (msg.id) messageDiv.setAttribute('data-message-id', String(msg.id));
+
+        if (senderType === 'user') {
+            if (isCurrentUser) {
+                messageDiv.classList.add('self-end', 'ml-auto');
+            } else {
+                messageDiv.classList.add('self-start', 'mr-auto');
+            }
+            
+            let bubbleColor = msg.sender_color;
+            if (!bubbleColor && window.participantInfo && msg.user_id) {
+                const participant = window.participantInfo[msg.user_id];
+                if (participant) {
+                    bubbleColor = participant.color;
+                }
+            }
+            
+            if (bubbleColor) {
+                messageDiv.style.backgroundColor = bubbleColor;
+            } else {
+                messageDiv.classList.add('bg-gray-200');
+            }
+        } else {
+             messageDiv.classList.add('bg-slate-200', 'self-center', 'mx-auto', 'text-xs', 'italic');
+        }
+
+        const senderElem = document.createElement('p');
+        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800');
+        senderElem.textContent = escapeHTML(senderName);
+        messageDiv.appendChild(senderElem);
+
+        const contentElem = document.createElement('div');
+        contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
+        
+        let displayedText = msg.content || '';
+        if (displayedText.startsWith(NO_THINK_PREFIX)) {
+            displayedText = displayedText.substring(NO_THINK_PREFIX.length).trim();
+        }
+        contentElem.innerHTML = marked.parse(displayedText);
+        messageDiv.appendChild(contentElem);
+
+        parentElement.appendChild(messageDiv);
+    }
 }
 
 function addSystemMessage(text) {
@@ -1610,104 +1689,6 @@ function saveCodeBlockState(blockId, content) {
 
 
 
-function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
-    if (!parentElement || !msg) return;
-
-    const senderType = msg.sender_type;
-    const senderName = msg.sender_name || (senderType === 'ai' ? 'AI' : 'User');
-    const timestamp = msg.timestamp;
-
-    if (senderType === 'user' || senderType === 'system') {
-        const messageDiv = document.createElement('div');
-        messageDiv.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
-        messageDiv.setAttribute('data-sender', senderType);
-        if (msg.id) messageDiv.setAttribute('data-message-id', String(msg.id));
-
-        if (senderType === 'user') {
-            messageDiv.classList.add('bg-emerald-100', 'self-end', 'ml-auto');
-        } else {
-            messageDiv.classList.add('bg-slate-200', 'self-center', 'mx-auto', 'text-xs', 'italic');
-        }
-
-        const senderElem = document.createElement('p');
-        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1');
-        senderElem.classList.add(senderType === 'user' ? 'text-emerald-700' : 'text-slate-600');
-        senderElem.textContent = escapeHTML(senderName);
-        messageDiv.appendChild(senderElem);
-
-        const contentElem = document.createElement('div');
-        contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
-        let displayedContent = msg.content || '';
-        if (senderType === 'user' && displayedContent.startsWith(NO_THINK_PREFIX)) {
-            displayedContent = displayedContent.substring(NO_THINK_PREFIX.length);
-        }
-        contentElem.innerHTML = marked.parse(displayedContent);
-        messageDiv.appendChild(contentElem);
-
-        if (timestamp) {
-            const timestampElem = document.createElement('p');
-            timestampElem.classList.add('text-xs', 'text-slate-500', 'mt-1');
-            timestampElem.classList.add(senderType === 'user' ? 'text-right' : 'text-center');
-            try {
-                timestampElem.textContent = new Date(timestamp).toLocaleString();
-            } catch (e) {
-                timestampElem.textContent = String(timestamp);
-            }
-            messageDiv.appendChild(timestampElem);
-        }
-        parentElement.appendChild(messageDiv);
-
-    } else if (senderType === 'ai') {
-        const turnIdSuffix = (msg.turn_id !== null && msg.turn_id !== undefined) ? String(msg.turn_id) : (msg.id ? `msg${msg.id}` : `hist-${Date.now()}`);
-
-        const aiTurnContainer = document.createElement('div');
-        aiTurnContainer.classList.add('ai-turn-container');
-        if (msg.id) aiTurnContainer.setAttribute('data-message-id', String(msg.id));
-
-        const thinkingArea = document.createElement('div');
-        thinkingArea.classList.add('thinking-area');
-        thinkingArea.style.display = msg.thinking_content ? 'block' : 'none';
-
-        const details = document.createElement('details');
-        const summary = document.createElement('summary');
-        summary.classList.add('thinking-summary');
-        summary.innerHTML = `<span class="text">Show Thinking</span><span class="dots"></span>`;
-        const thinkingPre = document.createElement('pre');
-        thinkingPre.textContent = msg.thinking_content || '';
-        details.appendChild(summary);
-        details.appendChild(thinkingPre);
-        thinkingArea.appendChild(details);
-
-        const answerElement = document.createElement('div');
-        answerElement.classList.add('message', 'ai-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-sky-100', 'self-start', 'mr-auto');
-
-        const senderElem = document.createElement('p');
-        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-sky-700');
-        senderElem.textContent = 'AI';
-        answerElement.appendChild(senderElem);
-
-        const contentDiv = document.createElement('div');
-        contentDiv.classList.add('text-gray-800', 'text-sm', 'message-content');
-        answerElement.appendChild(contentDiv);
-
-        const codeBlocksArea = document.createElement('div');
-        codeBlocksArea.classList.add('code-blocks-area');
-
-        parseAndRenderAiContent(msg.content, contentDiv, codeBlocksArea, turnIdSuffix, editedCodeBlocks);
-
-        if (timestamp) {
-            const timestampElem = document.createElement('p');
-            timestampElem.classList.add('text-xs', 'text-slate-500', 'mt-1', 'text-left', 'timestamp-p');
-            timestampElem.textContent = new Date(timestamp).toLocaleString();
-            answerElement.appendChild(timestampElem);
-        }
-
-        aiTurnContainer.appendChild(thinkingArea);
-        aiTurnContainer.appendChild(answerElement);
-        aiTurnContainer.appendChild(codeBlocksArea);
-        parentElement.appendChild(aiTurnContainer);
-    }
-}
 
 function restoreCodeExecutionResult(result) {
     const codeContainer = document.getElementById(result.code_block_id);
@@ -1825,17 +1806,17 @@ function restoreCodeExecutionResult(result) {
 }
 
 async function loadAndDisplayChatHistory(sessionId) {
+    await updateAndDisplayParticipants();
+
     const chatHistoryDiv = document.getElementById('chat-history');
     if (!chatHistoryDiv) {
         console.error("Chat history container 'chat-history' not found.");
         return;
     }
 
-    // Do NOT reset the counter here. It will be set after history is loaded.
     chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>';
 
     try {
-        // Fetch all data concurrently
         const [messagesResponse, codeResultsResponse, editedBlocksResponse] = await Promise.all([
             fetch(`/api/sessions/${sessionId}/messages`),
             fetch(`/api/sessions/${sessionId}/code-results`),
@@ -1857,7 +1838,6 @@ async function loadAndDisplayChatHistory(sessionId) {
             chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">No messages in this session yet. Start chatting!</p>';
         } else {
             messages.forEach(msg => {
-                // Pass the fetched data down to the rendering function
                 renderSingleMessage(msg, chatHistoryDiv, true, editedCodeBlocks);
             });
 
@@ -1869,7 +1849,6 @@ async function loadAndDisplayChatHistory(sessionId) {
                 Prism.highlightAll();
             }
 
-            // New logic to set the streaming counter correctly after history loads
             const allCodeBlocks = chatHistoryDiv.querySelectorAll('.block-container[id^="code-block-turn"]');
             let maxBlockIndex = 0;
             allCodeBlocks.forEach(block => {
@@ -1879,7 +1858,7 @@ async function loadAndDisplayChatHistory(sessionId) {
                     maxBlockIndex = blockIndex;
                 }
             });
-            streamingCodeBlockCounter = maxBlockIndex; // Set the global counter
+            streamingCodeBlockCounter = maxBlockIndex;
 
             chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
         }
@@ -1889,7 +1868,6 @@ async function loadAndDisplayChatHistory(sessionId) {
         chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An unexpected error occurred while loading history: ${escapeHTML(error.message)}</p>`;
     }
 }
-
 // --- WebSocket Connection ---
 function resetAllCodeButtonsOnErrorOrClose() {
     const playIconSvg = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
@@ -2110,24 +2088,49 @@ function connectWebSocket() {
             }
 
             if (messageData && messageData.type) {
-                handleStructuredMessage(messageData);
-            } else {
-                const chunk = event.data;
-                if (chunk === "<EOS>" || chunk === "<EOS_STOPPED>") {
-                    renderLiveMessage(accumulatedAnswerText);
-                    finalizeTurnOnErrorOrClose();
-                    return;
+                switch (messageData.type) {
+                    case 'participants_update':
+                        if (window.updateAndDisplayParticipants) {
+                            window.updateAndDisplayParticipants(messageData.payload);
+                        }
+                        break;
+                    case 'new_message':
+                        if (messageData.payload && messageData.payload.client_id_temp !== clientId) {
+                            renderSingleMessage(messageData.payload, chatHistory, true, {});
+                            scrollToBottom('smooth');
+                        }
+                        break;
+                    case 'ai_chunk':
+                        if (!currentAiTurnContainer) {
+                            setupNewAiTurn();
+                        }
+                        accumulatedAnswerText += messageData.payload;
+                        renderLiveMessage(accumulatedAnswerText);
+                        break;
+                    case 'ai_stream_end':
+                        renderLiveMessage(accumulatedAnswerText);
+                        finalizeTurnOnErrorOrClose();
+                        setInputDisabledState(false, false);
+                        break;
+                    case 'session_deleted':
+                        const chatTitle = document.getElementById('chat-session-title');
+                        if (chatTitle) {
+                            chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`;
+                        }
+                        const banner = document.createElement('div');
+                        banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold';
+                        banner.textContent = 'The host has deleted this session. The chat is now read-only.';
+                        chatHistory.prepend(banner);
+                        setInputDisabledState(true, false);
+                        break;
+                    default:
+                        handleStructuredMessage(messageData);
+                        break;
                 }
-                if (chunk.startsWith("<ERROR>")) {
-                    addErrorMessage(chunk.substring(7));
-                    finalizeTurnOnErrorOrClose();
-                    return;
-                }
-                if (!currentAiTurnContainer && chunk.trim().length > 0) {
-                    setupNewAiTurn();
-                }
-                accumulatedAnswerText += chunk;
-                renderLiveMessage(accumulatedAnswerText);
+            } else if (typeof event.data === 'string' && event.data.startsWith("<ERROR>")) {
+                addErrorMessage(event.data.substring(7));
+                finalizeTurnOnErrorOrClose();
+                setInputDisabledState(false, false);
             }
         };
     } catch (error) {
@@ -2155,85 +2158,46 @@ document.addEventListener('DOMContentLoaded', async () => {
             event.preventDefault();
             const userMessage = messageInput.value.trim();
             if (!userMessage) return;
-            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-                addErrorMessage("Not connected to the server.");
-                return;
-            }
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
             
             try {
-                addUserMessage(userMessage);
-                thinkingRequestedForCurrentTurn = thinkCheckbox ? thinkCheckbox.checked : false;
-                let messageTextForPayload;
-                if (thinkingRequestedForCurrentTurn) {
-                    messageTextForPayload = THINK_PREFIX + userMessage.replace(NO_THINK_PREFIX, '').replace(THINK_PREFIX, '');
-                } else {
-                    messageTextForPayload = NO_THINK_PREFIX + userMessage.replace(NO_THINK_PREFIX, '').replace(THINK_PREFIX, '');
+                const mentionRegex = /@(\w+)/gi;
+                const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
+                
+                if (recipients.includes("AI")) {
+                    if (!window.isAiConfigured) {
+                        alert("AI provider has not been configured. Please go to User Settings to select a provider and add your API key.");
+                        return;
+                    }
+                    setupNewAiTurn();
+                    setInputDisabledState(true, true);
                 }
                 
-                setupNewAiTurn();
+                addUserMessage(userMessage);
                 
                 const messagePayload = {
                     type: "chat_message",
                     payload: {
-                        user_input: messageTextForPayload,
-                        turn_id: currentTurnId 
+                        user_input: userMessage,
+                        turn_id: ++currentTurnId,
+                        recipient_ids: recipients,
+                        reply_to_id: null
                     }
                 };
                 websocket.send(JSON.stringify(messagePayload));
-                
                 messageInput.value = '';
-                setInputDisabledState(true, true);
             } catch (sendError) {
                 addErrorMessage(`Failed to send message: ${sendError.message}`);
             }
         });
 
-        if (chatHistory) {
-            chatHistory.addEventListener('click', (event) => {
-                const target = event.target.closest('a.code-block-link');
-                if (!target) {
-                    return;
-                }
-
-                event.preventDefault();
-                const targetId = target.getAttribute('href').substring(1);
-                const targetElement = document.getElementById(targetId);
-
-                if (targetElement) {
-                    targetElement.scrollIntoView({
-                        behavior: 'smooth',
-                        block: 'start'
-                    });
-                }
-            });
-        }
-
         stopAiButton.addEventListener('click', () => {
-            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-                addErrorMessage("Cannot stop: Not connected.");
-                return;
-            }
-            const sessionId = getSessionIdFromPath();
-            if (!sessionId) {
-                addErrorMessage("Cannot stop: Session ID not found.");
-                return;
-            }
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
             websocket.send(JSON.stringify({
                 type: "stop_ai_stream",
-                payload: {
-                    client_id: clientId,
-                    session_id: sessionId,
-                    turn_id: currentTurnId 
-                }
+                payload: { client_id: clientId, session_id: getSessionIdFromPath(), turn_id: currentTurnId }
             }));
-            stopAiButton.disabled = true;
-            finalizeTurnOnErrorOrClose();
         });
-
-    } else {
-        if (window.location.pathname.includes("/chat/")) {
-            addErrorMessage("Initialization Error: Chat input components missing.");
-        }
     }
 
     const currentSessionId = getSessionIdFromPath();

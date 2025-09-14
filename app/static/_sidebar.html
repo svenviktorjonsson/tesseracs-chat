@@ -5,25 +5,20 @@
     </a>
 </div>
 
-<nav class="flex-1 p-4 space-y-2 sidebar-scrollable" aria-label="Main navigation">
-    <form action="/sessions/create" method="POST" class="mb-4" id="new-chat-form-sidebar">
-        <input type="hidden" name="csrf_token" id="sidebar_csrf_token">
-        
-        <button type="submit" id="new-chat-button-sidebar"
-                class="w-full flex items-center justify-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-md text-white font-medium transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-800 disabled:opacity-70 disabled:cursor-not-allowed">
-            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
-            New Chat
-        </button>
-    </form>
+<nav class="flex-1 p-4 space-y-2 sidebar-scrollable flex flex-col" aria-label="Main navigation">
+    <div class="mb-4">
+        <input type="text" id="session-filter-input" placeholder="Filter my sessions..." class="w-full bg-gray-700 text-white rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
 
-    <div class="text-sm text-gray-400 uppercase tracking-wider mb-2" id="sessions-heading">Sessions</div>
-    <ul id="session-list" class="space-y-1" aria-labelledby="sessions-heading">
+    <div class="text-sm text-gray-400 uppercase tracking-wider mb-2" id="sessions-heading">My Sessions</div>
+    <ul id="session-list" class="space-y-1 flex-grow">
         <li class="px-3 py-1 text-gray-400 italic text-sm">Loading sessions...</li>
     </ul>
 
-    <div class="mt-auto pt-4 border-t border-gray-700"> <a href="/settings" id="settings-link-sidebar" class="flex items-center px-3 py-2 text-gray-300 hover:bg-gray-700 hover:text-white rounded-md text-sm">
+    <div class="mt-auto pt-4 border-t border-gray-700">
+        <a href="/settings" id="user-settings-link-sidebar" class="flex items-center px-3 py-2 text-gray-300 hover:bg-gray-700 hover:text-white rounded-md text-sm">
             <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826 3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-            Settings
+            User Settings
         </a>
     </div>
 </nav>

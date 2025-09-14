@@ -519,3 +519,18 @@ footer { padding: 1rem; background-color: #e5e7eb; border-top: 1px solid #d1d5db
 span[data-katex-rendered="true"] .katex-display { margin: 0.5em 0; overflow-x: auto; overflow-y: hidden; padding: 0.2em 0; }
 span[data-katex-rendered="true"] .katex { line-height: normal; vertical-align: baseline; font-size: 1em; }
 .katex-error { color: #cc0000; background-color: #fdd; border: 1px solid #cc0000; padding: 2px 4px; border-radius: 3px; }
+
+
+.sidebar-collapsed {
+    width: 0 !important;
+    padding: 0 !important;
+    overflow: hidden;
+}
+
+#sidebar-toggle.collapsed {
+    transform: translateX(1.5rem); /* Move button slightly out from the edge */
+}
+
+#sidebar-toggle-icon.collapsed {
+    transform: rotate(180deg);
+}

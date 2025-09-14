@@ -6,85 +6,112 @@
     <title>%%SESSION_NAME_PLACEHOLDER%% - Tesseracs Chat</title>
     <link rel="stylesheet" href="/dist/input.css">
     <link rel="stylesheet" href="/static/assets/css/katex.min.css">
-    
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
+
     <script id="csrf-token-script-page-chat">
-     // This placeholder will be replaced by the server with the actual raw CSRF token.
-     window.csrfTokenRaw = "%%CSRF_TOKEN_RAW%%";
-    </script>
-    <script>
-     // Optional immediate diagnostic client-side to verify token injection
-     if (typeof window.csrfTokenRaw !== 'undefined' && window.csrfTokenRaw !== "%%CSRF_TOKEN_RAW%%") {
-       console.log('CHAT PAGE JS (after csrf-token-script): window.csrfTokenRaw is available.');
-     } else {
-       console.warn('CHAT PAGE JS (after csrf-token-script): window.csrfTokenRaw IS STILL THE PLACEHOLDER "%%CSRF_TOKEN_RAW%%" OR UNDEFINED. Value:', window.csrfTokenRaw);
-     }
+        window.csrfTokenRaw = "%%CSRF_TOKEN_RAW%%";
     </script>
 </head>
 <body class="bg-gray-100 text-gray-800">
 
-    <div class="flex h-screen overflow-hidden">
-        <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col overflow-hidden shrink-0">
+    <div class="flex h-screen overflow-hidden bg-gray-100">
+        <!-- Sidebar -->
+        <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col shrink-0 transition-all duration-300 ease-in-out">
+            <!-- Sidebar content is loaded dynamically -->
         </aside>
 
+        <!-- Sidebar Toggle Button -->
+        <div class="relative z-10 flex items-center justify-center">
+            <button id="sidebar-toggle" class="absolute top-1/2 -translate-y-1/2 -ml-4 bg-gray-700 hover:bg-gray-600 text-white p-1 rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-300 ease-in-out">
+                <svg id="sidebar-toggle-icon" class="w-5 h-5 transition-transform duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+            </button>
+        </div>
+
+        <!-- Main Chat Area -->
         <main class="flex-1 flex flex-col overflow-hidden">
-            <header class="bg-white border-b border-gray-200 p-4 shadow-sm">
+            <header class="bg-white border-b border-gray-200 p-4 shadow-sm flex items-center justify-between">
                 <h1 id="chat-session-title" class="text-lg font-semibold text-gray-800 truncate">%%SESSION_NAME_PLACEHOLDER%%</h1>
+                <button id="session-settings-button" class="ml-4 p-2 rounded-full hover:bg-gray-200 text-gray-500 hover:text-gray-700 hidden" title="Session Settings">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826 3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                </button>
             </header>
-            <div id="chat-history" class="flex-1 overflow-y-auto p-4 space-y-4 bg-white shadow-inner m-2 md:m-4 rounded-lg">
+
+            <div id="chat-view" class="flex-1 flex flex-col overflow-hidden">
+                <div id="chat-history" class="flex-1 overflow-y-auto p-4 space-y-4 bg-white shadow-inner m-2 md:m-4 rounded-lg"></div>
+                <footer class="p-4 bg-gray-200 border-t border-gray-300">
+                    <form id="chat-form" class="flex items-center space-x-2">
+                        <input type="text" id="message-input" placeholder="Type your message..." autocomplete="off" required class="flex-1 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        <button type="submit" id="send-button" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">Send</button>
+                        <button type="button" id="stop-ai-button" class="hidden bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg">Stop</button>
+                    </form>
+                </footer>
             </div>
-            <footer class="p-4 bg-gray-200 border-t border-gray-300">
-                <form id="chat-form" class="flex items-center space-x-2">
-                    <div class="think-checkbox-container flex items-center text-sm text-gray-600 mr-1 md:mr-2">
-                        <input type="checkbox" id="think-checkbox" class="mr-1 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer">
-                        <label for="think-checkbox" class="cursor-pointer select-none">Think</label>
+
+            <div id="session-settings-view" class="hidden flex-1 overflow-y-auto p-6">
+                <div class="max-w-lg mx-auto bg-white p-6 rounded-lg shadow-md">
+                    <h2 class="text-2xl font-semibold text-gray-700 mb-4">Session Settings</h2>
+                    <div class="border-t border-gray-200 pt-6 mt-6">
+                        <h3 class="text-lg font-medium text-red-600">Delete Session</h3>
+                        <p class="text-sm text-gray-500 mt-1">This action cannot be undone. It will permanently delete the session for all participants.</p>
+                        <div class="mt-4">
+                            <label for="delete-confirmation" class="block text-sm font-medium text-gray-700">To confirm, type the session name: <strong id="session-name-for-delete"></strong></label>
+                            <input type="text" id="delete-confirmation" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3">
+                        </div>
+                        <button id="delete-session-button" class="mt-4 w-full bg-red-600 text-white py-2 px-4 rounded-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed">Delete this Session</button>
                     </div>
-                    <input type="text" id="message-input" placeholder="Type your message..." autocomplete="off" required
-                           class="flex-1 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                    <button type="submit" id="send-button"
-                            class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed">
-                        Send
-                    </button>
-                    <button type="button" id="stop-ai-button" class="hidden"> <svg class="w-5 h-5 inline-block mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1zm4 0a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
-                        Stop
-                    </button>
-                </form>
-            </footer>
+                     <button id="back-to-chat-button" class="mt-6 w-full bg-gray-200 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-300">Back to Chat</button>
+                </div>
+            </div>
         </main>
+        
+        <!-- Right Participants Panel -->
+        <aside class="w-48 bg-gray-50 border-l border-gray-200 p-4 flex flex-col shrink-0">
+            <h3 class="text-md font-semibold text-gray-700 mb-4 border-b pb-2">Participants</h3>
+            <ul id="participant-list" class="space-y-2 overflow-y-auto">
+                <li class="text-gray-500 italic text-sm">Loading...</li>
+            </ul>
+        </aside>
     </div>
 
     <script type="module">
-        // Imports loadSidebarHTML and populateSessionList from app-ui.js
-        import { loadSidebarHTML, populateSessionList } from '/static/js/app-ui.js'; 
+        import { loadSidebarHTML, populateSessionList } from '/static/js/app-ui.js';
+        import { updateAndDisplayParticipants, handleSessionSettings } from '/static/js/session-manager.js';
+        import { initializeSidebarToggle } from '/static/js/sidebar-toggle.js';
 
-        document.addEventListener('DOMContentLoaded', async () => {
-            console.log("Chat Session Page: DOMContentLoaded. Attempting to load UI components.");
-            const sidebarContainer = document.getElementById('sidebar-loader-target');
-            if (!sidebarContainer) {
-                console.error("Chat Session Page: Sidebar container 'sidebar-loader-target' not found!");
+        async function initializeChatPage() {
+            initializeSidebarToggle();
+
+            const userResponse = await fetch('/api/me');
+            if (userResponse.ok) {
+                window.currentUserInfo = await userResponse.json();
+            } else {
+                console.error("Failed to fetch current user data for chat page.");
                 return;
             }
-            // Load the sidebar HTML into the designated container.
-            // loadSidebarHTML also calls setupSidebarCSRF internally.
+            
+            const sidebarContainer = document.getElementById('sidebar-loader-target');
+            if (!sidebarContainer) return;
+
             const sidebarLoaded = await loadSidebarHTML('/static/_sidebar.html', 'sidebar-loader-target');
             
             if (sidebarLoaded) {
-                // If sidebar loaded, try to populate the session list within it.
-                const sessionListElement = document.getElementById('session-list');
-                if (sessionListElement) {
-                    await populateSessionList('/api/sessions', 'session-list', '/chat/');
-                } else {
-                    console.error("Chat Session Page: Session list element 'session-list' not found after sidebar load.");
+                const sessionsResponse = await fetch('/api/sessions');
+                if(sessionsResponse.ok) {
+                    const sessions = await sessionsResponse.json();
+                    const currentSessionId = window.location.pathname.split('/')[2];
+                    window.currentSessionData = sessions.find(s => s.id === currentSessionId);
                 }
-            } else {
-                console.error("Chat Session Page: Sidebar loading failed. Session list will not be populated.");
+                await populateSessionList('/api/sessions', 'session-list', '/chat/');
             }
-        });
+            
+            await updateAndDisplayParticipants();
+            handleSessionSettings();
+        }
+
+        document.addEventListener('DOMContentLoaded', initializeChatPage);
     </script>
-    
     <script src="/static/js/d3.min.js" defer></script>
     <script src="/static/js/mpld3.min.js" defer></script>
     <script src="/dist/script.js" defer></script>

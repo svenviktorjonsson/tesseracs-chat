@@ -10,71 +10,108 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <script id="csrf-token-script-page-session-choice">
-      // This placeholder will be replaced by the server with the actual raw CSRF token.
-      window.csrfTokenRaw = "%%CSRF_TOKEN_RAW%%";
+        window.csrfTokenRaw = "%%CSRF_TOKEN_RAW%%";
     </script>
-    <script>
-      // Optional immediate diagnostic client-side to verify token injection
-      if (typeof window.csrfTokenRaw !== 'undefined' && window.csrfTokenRaw !== "%%CSRF_TOKEN_RAW%%") {
-        console.log('SESSION CHOICE PAGE JS (after csrf-token-script): window.csrfTokenRaw is available.');
-      } else {
-        console.warn('SESSION CHOICE PAGE JS (after csrf-token-script): window.csrfTokenRaw IS STILL THE PLACEHOLDER "%%CSRF_TOKEN_RAW%%" OR UNDEFINED. Value:', window.csrfTokenRaw);
-      }
-    </script> 
 </head>
 <body class="bg-gray-100 text-gray-800">
 
-    <div class="flex h-screen overflow-hidden">
-        <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col overflow-hidden shrink-0">
-            </aside>
+    <div class="flex h-screen overflow-hidden bg-gray-100">
+        <!-- Sidebar -->
+        <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col shrink-0 transition-all duration-300 ease-in-out">
+            <!-- Sidebar content is loaded dynamically -->
+        </aside>
 
-        <main id="session-choice-content" class="flex-1 flex flex-col p-6 overflow-y-auto items-center justify-center">
-            <div class="bg-white p-8 rounded-lg shadow-xl text-center max-w-lg">
-                <h1 class="text-3xl font-bold text-gray-800 mb-4">Welcome to Tesseracs Chat, [User Name]!</h1>
-                <p class="text-gray-600 mb-6">
-                    Select an existing session from the sidebar to continue your conversations,
-                    or click "New Chat" in the sidebar to start a fresh one.
-                </p>
-                <p class="text-gray-500 text-sm">
-                    Engage in dynamic chat sessions, powered by advanced AI. Your discussions are saved and can be revisited anytime.
-                </p>
-            </div>
-            <div class="mt-10 text-center">
-                <h2 class="text-xl font-semibold text-gray-700 mb-3">About Tesseracs</h2>
-                <p class="text-gray-600">
-                    Tesseracs Chat is designed for seamless and intelligent conversations. <br/>
-                    Manage your chat sessions efficiently and collaborate with AI.
-                </p>
+        <!-- Sidebar Toggle Button -->
+        <div class="relative z-10 flex items-center justify-center">
+            <button id="sidebar-toggle" class="absolute top-1/2 -translate-y-1/2 -ml-4 bg-gray-700 hover:bg-gray-600 text-white p-1 rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-300 ease-in-out">
+                <svg id="sidebar-toggle-icon" class="w-5 h-5 transition-transform duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+            </button>
+        </div>
+
+        <!-- Main Content -->
+        <main id="session-choice-content" class="flex-1 flex flex-col p-6 overflow-y-auto">
+            <div class="max-w-4xl w-full mx-auto">
+                <h1 class="text-3xl font-bold text-gray-800 mb-6">Welcome, [User Name]!</h1>
+                
+                <div class="border-b border-gray-200 mb-6">
+                    <nav class="-mb-px flex space-x-6" aria-label="Tabs">
+                        <button id="host-tab-button" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm text-blue-600 border-blue-500" aria-current="page">
+                            Host a Session
+                        </button>
+                        <button id="join-tab-button" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                            Join a Session
+                        </button>
+                    </nav>
+                </div>
+
+                <div id="host-session-view">
+                    <div class="bg-white p-6 rounded-lg shadow-md">
+                        <h2 class="text-2xl font-semibold text-gray-700 mb-4">Host a New Session</h2>
+                        <p class="text-gray-600 mb-6">Create a new session. You can make it public for others to join or keep it private.</p>
+                        <form id="host-session-form">
+                            <div class="mb-4">
+                                <label for="session-name" class="block text-sm font-medium text-gray-700 mb-1">Session Name</label>
+                                <input type="text" id="session-name" name="name" required class="w-full py-2 px-3 border border-gray-300 rounded-md text-sm" placeholder="e.g., Project Brainstorm">
+                            </div>
+                            <div class="mb-4">
+                                <label for="session-access" class="block text-sm font-medium text-gray-700 mb-1">Access Level</label>
+                                <select id="session-access" name="access_level" class="w-full py-2 px-3 border border-gray-300 rounded-md text-sm bg-white">
+                                    <option value="private" selected>Private (Only you can see and use)</option>
+                                    <option value="public">Public (Visible to all, no passcode)</option>
+                                    <option value="protected">Protected (Visible to all, passcode required)</option>
+                                </select>
+                            </div>
+                            <div id="passcode-group" class="mb-4 hidden">
+                                <label for="session-passcode" class="block text-sm font-medium text-gray-700 mb-1">Passcode</label>
+                                <input type="password" id="session-passcode" name="passcode" class="w-full py-2 px-3 border border-gray-300 rounded-md text-sm" placeholder="Enter a passcode">
+                            </div>
+                            <button type="button" id="host-session-button" class="w-full flex items-center justify-center px-4 py-3 bg-blue-600 hover:bg-blue-700 rounded-md text-white font-medium transition duration-150">
+                                Host New Session
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <div id="join-session-view" class="hidden">
+                     <div class="bg-white p-6 rounded-lg shadow-md">
+                        <h2 class="text-2xl font-semibold text-gray-700 mb-4">Join an Existing Session</h2>
+                         <p class="text-gray-600 mb-4">Here are the public and protected sessions currently active that you haven't joined yet.</p>
+                        <div class="border-t border-gray-200 pt-4">
+                            <ul id="joinable-session-list" class="space-y-2 max-h-80 overflow-y-auto">
+                                <li class="px-3 py-1 text-gray-500 italic text-sm">Loading available sessions...</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
             </div>
         </main>
     </div>
 
     <script type="module">
-        import { loadSidebarHTML, populateSessionList } from '/static/js/app-ui.js'; // Ensure setupSidebarCSRF is called within/after loadSidebarHTML
+        import { loadSidebarHTML, populateSessionList } from '/static/js/app-ui.js';
+        import { initializeDashboard, populateJoinableSessionList, connectToLobbySocket } from '/static/js/session-manager.js';
+        import { initializeSidebarToggle } from '/static/js/sidebar-toggle.js';
 
-        document.addEventListener('DOMContentLoaded', async () => {
-            console.log("Session Choice Page (Welcome Page): DOMContentLoaded. Attempting to load UI components.");
-            const sidebarContainer = document.getElementById('sidebar-loader-target');
-            if (!sidebarContainer) {
-                console.error("Session Choice Page: Sidebar container 'sidebar-loader-target' not found!");
+        async function initializeDashboardPage() {
+            initializeSidebarToggle();
+            const userResponse = await fetch('/api/me');
+            if (userResponse.ok) {
+                window.currentUserInfo = await userResponse.json();
+            } else {
+                console.error("Failed to fetch current user data.");
                 return;
             }
-            
+            initializeDashboard();
+            populateJoinableSessionList();
+            connectToLobbySocket();
             const sidebarLoaded = await loadSidebarHTML('/static/_sidebar.html', 'sidebar-loader-target');
-            
             if (sidebarLoaded) {
-                // The setupSidebarCSRF() call should ideally be part of loadSidebarHTML's success logic
-                // or called immediately after if loadSidebarHTML is synchronous in its DOM update.
-                const sessionListElement = document.getElementById('session-list');
-                 if (sessionListElement) {
-                    await populateSessionList('/api/sessions', 'session-list', '/chat/');
-                } else {
-                    console.error("Session Choice Page: Session list element 'session-list' not found after sidebar load.");
-                }
+                await populateSessionList('/api/sessions?scope=personal', 'session-list', '/chat/');
             } else {
-                console.error("Session Choice Page: Sidebar loading failed. Session list will not be populated.");
+                console.error("Session Choice Page: Sidebar loading failed.");
             }
-        });
+        }
+        document.addEventListener('DOMContentLoaded', initializeDashboardPage);
     </script>
     </body>
 </html>

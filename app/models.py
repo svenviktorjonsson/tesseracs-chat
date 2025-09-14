@@ -22,6 +22,7 @@ class UserLLMSettingsResponse(BaseModel):
     selected_llm_model_id: Optional[str] = None
     has_user_api_key: bool = False
     selected_llm_base_url: Optional[HttpUrl] = None
+    is_llm_ready: bool = False
 
 class UserLLMSettingsUpdateRequest(BaseModel):
     selected_llm_provider_id: Optional[str] = Field(None, description="ID of the selected LLM provider (e.g., 'ollama_local'). Use null to clear.")
@@ -36,10 +37,7 @@ class Token(BaseModel):
     user_name: Optional[str] = None
     user_email: Optional[EmailStr] = None
 
-class UserResponseModel(BaseModel):
-    id: int
-    name: str
-    email: EmailStr
+
 
 class EmailCheckRequest(BaseModel):
     email: EmailStr
@@ -92,9 +90,19 @@ class SessionResponseModel(BaseModel):
     created_at: Optional[str] = None
     last_active: Optional[str] = None
     host_user_id: Optional[int] = None
+    is_member: bool = False
+    access_level: Optional[str] = None
+    is_active: bool = True
 
 class SessionListContainerResponse(BaseModel):
     sessions: List[SessionResponseModel]
+
+class UserResponseModel(BaseModel):
+    id: int
+    name: str
+    email: EmailStr
+    initials: str = ""
+    color: str = "#E5E7EB"
 
 class MessageItem(BaseModel):
     id: int
@@ -109,9 +117,17 @@ class MessageItem(BaseModel):
     turn_id: Optional[int] = None
     model_provider_id: Optional[str] = None
     model_id: Optional[str] = None
+    reply_to_message_id: Optional[int] = None
+    sender_initials: Optional[str] = None
+    sender_color: Optional[str] = None
 
 class MessageListContainerResponse(BaseModel):
     messages: List[MessageItem]
 
-class SessionUpdateRequest(BaseModel):
+class HostSessionRequest(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    access_level: str = 'private' # 'private', 'public', 'protected', 'unlisted'
+    passcode: Optional[str] = None
+
+class JoinSessionRequest(BaseModel):
+    passcode: Optional[str] = None

@@ -42,9 +42,6 @@ exclude_exact_filenames = (
     'katex.min.css',
     'katex.min.js',
     'build.js',
-    'docker_utils.js',
-    'llm.py',
-    'input.css'
     # Add other large or irrelevant files by name here
 )
 
