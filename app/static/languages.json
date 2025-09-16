@@ -1,72 +1,36 @@
 {
   "html": {
-    "image": "alpine:latest",
-    "filename": "script.html",
-    "command": ["cat", "/app/script.html"],
-    "executable": true,
-    "interactive": false
+    "image": "tesseracs-node",
+    "is_preview_server": true
   },
   "python": {
-    "image": "python-runner-with-uv",
-    "filename": "script.py",
-    "command": ["stdbuf", "-o0", "python", "-u", "/app/script.py"],
-    "executable": true,
-    "interactive": true
+    "image": "python-runner-with-uv"
   },
   "javascript": {
-    "image": "node:18-alpine",
-    "filename": "script.js",
-    "command": ["stdbuf", "-o0", "node", "/app/script.js"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-node"
+  },
+  "bash": {
+    "image": "python-runner-with-uv"
   },
   "c": {
-    "image": "gcc:latest",
-    "filename": "script.c",
-    "command": ["sh", "-c", "gcc /app/script.c -o /app/output_executable && exec stdbuf -o0 /app/output_executable"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-gcc"
   },
   "cpp": {
-    "image": "gcc:latest",
-    "filename": "script.cpp",
-    "command": ["sh", "-c", "g++ /app/script.cpp -o /app/output_executable && exec stdbuf -o0 /app/output_executable"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-gcc"
   },
   "csharp": {
-    "image": "mcr.microsoft.com/dotnet/sdk:latest",
-    "filename": "Script.cs",
-    "command": ["sh", "-c", "cd /app && dotnet new console --force -o . > /dev/null && cp Script.cs Program.cs && rm Script.cs && exec dotnet run"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-dotnet"
   },
   "typescript": {
-    "image": "node:18-alpine",
-    "filename": "script.ts",
-    "command": ["sh", "-c", "npm install -g typescript > /dev/null 2>&1 && tsc --module commonjs /app/script.ts && exec stdbuf -o0 node /app/script.js"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-node"
   },
   "java": {
-    "image": "openjdk:17-jdk-slim",
-    "filename": "Main.java",
-    "command": ["sh", "-c", "javac /app/Main.java && exec stdbuf -o0 java -cp /app Main"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-java"
   },
   "go": {
-    "image": "golang:1.21-alpine",
-    "filename": "script.go",
-    "command": ["stdbuf", "-o0", "go", "run", "/app/script.go"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-go"
   },
   "rust": {
-    "image": "rust:1-slim",
-    "filename": "main.rs",
-    "command": ["sh", "-c", "cd /app && rustc main.rs -o main_executable && exec stdbuf -o0 ./main_executable"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-rust"
   }
 }

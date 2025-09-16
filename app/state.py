@@ -14,6 +14,8 @@ running_containers: Dict[str, Dict[str, Any]] = {}
 running_containers_lock = asyncio.Lock()
 active_ai_streams: Dict[str, asyncio.Event] = {}
 active_ai_streams_lock = asyncio.Lock()
+running_previews: Dict[str, Dict[str, Any]] = {}
+running_previews_lock = asyncio.Lock()
 
 import re
 
@@ -77,7 +79,6 @@ def get_memory_for_client(session_id: str) -> ConversationBufferMemory:
 
             memory_instance.chat_memory.messages = messages_from_dict(langchain_messages)
             client_memory[session_id] = memory_instance
-            print(f"STATE: Memory loaded from DB and reconstructed for session {session_id}")
             return memory_instance
 
     except Exception as e:

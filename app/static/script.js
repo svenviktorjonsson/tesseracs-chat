@@ -30,14 +30,8 @@ const sendButton = document.getElementById('send-button');
 const thinkCheckbox = document.getElementById('think-checkbox');
 const stopAiButton = document.getElementById('stop-ai-button');
 
-// --- Core Variables ---
-let websocket;
-const clientId = `web-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-let currentTurnId = 0;
 
-// --- Constants ---
-const NO_THINK_PREFIX = "\\no_think";
-const THINK_PREFIX = "\\think";
+
 
 const LANGUAGE_ALIASES = {
     'python': 'python', 'py': 'python',
@@ -70,68 +64,23 @@ const PRISM_LANGUAGE_MAP = {
 };
 
 // --- State Variables ---
+let websocket;
+const clientId = `web-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+let currentTurnId = 0;
+let projectDataCache = {};
+
+// --- State Variables ---
 let supportedLanguagesConfig = {};
+
+// Turn-specific state, reset by resetStreamingState()
+let streamingState = {};
 let currentAiTurnContainer = null;
 let currentAnswerElement = null;
-let currentThinkingArea = null;
-let currentThinkingPreElement = null;
 let currentCodeBlocksArea = null;
-let codeBlockCounterThisTurn = 0;
-let thinkingRequestedForCurrentTurn = false;
-let accumulatedAnswerText = '';
-let hasThinkingContentArrivedThisTurn = false;
 let firstAnswerTokenReceived = false;
-let activeStreamingCodeBlocks = new Map(); // blockId -> { element, language, content }
+let activeStreamingCodeBlocks = new Map();
 let streamingCodeBlockCounter = 0;
 
-
-
-
-function addTerminalPrompt(outputPreElement, promptText) {
-    if (!outputPreElement) return;
-    
-    const outputContainer = outputPreElement.closest('.block-container');
-    if (!outputContainer) return;
-    
-    const inputField = document.createElement('input');
-    inputField.type = 'text';
-    inputField.style.border = 'none';
-    inputField.style.outline = 'none';
-    inputField.style.background = 'transparent';
-    inputField.style.color = 'inherit';
-    inputField.style.font = 'inherit';
-    inputField.style.padding = '0';
-    inputField.style.margin = '0';
-    inputField.style.display = 'inline';
-    inputField.style.width = 'auto';
-    inputField.style.minWidth = '200px';
-    
-    outputPreElement.appendChild(inputField);
-    inputField.focus();
-    
-    inputField.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            const userInput = inputField.value;
-            
-            const textNode = document.createTextNode(userInput + '\n');
-            outputPreElement.replaceChild(textNode, inputField);
-            
-            // FIX: Get the output block's ID and strip the prefix to find the original code block ID.
-            const outputBlockId = outputContainer.id; // e.g., "output-for-code-block-turn1-1"
-            const originalCodeBlockId = outputBlockId.replace('output-for-', ''); // results in "code-block-turn1-1"
-
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                websocket.send(JSON.stringify({
-                    type: 'code_input',
-                    payload: { 
-                        code_block_id: originalCodeBlockId, // Send the CORRECT ID
-                        input: userInput + '\n' 
-                    }
-                }));
-            }
-        }
-    });
-}
 
 function escapeHTML(str) {
     if (str === null || str === undefined) return '';
@@ -236,6 +185,7 @@ async function loadLanguagesConfig() {
     }
 }
 
+
 async function initializeCurrentUser() {
     try {
         const response = await fetch('/api/me');
@@ -311,11 +261,38 @@ function setInputDisabledState(inputsDisabled, aiResponding) {
 }
 
 
+function handleTypingIndicators(payload) {
+    const { user_id, user_name, is_typing, color } = payload;
+    const indicatorId = `typing-indicator-${user_id}`;
+    let existingIndicator = document.getElementById(indicatorId);
+
+    if (is_typing && !existingIndicator) {
+        const bubble = document.createElement('div');
+        bubble.id = indicatorId;
+        bubble.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'flex', 'flex-col', 'self-start', 'mr-auto');
+        bubble.style.backgroundColor = color || '#dbeafe';
+
+        const senderElem = document.createElement('p');
+        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800');
+        senderElem.textContent = escapeHTML(user_name);
+
+        const dots = document.createElement('span');
+        dots.classList.add('loading-dots');
+
+        bubble.appendChild(senderElem);
+        bubble.appendChild(dots);
+        chatHistory.appendChild(bubble);
+        scrollToBottom('smooth');
+    } else if (!is_typing && existingIndicator) {
+        existingIndicator.remove();
+    }
+}
+
 function addUserMessage(text) {
     if (!chatHistory) return;
 
     const messageElement = document.createElement('div');
-    messageElement.classList.add('message', 'user-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'self-end', 'ml-auto');
+    messageElement.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'self-end', 'ml-auto');
     
     const currentUser = window.currentUserInfo;
     const participantData = currentUser && window.participantInfo ? window.participantInfo[currentUser.id] : null;
@@ -323,7 +300,7 @@ function addUserMessage(text) {
     if (participantData && participantData.color) {
         messageElement.style.backgroundColor = participantData.color;
     } else {
-        messageElement.classList.add('bg-gray-200'); // Fallback color
+        messageElement.classList.add('bg-gray-200');
     }
 
     const senderElem = document.createElement('p');
@@ -333,13 +310,7 @@ function addUserMessage(text) {
 
     const contentElem = document.createElement('div');
     contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
-    
-    let displayedText = text;
-    // Always strip the prefix for display, regardless of who the message is for.
-    if (text.startsWith(NO_THINK_PREFIX)) {
-        displayedText = text.substring(NO_THINK_PREFIX.length).trim();
-    }
-    contentElem.textContent = displayedText.replace(/@\w+/g, '').trim(); 
+    contentElem.textContent = text.replace(/@\w+/g, '').trim();
     messageElement.appendChild(contentElem);
 
     chatHistory.appendChild(messageElement);
@@ -350,39 +321,66 @@ function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBl
     if (!parentElement || !msg) return;
 
     const senderType = msg.sender_type;
-    const senderName = msg.sender_name || (senderType === 'ai' ? 'AI' : 'User');
+    const senderName = msg.sender_name || (senderType === 'ai' ? 'AI Assistant' : 'User');
     const currentUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
     const isCurrentUser = msg.user_id === currentUserId;
 
     if (senderType === 'ai') {
         const aiTurnContainer = document.createElement('div');
-        aiTurnContainer.classList.add('ai-turn-container');
+        aiTurnContainer.className = 'ai-turn-container';
         if (msg.turn_id) aiTurnContainer.dataset.turnId = msg.turn_id;
-
-        const messageBubble = document.createElement('div');
-        messageBubble.classList.add('message', 'ai-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-sky-100', 'self-start', 'mr-auto');
-        if (msg.id) messageBubble.setAttribute('data-message-id', String(msg.id));
         
-        const senderElem = document.createElement('p');
-        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-sky-700');
-        senderElem.textContent = escapeHTML(senderName);
-        messageBubble.appendChild(senderElem);
+        // 1. Render the conversational part, if it exists
+        if (msg.content && msg.content.trim().length > 0) {
+            const messageBubble = document.createElement('div');
+            messageBubble.className = 'message ai-message';
+            messageBubble.style.backgroundColor = window.participantInfo?.['AI']?.color || '#dbeafe';
 
-        const contentElem = document.createElement('div');
-        contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
+            const senderElem = document.createElement('p');
+            senderElem.className = 'font-semibold text-sm mb-1 text-gray-800 italic';
+            senderElem.textContent = 'AI Assistant';
+            messageBubble.appendChild(senderElem);
 
-        const codeBlocksArea = document.createElement('div');
-        codeBlocksArea.classList.add('code-blocks-area');
+            const contentElem = document.createElement('div');
+            contentElem.className = 'text-gray-800 text-sm message-content';
+            
+            // Use our simplified helper to render Markdown and KaTeX
+            parseAndRenderAiContent(msg.content, contentElem);
+            
+            messageBubble.appendChild(contentElem);
+            aiTurnContainer.appendChild(messageBubble);
+        }
 
-        parseAndRenderAiContent(msg.content, contentElem, codeBlocksArea, msg.turn_id, editedCodeBlocks);
+        // 2. Render the file blocks from the structured `files` list, if they exist
+        if (msg.files && msg.files.length > 0) {
+            const codeBlocksArea = document.createElement('div');
+            codeBlocksArea.className = 'code-blocks-area';
 
-        messageBubble.appendChild(contentElem);
-        aiTurnContainer.appendChild(messageBubble);
-        aiTurnContainer.appendChild(codeBlocksArea);
+            msg.files.forEach((file, index) => {
+                const codeBlockIndex = index + 1;
+                const isRunnable = file.path.endsWith('run.sh');
+                const blockId = `code-block-turn${msg.turn_id}-${codeBlockIndex}`;
+                const finalCodeContent = editedCodeBlocks[blockId] || file.content;
+
+                const block = createCodeBlock(
+                    file.language,
+                    finalCodeContent,
+                    file.content, // original content for dataset
+                    msg.turn_id,
+                    codeBlockIndex,
+                    codeBlocksArea,
+                    isRunnable
+                );
+                block.querySelector('.block-title .title-text').textContent = file.path;
+                initializeCodeBlockHistory(blockId, finalCodeContent);
+            });
+            aiTurnContainer.appendChild(codeBlocksArea);
+        }
 
         parentElement.appendChild(aiTurnContainer);
 
     } else if (senderType === 'user' || senderType === 'system') {
+        // This logic for user messages remains the same
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
         messageDiv.setAttribute('data-sender', senderType);
@@ -394,15 +392,11 @@ function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBl
             } else {
                 messageDiv.classList.add('self-start', 'mr-auto');
             }
-            
             let bubbleColor = msg.sender_color;
             if (!bubbleColor && window.participantInfo && msg.user_id) {
                 const participant = window.participantInfo[msg.user_id];
-                if (participant) {
-                    bubbleColor = participant.color;
-                }
+                if (participant) bubbleColor = participant.color;
             }
-            
             if (bubbleColor) {
                 messageDiv.style.backgroundColor = bubbleColor;
             } else {
@@ -414,21 +408,31 @@ function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBl
 
         const senderElem = document.createElement('p');
         senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800');
-        senderElem.textContent = escapeHTML(senderName);
+        senderElem.textContent = senderName;
         messageDiv.appendChild(senderElem);
 
         const contentElem = document.createElement('div');
         contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
-        
-        let displayedText = msg.content || '';
-        if (displayedText.startsWith(NO_THINK_PREFIX)) {
-            displayedText = displayedText.substring(NO_THINK_PREFIX.length).trim();
-        }
-        contentElem.innerHTML = marked.parse(displayedText);
+        const cleanContent = (msg.content || '').replace(/@\w+/g, '').trim();
+        contentElem.innerHTML = marked.parse(cleanContent);
         messageDiv.appendChild(contentElem);
-
         parentElement.appendChild(messageDiv);
     }
+}
+
+// REPLACE the old function with this one
+function finalizeTurnOnErrorOrClose() {
+    console.log("[STREAM] Finalizing turn.");
+    setInputDisabledState(false, false);
+    if (messageInput) messageInput.focus();
+
+    // Reset the new streaming state variables to their initial state
+    currentStreamingAnswerElement = null;
+    currentStreamingFile = {
+        container: null,
+        codeElement: null,
+        path: null
+    };
 }
 
 function addSystemMessage(text) {
@@ -453,165 +457,15 @@ function addErrorMessage(text) {
     setTimeout(() => scrollToBottom('smooth'), 50);
 }
 
-function setupNewAiTurn() {
-    currentTurnId++;
-    codeBlockCounterThisTurn = 0;
-    accumulatedAnswerText = '';
-    hasThinkingContentArrivedThisTurn = false;
-    firstAnswerTokenReceived = false;
 
-    // This map is for tracking blocks within a single turn and MUST be cleared.
-    activeStreamingCodeBlocks.clear();
-    // streamingCodeBlockCounter is now session-wide and is NOT reset here.
-
-    currentAiTurnContainer = null;
-    currentThinkingArea = null;
-    currentThinkingPreElement = null;
-    currentAnswerElement = null;
-    currentCodeBlocksArea = null;
-
-    currentAiTurnContainer = document.createElement('div');
-    currentAiTurnContainer.classList.add('ai-turn-container');
-    currentAiTurnContainer.dataset.turnId = currentTurnId;
-
-    // Thinking Area Setup
-    currentThinkingArea = document.createElement('div');
-    currentThinkingArea.classList.add('thinking-area');
-    currentThinkingArea.dataset.turnId = currentTurnId;
-    if (!thinkingRequestedForCurrentTurn) {
-        currentThinkingArea.style.display = 'none';
-    }
-    
-    const details = document.createElement('details');
-    details.id = `thinking-details-${currentTurnId}`;
-    const summary = document.createElement('summary');
-    summary.classList.add('thinking-summary');
-    const summaryTextSpan = document.createElement('span');
-    summaryTextSpan.classList.add('text');
-    summaryTextSpan.textContent = 'Show Thinking';
-    const summaryDotsSpan = document.createElement('span');
-    summaryDotsSpan.classList.add('dots');
-    summary.appendChild(summaryTextSpan);
-    summary.appendChild(summaryDotsSpan);
-    currentThinkingPreElement = document.createElement('pre');
-    details.appendChild(summary);
-    details.appendChild(currentThinkingPreElement);
-    currentThinkingArea.appendChild(details);
-    currentAiTurnContainer.appendChild(currentThinkingArea);
-    
-    details.addEventListener('toggle', (event) => {
-        const textSpan = event.target.querySelector('.thinking-summary .text');
-        if (!textSpan) return;
-        textSpan.textContent = event.target.open ? 'Hide Thinking' : 'Show Thinking';
-    });
-
-    // Answer Element (AI Message Bubble) Setup
-    currentAnswerElement = document.createElement('div');
-    currentAnswerElement.classList.add('message', 'ai-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-sky-100', 'self-start', 'mr-auto');
-
-    const senderElem = document.createElement('p');
-    senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-sky-700');
-    senderElem.textContent = 'AI';
-    currentAnswerElement.appendChild(senderElem);
-
-    const liveContentDiv = document.createElement('div');
-    liveContentDiv.classList.add('text-gray-800', 'text-sm', 'message-content', 'live-ai-content-area');
-    currentAnswerElement.appendChild(liveContentDiv);
-
-    if (thinkingRequestedForCurrentTurn) {
-        currentAnswerElement.style.display = 'none';
-    } else {
-        const loadingSpan = document.createElement('span');
-        loadingSpan.classList.add('loading-dots');
-        liveContentDiv.appendChild(loadingSpan);
-    }
-    currentAiTurnContainer.appendChild(currentAnswerElement);
-
-    // Code Blocks Area Setup
-    currentCodeBlocksArea = document.createElement('div');
-    currentCodeBlocksArea.classList.add('code-blocks-area');
-    currentAiTurnContainer.appendChild(currentCodeBlocksArea);
-
-    chatHistory.appendChild(currentAiTurnContainer);
-}
-
-// --- Live Rendering ---
-function renderLiveMessage(fullContent) {
-    if (!currentAiTurnContainer) return;
-
-    if (!firstAnswerTokenReceived && fullContent.trim().length > 0) {
-        if (currentAnswerElement && currentAnswerElement.style.display === 'none') {
-            currentAnswerElement.style.display = '';
-        }
-        const loadingDots = currentAnswerElement ? currentAnswerElement.querySelector('.loading-dots') : null;
-        if (loadingDots) loadingDots.remove();
-        firstAnswerTokenReceived = true;
-    }
-
-    const contentArea = currentAnswerElement.querySelector('.live-ai-content-area');
-    const codeArea = currentCodeBlocksArea;
-
-    if (!contentArea || !codeArea) return;
-    
-    parseAndRenderStreamingContent(fullContent, contentArea, codeArea, currentTurnId);
-    scrollToBottom('auto');
-}
-
-function parseAndRenderAiContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix, editedCodeBlocks = {}) {
-    if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
-
-    const KATEX_PLACEHOLDER_PREFIX_HISTORICAL = `%%HISTORICAL_KATEX_PLACEHOLDER_${turnIdSuffix}_`;
-    const codeBlockRegex = /```(\w*)\n([\s\S]*?)\n```/g;
-
-    let contentForProcessing = contentString;
-    let historicalCodeBlockCounter = 0;
-    const extractedCodeBlocks = [];
-    let tempContentForCodeExtraction = contentForProcessing;
-    let contentAfterCodeExtraction = "";
-    let lastCodeMatchEndIndex = 0;
-    let matchCode;
-
-    codeBlocksDivElement.innerHTML = '';
-
-    while ((matchCode = codeBlockRegex.exec(tempContentForCodeExtraction)) !== null) {
-        const language = (matchCode[1] || 'plaintext').toLowerCase();
-        const originalCode = matchCode[2];
-        const placeholder = `%%HISTORICAL_CODE_BLOCK_${historicalCodeBlockCounter}%%`;
-
-        contentAfterCodeExtraction += tempContentForCodeExtraction.substring(lastCodeMatchEndIndex, matchCode.index);
-
-        if (language === 'markdown' || language === 'md') {
-            contentAfterCodeExtraction += originalCode;
-        } else {
-            historicalCodeBlockCounter++;
-            const blockId = `code-block-turn${turnIdSuffix}-${historicalCodeBlockCounter}`;
-
-            extractedCodeBlocks.push({ 
-                language, 
-                originalCode, 
-                placeholder, 
-                index: historicalCodeBlockCounter,
-                id: blockId 
-            });
-            contentAfterCodeExtraction += placeholder;
-        }
-        lastCodeMatchEndIndex = codeBlockRegex.lastIndex;
-    }
-    contentAfterCodeExtraction += tempContentForCodeExtraction.substring(lastCodeMatchEndIndex);
-    contentForProcessing = contentAfterCodeExtraction;
-
-    extractedCodeBlocks.forEach(block => {
-        const finalCodeContent = editedCodeBlocks[block.id] || block.originalCode;
-        createCodeBlock(block.language, finalCodeContent, block.originalCode, turnIdSuffix, block.index, codeBlocksDivElement, false);
-        initializeCodeBlockHistory(block.id, finalCodeContent);
-        const replacementHTML = `<a href="#${block.id}" class="code-block-link text-blue-600 hover:underline">[Code Block ${block.index}]</a>`;
-        contentForProcessing = contentForProcessing.replace(block.placeholder, replacementHTML);
-    });
+function parseAndRenderAiContent(contentString, targetElement) {
+    if (!contentString || !targetElement) return;
 
     const storedKatex = {};
     let katexPlaceholderIndex = 0;
     const katexRegexGlobal = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$((?:\\\$|[^$])+?)(?<!\\)\$/g;
-    let textForMarkdownParsing = contentForProcessing.replace(katexRegexGlobal, (match, displayContent, inlineContent) => {
+
+    let textForMarkdownParsing = contentString.replace(katexRegexGlobal, (match, displayContent, inlineContent) => {
         const isDisplayMode = !!displayContent;
         const katexString = displayContent || inlineContent;
         const cleanedKatexString = katexString.replace(/\\([$])/g, '$1');
@@ -623,19 +477,19 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
         } catch (e) {
             katexHtml = `<span class="katex-error" title="${escapeHTML(e.toString())}">${escapeHTML(match)}</span>`;
         }
-        const placeholderId = `${KATEX_PLACEHOLDER_PREFIX_HISTORICAL}${katexPlaceholderIndex++}`;
+        const placeholderId = `%%__KATEX_PLACEHOLDER_${katexPlaceholderIndex++}__%%`;
         storedKatex[placeholderId] = katexHtml;
         return placeholderId;
     });
 
-    answerBubbleContentElement.innerHTML = marked.parse(textForMarkdownParsing);
+    targetElement.innerHTML = marked.parse(textForMarkdownParsing);
 
     if (Object.keys(storedKatex).length > 0) {
-        const walker = document.createTreeWalker(answerBubbleContentElement, NodeFilter.SHOW_TEXT, null, false);
+        const walker = document.createTreeWalker(targetElement, NodeFilter.SHOW_TEXT, null, false);
         let node;
         const textNodesToModify = [];
         while (node = walker.nextNode()) {
-            if (node.nodeValue && node.nodeValue.includes(KATEX_PLACEHOLDER_PREFIX_HISTORICAL)) {
+            if (node.nodeValue && node.nodeValue.includes('%%__KATEX_PLACEHOLDER_')) {
                 textNodesToModify.push(node);
             }
         }
@@ -645,7 +499,7 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
             if (!parent) return;
             const fragment = document.createDocumentFragment();
             let lastSplitEnd = 0;
-            const placeholderScanRegex = new RegExp(`(${KATEX_PLACEHOLDER_PREFIX_HISTORICAL}\\d+)`, 'g');
+            const placeholderScanRegex = /(%%__KATEX_PLACEHOLDER_\d+__%%)/g;
             let placeholderMatch;
             while((placeholderMatch = placeholderScanRegex.exec(currentTextValue)) !== null) {
                 const placeholderId = placeholderMatch[1];
@@ -667,201 +521,6 @@ function parseAndRenderAiContent(contentString, answerBubbleContentElement, code
             }
             parent.replaceChild(fragment, textNode);
         });
-    }
-}
-
-function parseAndRenderStreamingContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix) {
-    if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
-
-    const codeBlockRegex = /```(\w*)\n?([\s\S]*?)(?:\n```|$)/g;
-
-    let match;
-    let lastIndex = 0;
-    let contentWithPlaceholders = '';
-
-    while ((match = codeBlockRegex.exec(contentString)) !== null) {
-        const [fullMatch, language, code] = match;
-        const isComplete = fullMatch.endsWith('\n```') || fullMatch.endsWith('```');
-        const startIndex = match.index;
-
-        contentWithPlaceholders += contentString.substring(lastIndex, startIndex);
-
-        const safeLanguage = (language || 'plaintext').trim().toLowerCase();
-
-        if (safeLanguage === 'markdown' || safeLanguage === 'md') {
-            contentWithPlaceholders += code;
-            if (isComplete) {
-                contentWithPlaceholders += '\n';
-            }
-        } else {
-            if (!activeStreamingCodeBlocks.has(startIndex)) {
-                streamingCodeBlockCounter++;
-                const newBlockElement = createCodeBlock(
-                    language || 'plaintext', 
-                    code, 
-                    code,
-                    turnIdSuffix, 
-                    streamingCodeBlockCounter, 
-                    codeBlocksDivElement, 
-                    true
-                );
-                activeStreamingCodeBlocks.set(startIndex, {
-                    blockId: newBlockElement.id,
-                    language: language || 'plaintext',
-                    content: code,
-                    isComplete: isComplete
-                });
-            } else {
-                const blockData = activeStreamingCodeBlocks.get(startIndex);
-                const newLanguage = language || 'plaintext';
-                blockData.language = newLanguage;
-                blockData.content = code;
-                blockData.isComplete = isComplete;
-                updateStreamingCodeBlockContent(blockData.blockId, newLanguage, code, isComplete);
-            }
-
-            const blockData = activeStreamingCodeBlocks.get(startIndex);
-            const blockNumber = blockData.blockId.split('-').pop();
-            const blockId = `code-block-turn${turnIdSuffix}-${blockNumber}`;
-            const linkHTML = `<a href="#${blockId}" class="code-block-link text-blue-600 hover:underline">[Code Block ${blockNumber}]</a>`;
-            contentWithPlaceholders += linkHTML;
-        }
-        lastIndex = codeBlockRegex.lastIndex;
-    }
-
-    contentWithPlaceholders += contentString.substring(lastIndex);
-
-    const KATEX_PLACEHOLDER_PREFIX_STREAMING = `%%STREAMING_KATEX_PLACEHOLDER_${turnIdSuffix}_`;
-    const storedKatex = {};
-    let katexPlaceholderIndex = 0;
-
-    const katexRegexGlobal = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$((?:\\\$|[^$])+?)(?<!\\)\$/g;
-    let textForMarkdownParsing = contentWithPlaceholders.replace(katexRegexGlobal, (match, displayContent, inlineContent) => {
-        const isDisplayMode = !!displayContent;
-        const katexString = displayContent || inlineContent;
-        const cleanedKatexString = katexString.replace(/\\([$])/g, '$1');
-        let katexHtml = '';
-        try {
-            katexHtml = katex.renderToString(cleanedKatexString, {
-                displayMode: isDisplayMode, throwOnError: false, output: "html", strict: false
-            });
-        } catch (e) {
-            katexHtml = `<span class="katex-error" title="${escapeHTML(e.toString())}">${escapeHTML(match)}</span>`;
-        }
-        const placeholderId = `${KATEX_PLACEHOLDER_PREFIX_STREAMING}${katexPlaceholderIndex++}`;
-        storedKatex[placeholderId] = katexHtml;
-        return placeholderId;
-    });
-
-    answerBubbleContentElement.innerHTML = marked.parse(textForMarkdownParsing);
-
-    if (Object.keys(storedKatex).length > 0) {
-        const walker = document.createTreeWalker(answerBubbleContentElement, NodeFilter.SHOW_TEXT, null, false);
-        let node;
-        const textNodesToModify = [];
-        while (node = walker.nextNode()) {
-            if (node.nodeValue && node.nodeValue.includes(KATEX_PLACEHOLDER_PREFIX_STREAMING)) {
-                textNodesToModify.push(node);
-            }
-        }
-        textNodesToModify.forEach(textNode => {
-            let currentTextValue = textNode.nodeValue;
-            const parent = textNode.parentNode;
-            if (!parent) return;
-            const fragment = document.createDocumentFragment();
-            let lastSplitEnd = 0;
-            const placeholderScanRegex = new RegExp(`(${KATEX_PLACEHOLDER_PREFIX_STREAMING}\\d+)`, 'g');
-            let placeholderMatch;
-            while((placeholderMatch = placeholderScanRegex.exec(currentTextValue)) !== null) {
-                const placeholderId = placeholderMatch[1];
-                const matchStartIndex = placeholderMatch.index;
-                if (matchStartIndex > lastSplitEnd) {
-                    fragment.appendChild(document.createTextNode(currentTextValue.substring(lastSplitEnd, matchStartIndex)));
-                }
-                if (storedKatex[placeholderId]) {
-                    const katexWrapperSpan = document.createElement('span');
-                    katexWrapperSpan.innerHTML = storedKatex[placeholderId];
-                    fragment.appendChild(katexWrapperSpan.firstChild || katexWrapperSpan);
-                } else {
-                    fragment.appendChild(document.createTextNode(placeholderId));
-                }
-                lastSplitEnd = placeholderScanRegex.lastIndex;
-            }
-            if (lastSplitEnd < currentTextValue.length) {
-                fragment.appendChild(document.createTextNode(currentTextValue.substring(lastSplitEnd)));
-            }
-            parent.replaceChild(fragment, textNode);
-        });
-    }
-}
-
-function updateStreamingCodeBlockContent(blockId, language, content, isComplete) {
-    const container = document.getElementById(blockId);
-    if (!container) return;
-
-    const codeElement = container.querySelector('code');
-    const dotsSpan = container.querySelector('.streaming-dots');
-    const titleTextSpan = container.querySelector('.block-title .title-text');
-    const currentLanguage = container.dataset.language;
-
-    const rawLang = (language || 'plaintext').trim().toLowerCase();
-    const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
-
-    if (canonicalLang && canonicalLang !== currentLanguage) {
-        container.dataset.language = canonicalLang;
-        if (titleTextSpan) {
-            const blockNumber = blockId.split('-').pop();
-            titleTextSpan.textContent = `Code Block ${blockNumber} (${canonicalLang})`;
-        }
-        
-        const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
-        if (codeElement) {
-            codeElement.className = `language-${prismLang}`;
-        }
-
-        const runStopBtn = container.querySelector('.run-code-btn');
-        if (runStopBtn) {
-            const isLanguageSupported = supportedLanguagesConfig[canonicalLang]?.executable;
-            if (isLanguageSupported) {
-                runStopBtn.style.display = '';
-                runStopBtn.title = 'Run Code';
-            } else {
-                runStopBtn.style.display = 'none';
-                runStopBtn.title = `Run Code (language '${canonicalLang}' not supported for execution)`;
-            }
-        }
-        
-        initializeCodeBlockHistory(blockId, content);
-    }
-    
-    if (codeElement) {
-        const cursorPos = getCursorPosition(codeElement);
-        const wasEditing = document.activeElement === codeElement;
-        
-        codeElement.textContent = content;
-        
-        if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-            try {
-                Prism.highlightElement(codeElement);
-                if (wasEditing) {
-                    setCursorPosition(codeElement, cursorPos);
-                    codeElement.focus();
-                }
-            } catch (e) {
-                console.error(`Prism highlight error:`, e);
-            }
-        }
-        
-        if (window.codeBlockHistories && window.codeBlockHistories.has(blockId)) {
-            const historyData = window.codeBlockHistories.get(blockId);
-            if (historyData.history.length === 1) {
-                historyData.history[0] = content;
-            }
-        }
-    }
-    
-    if (isComplete && dotsSpan) {
-        dotsSpan.remove();
     }
 }
 
@@ -878,113 +537,108 @@ function updateAllRunButtonStates() {
     });
 }
 
-function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isStreaming = false) {
-   if (!codeBlocksAreaElement) {
-       console.error("createCodeBlock: Code blocks area element is null!");
-       return;
-   }
 
-   const rawLang = (language || 'plaintext').trim().toLowerCase();
-   const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
-   const isLanguageSupported = supportedLanguagesConfig[canonicalLang]?.executable;
-   const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
+function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isRunnable = false) {
+    if (!codeBlocksAreaElement) {
+        console.error("createCodeBlock: Code blocks area element is null!");
+        return;
+    }
 
-   const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
+    const rawLang = (language || 'plaintext').trim().toLowerCase();
+    const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
+    const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
+    const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
 
-   const container = document.createElement('div');
-   container.classList.add('block-container');
-   container.id = blockId;
-   container.dataset.language = canonicalLang;
-   // Set the dataset to the TRUE original content, not the potentially edited content
-   container.dataset.originalContent = originalCodeForDataset;
+    const container = document.createElement('div');
+    container.classList.add('block-container');
+    container.id = blockId;
+    container.dataset.language = canonicalLang;
+    container.dataset.originalContent = originalCodeForDataset;
 
-   const codeHeader = document.createElement('div');
-   codeHeader.classList.add('block-header');
+    const codeHeader = document.createElement('div');
+    codeHeader.classList.add('block-header');
 
-   const codeButtonsDiv = document.createElement('div');
-   codeButtonsDiv.classList.add('block-buttons');
+    const codeButtonsDiv = document.createElement('div');
+    codeButtonsDiv.classList.add('block-buttons');
 
-   const runStopBtn = document.createElement('button');
-   runStopBtn.classList.add('run-code-btn', 'block-action-btn');
-   runStopBtn.dataset.status = 'idle';
-   runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
-   runStopBtn.addEventListener('click', handleRunStopCodeClick);
-   runStopBtn.disabled = false;
-   runStopBtn.title = 'Run Code';
+    const runStopBtn = document.createElement('button');
+    runStopBtn.classList.add('run-code-btn', 'block-action-btn');
+    runStopBtn.dataset.status = 'idle';
+    runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
+    runStopBtn.title = 'Run Project';
+    runStopBtn.addEventListener('click', handleRunStopCodeClick);
+    
+    if (!isRunnable) {
+        runStopBtn.style.display = 'none';
+    }
+    codeButtonsDiv.appendChild(runStopBtn);
 
-   if (!isLanguageSupported) {
-       runStopBtn.style.display = 'none';
-   }
+    const restoreBtn = document.createElement('button');
+    restoreBtn.classList.add('restore-code-btn', 'block-action-btn');
+    restoreBtn.textContent = 'Restore';
+    restoreBtn.title = 'Restore Original Code';
 
-   const restoreBtn = document.createElement('button');
-   restoreBtn.classList.add('restore-code-btn', 'block-action-btn');
-   restoreBtn.textContent = 'Restore';
-   restoreBtn.title = 'Restore Original Code';
+    const toggleCodeBtn = document.createElement('button');
+    toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
+    toggleCodeBtn.textContent = 'Hide';
+    toggleCodeBtn.title = 'Show/Hide Code';
 
-   const toggleCodeBtn = document.createElement('button');
-   toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
-   toggleCodeBtn.textContent = 'Hide';
-   toggleCodeBtn.title = 'Show/Hide Code';
+    const copyCodeBtn = document.createElement('button');
+    copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
+    copyCodeBtn.textContent = 'Copy';
+    copyCodeBtn.title = 'Copy Code';
 
-   const copyCodeBtn = document.createElement('button');
-   copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
-   copyCodeBtn.textContent = 'Copy';
-   copyCodeBtn.title = 'Copy Code';
+    codeButtonsDiv.appendChild(restoreBtn);
+    codeButtonsDiv.appendChild(toggleCodeBtn);
+    codeButtonsDiv.appendChild(copyCodeBtn);
 
-   codeButtonsDiv.appendChild(runStopBtn);
-   codeButtonsDiv.appendChild(restoreBtn);
-   codeButtonsDiv.appendChild(toggleCodeBtn);
-   codeButtonsDiv.appendChild(copyCodeBtn);
+    const codeTitle = document.createElement('span');
+    codeTitle.classList.add('block-title');
+    const titleTextSpan = document.createElement('span');
+    titleTextSpan.classList.add('title-text');
+    titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${canonicalLang})`;
+    codeTitle.appendChild(titleTextSpan);
 
-   const codeTitle = document.createElement('span');
-   codeTitle.classList.add('block-title');
-   const titleTextSpan = document.createElement('span');
-   titleTextSpan.classList.add('title-text');
-   titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${canonicalLang})`;
-   codeTitle.appendChild(titleTextSpan);
+    codeHeader.appendChild(codeButtonsDiv);
+    codeHeader.appendChild(codeTitle);
 
-   if (isStreaming) {
-       const dotsSpan = document.createElement('span');
-       dotsSpan.classList.add('streaming-dots');
-       dotsSpan.textContent = '...';
-       codeTitle.appendChild(dotsSpan);
-   }
+    const preElement = document.createElement('pre');
+    preElement.classList.add('manual');
+    const codeElement = document.createElement('code');
+    codeElement.className = `language-${prismLang}`;
+    codeElement.setAttribute('contenteditable', 'true');
+    codeElement.setAttribute('spellcheck', 'false');
+    codeElement.textContent = codeContent;
 
-   codeHeader.appendChild(codeButtonsDiv);
-   codeHeader.appendChild(codeTitle);
+    preElement.appendChild(codeElement);
+    container.appendChild(codeHeader);
+    container.appendChild(preElement);
+    codeBlocksAreaElement.appendChild(container);
 
-   const preElement = document.createElement('pre');
-   preElement.classList.add('manual');
-   const codeElement = document.createElement('code');
-   codeElement.className = `language-${prismLang}`;
-   codeElement.setAttribute('contenteditable', 'true');
-   codeElement.setAttribute('spellcheck', 'false');
-   // Display the final content (which could be an edit)
-   codeElement.textContent = codeContent;
+    if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+        try {
+            Prism.highlightElement(codeElement);
+        } catch (e) {
+            console.error(`Prism highlight error:`, e);
+        }
+    }
 
-   initializeCodeBlockHistory(blockId, codeContent);
+    toggleCodeBtn.addEventListener('click', () => {
+        const isHidden = preElement.classList.toggle('hidden');
+        toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide';
+    });
 
-   preElement.appendChild(codeElement);
-   container.appendChild(codeHeader);
-   container.appendChild(preElement);
-   codeBlocksAreaElement.appendChild(container);
+    copyCodeBtn.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(codeElement.textContent || '');
+            copyCodeBtn.textContent = 'Copied!';
+            setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500);
+        } catch (err) {
+            console.error('Failed to copy code: ', err);
+        }
+    });
 
-   toggleCodeBtn.addEventListener('click', () => {
-       const isHidden = preElement.classList.toggle('hidden');
-       toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide';
-   });
-
-   copyCodeBtn.addEventListener('click', async () => {
-       try {
-           await navigator.clipboard.writeText(codeElement.textContent || '');
-           copyCodeBtn.textContent = 'Copied!';
-           setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500);
-       } catch (err) {
-           console.error('Failed to copy code: ', err);
-       }
-   });
-
-   restoreBtn.addEventListener('click', async () => {
+    restoreBtn.addEventListener('click', async () => {
         const originalContent = container.dataset.originalContent;
         const sessionId = getSessionIdFromPath();
         if (!sessionId || !window.csrfTokenRaw) return;
@@ -1005,7 +659,6 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
                         setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length));
                     } catch (e) { console.error(`Prism highlight error:`, e); }
                 }
-                // Add the restored state to the undo history instead of wiping it
                 saveCodeBlockState(blockId, originalContent);
             } else {
                 const error = await response.json();
@@ -1015,105 +668,37 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
             console.error("Error restoring code block:", error);
             alert("An error occurred while restoring the code block.");
         }
-   });
-
-   codeElement.addEventListener('keydown', (event) => {
-       handleCodeBlockKeydown(event, blockId);
-   });
-
-   codeElement.addEventListener('blur', () => {
-       const content = codeElement.textContent || '';
-       saveCodeBlockContent(blockId, content);
-   });
-
-   codeElement.addEventListener('input', () => {
-       const cursorPos = getCursorPosition(codeElement);
-       const content = codeElement.textContent || '';
-
-       setTimeout(() => {
-           if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-               try {
-                   Prism.highlightElement(codeElement);
-                   setCursorPosition(codeElement, cursorPos);
-               } catch (e) {
-                   console.error(`Prism highlight error:`, e);
-               }
-           }
-       }, 10);
-
-       saveCodeBlockState(blockId, content);
-   });
-
-   return container;
-}
-
-function createPlotBlock(codeBlockId, plotData, uniquePlotBlockId, plotIndex) {
-    const codeContainer = document.getElementById(codeBlockId);
-    if (!codeContainer) return;
-
-    // Remove existing plot
-    const existingPlot = document.getElementById(uniquePlotBlockId);
-    if (existingPlot) {
-        existingPlot.remove();
-    }
-
-    // Find where to insert - after output block if it exists, otherwise after code block
-    const outputBlock = document.getElementById(`output-for-${codeBlockId}`);
-    const insertAfter = outputBlock || codeContainer;
-
-    const plotContainer = document.createElement('div');
-    plotContainer.id = uniquePlotBlockId;
-    plotContainer.className = 'block-container';
-
-    const blockNumber = codeBlockId.split('-').pop();
-
-    const plotHeader = document.createElement('div');
-    plotHeader.className = 'block-header';
-    plotHeader.innerHTML = `
-        <div class="block-buttons">
-            <button class="toggle-output-btn block-action-btn">Hide</button>
-            <button class="copy-plot-btn block-action-btn">Copy SVG</button>
-        </div>
-        <span class="block-title">Plot Output ${plotIndex}</span>
-        <span class="block-status success">Rendered</span>
-    `;
-
-    const plotDivId = `plot-div-${uniquePlotBlockId}`;
-    const plotDiv = document.createElement('div');
-    plotDiv.id = plotDivId;
-    plotDiv.className = 'mpld3-plot-container';
-
-    plotContainer.appendChild(plotHeader);
-    plotContainer.appendChild(plotDiv);
-
-    // Insert after the right element (output block or code block)
-    insertAfter.insertAdjacentElement('afterend', plotContainer);
-
-    // Add event listeners
-    plotHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-        const isHidden = plotDiv.classList.toggle('hidden');
-        e.target.textContent = isHidden ? 'Show' : 'Hide';
     });
 
-    plotHeader.querySelector('.copy-plot-btn').addEventListener('click', async (e) => {
-        try {
-            const svgElement = plotDiv.querySelector('svg');
-            if (svgElement) {
-                const svgString = new XMLSerializer().serializeToString(svgElement);
-                await navigator.clipboard.writeText(svgString);
-                e.target.textContent = 'Copied!';
-                setTimeout(() => { e.target.textContent = 'Copy SVG'; }, 1500);
+    codeElement.addEventListener('keydown', (event) => {
+        handleCodeBlockKeydown(event, blockId);
+    });
+
+    codeElement.addEventListener('blur', () => {
+        const content = codeElement.textContent || '';
+        saveCodeBlockContent(blockId, content);
+    });
+
+    codeElement.addEventListener('input', () => {
+        const cursorPos = getCursorPosition(codeElement);
+        const content = codeElement.textContent || '';
+
+        setTimeout(() => {
+            if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+                try {
+                    Prism.highlightElement(codeElement);
+                    setCursorPosition(codeElement, cursorPos);
+                } catch (e) {
+                    console.error(`Prism highlight error:`, e);
+                }
             }
-        } catch (err) {
-            console.error('Failed to copy SVG:', err);
-        }
+        }, 10);
+
+        saveCodeBlockState(blockId, content);
     });
 
-    renderPlotWhenReady(plotDivId, plotData);
+    return container;
 }
-
-// In app/static/script.js
-// Replace the existing renderPlotWhenReady function with this one.
 
 function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
     const startTime = Date.now();
@@ -1170,182 +755,142 @@ function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
 
 function handleStructuredMessage(messageData) {
     const { type, payload } = messageData;
-    console.log(`[handleStructuredMessage] Processing ${type} for ${payload?.code_block_id || 'unknown'}`);
-    
-    if (!payload || !payload.code_block_id) return;
-    
-    const codeBlockId = payload.code_block_id;
-    const codeContainer = document.getElementById(codeBlockId);
-    const outputBlockId = `output-for-${codeBlockId}`;
+    if (!payload || !payload.project_id) return;
+
+    const projectId = payload.project_id;
+    const codeContainer = document.getElementById(projectId);
+    const outputBlockId = `output-for-${projectId}`;
     let outputContainer = document.getElementById(outputBlockId);
 
-    if (!outputContainer && (type === 'code_output' || type === 'code_waiting_input')) {
+    // This function is now simplified, as createOrClearOutputContainer handles creation
+    if (!outputContainer) {
+        // If an output message arrives but there's no container, create it.
+        outputContainer = createOrClearOutputContainer(projectId);
+    }
+    
+    switch (type) {
+        case 'code_output': {
+            const outputPre = outputContainer.querySelector('.block-output-console pre');
+            if (outputPre) {
+                addCodeOutput(outputPre, payload.stream, payload.data);
+                outputContainer.style.display = ''; // Ensure it's visible
+            }
+            break;
+        }
+        case 'code_finished': {
+            const { exit_code, error } = payload;
+            let finishMessage = `Finished (Exit: ${exit_code})`;
+            let statusClass = (exit_code === 0) ? 'success' : 'error';
+            if (error) {
+                finishMessage = 'Failed';
+                statusClass = 'error';
+                const outputPre = outputContainer.querySelector('.block-output-console pre');
+                if (outputPre) addCodeOutput(outputPre, 'stderr', `Error: ${error}`);
+            }
+            
+            updateHeaderStatus(outputContainer, finishMessage, statusClass);
+            if (codeContainer) {
+                const runStopBtn = codeContainer.querySelector('.run-code-btn');
+                if (runStopBtn) {
+                    runStopBtn.dataset.status = 'idle';
+                    runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
+                    runStopBtn.title = 'Run Code';
+                }
+            }
+            break;
+        }
+    }
+}
+
+// Add these two new functions to app/static/script.js
+
+function createOrClearOutputContainer(projectId) {
+    const outputBlockId = `output-for-${projectId}`;
+    let outputContainer = document.getElementById(outputBlockId);
+    const codeContainer = document.getElementById(projectId);
+
+    if (outputContainer) {
+        // Clear previous output content
+        const outputPre = outputContainer.querySelector('.block-output-console pre');
+        if (outputPre) outputPre.innerHTML = '';
+    } else {
+        // Create the container if it doesn't exist
         outputContainer = document.createElement('div');
         outputContainer.id = outputBlockId;
         outputContainer.className = 'block-container';
-        outputContainer.style.display = 'none'; // Start hidden
-        
-        const blockNumber = codeBlockId.split('-').pop();
+        const blockNumber = projectId.split('-').pop();
+
         const outputHeader = document.createElement('div');
         outputHeader.className = 'block-header';
         outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
+        
         const outputConsoleDiv = document.createElement('div');
         outputConsoleDiv.className = 'block-output-console';
         const outputPre = document.createElement('pre');
         outputConsoleDiv.appendChild(outputPre);
+        
         outputContainer.appendChild(outputHeader);
         outputContainer.appendChild(outputConsoleDiv);
-        codeContainer.insertAdjacentElement('afterend', outputContainer);
 
-        outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+        if (codeContainer) {
+            codeContainer.insertAdjacentElement('afterend', outputContainer);
+        } else {
+            chatHistory.appendChild(outputContainer);
+        }
+
+        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
             const isHidden = outputConsoleDiv.classList.toggle('hidden');
             e.target.textContent = isHidden ? 'Show' : 'Hide';
         });
-        outputContainer.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
-            try {
-                await navigator.clipboard.writeText(outputPre.textContent || '');
-                e.target.textContent = 'Copied!';
-                setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-            } catch (err) { console.error('Failed to copy output:', err); }
+        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
+            await navigator.clipboard.writeText(outputPre.textContent || '');
+            e.target.textContent = 'Copied!';
+            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
         });
     }
+    outputContainer.style.display = ''; // Make sure it's visible
+    return outputContainer;
+}
 
+function createPlotBlock(projectId, plotData, plotIndex) {
+    const codeContainer = document.getElementById(projectId);
     if (!codeContainer) return;
+
+    const uniquePlotBlockId = `${projectId}-plot-${plotIndex}`;
+    const existingPlot = document.getElementById(uniquePlotBlockId);
+    if (existingPlot) existingPlot.remove();
+
+    const outputContainer = createOrClearOutputContainer(projectId);
     
-    switch (type) {
-        case 'plot_output': {
-            if (payload.plot_data) {
-                // Check if the data is an array (for multiple plots) or a single object
-                const plots = Array.isArray(payload.plot_data) ? payload.plot_data : [payload.plot_data];
-                plots.forEach((plotData, index) => {
-                    // Create a unique ID for each plot block to avoid conflicts
-                    const uniquePlotBlockId = `${codeBlockId}-plot-${index}`;
-                    createPlotBlock(codeBlockId, plotData, uniquePlotBlockId, index + 1);
-                });
-            }
-            break;
-        }
+    const plotContainer = document.createElement('div');
+    plotContainer.id = uniquePlotBlockId;
+    plotContainer.className = 'block-container';
 
-        case 'code_output': {
-            if (!outputContainer) return;
-            const outputPre = outputContainer.querySelector('.block-output-console pre');
-            const language = codeContainer.dataset.language;
-            const outputText = payload.data;
-            
-            // Filter out harness messages AND library warnings
-            const isHarnessOutput = /Using Python|Audited|packages in|Matplotlib plots detected|Capturing all|\[Harness\]|UserWarning.*Blended transforms not yet supported|warnings\.warn|mplexporter\/exporter\.py/i.test(outputText);
-            
-            if (isHarnessOutput) {
-                // Skip harness output and library warnings completely
-                return;
-            }
-            
-            const isInstallerOutput = /Resolving|Downloading|Installing|Installed|uv pip install/.test(outputText);
+    const plotHeader = document.createElement('div');
+    plotHeader.className = 'block-header';
+    plotHeader.innerHTML = `
+        <div class="block-buttons">
+            <button class="toggle-output-btn block-action-btn">Hide</button>
+        </div>
+        <span class="block-title">Plot Output ${plotIndex}</span>
+        <span class="block-status success">Rendered</span>
+    `;
 
-            if (isInstallerOutput) {
-                let statusMessage = outputText.trim();
-                if (statusMessage.startsWith('uv pip install')) { statusMessage = 'Preparing to install packages...'; }
-                updateHeaderStatus(outputContainer, statusMessage, 'running');
-            } else {
-                if (outputPre) { 
-                    addCodeOutput(outputPre, payload.stream, outputText, language); 
-                    // Make sure the output block is visible since we have real content
-                    outputContainer.style.display = '';
-                }
-            }
-            break;
-        }
+    const plotDivId = `plot-div-${uniquePlotBlockId}`;
+    const plotDiv = document.createElement('div');
+    plotDiv.id = plotDivId;
+    plotDiv.className = 'mpld3-plot-container';
 
-        case 'code_waiting_input': {
-            if (!outputContainer) return;
-            updateHeaderStatus(outputContainer, 'Waiting for input...', 'waiting-input');
-            const outputPre = outputContainer.querySelector('.block-output-console pre');
-            if (outputPre) { 
-                addTerminalPrompt(outputPre, payload.prompt || '');
-                // Show output block when waiting for input
-                outputContainer.style.display = '';
-            }
-            break;
-        }
+    plotContainer.appendChild(plotHeader);
+    plotContainer.appendChild(plotDiv);
+    outputContainer.insertAdjacentElement('afterend', plotContainer);
 
-        case 'code_finished': {
-            if (!outputContainer) return;
-            const runStopBtn = codeContainer.querySelector('.run-code-btn');
-            const outputConsoleDiv = outputContainer.querySelector('.block-output-console');
-            const outputPre = outputConsoleDiv ? outputConsoleDiv.querySelector('pre') : null;
+    plotHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+        plotContainer.classList.toggle('hidden');
+        e.target.textContent = plotContainer.classList.contains('hidden') ? 'Show' : 'Hide';
+    });
 
-            if (!runStopBtn || !outputConsoleDiv || !outputPre) { return; }
-
-            const { exit_code, error } = payload;
-            let finishMessage = '';
-            let statusClass = '';
-            const language = codeContainer.dataset.language;
-            const codeElement = codeContainer.querySelector('code');
-            const codeContent = codeElement ? codeElement.textContent || '' : '';
-            let outputContent = null;
-            let htmlContent = null;
-            
-            // Check if we actually have any real output (not just whitespace)
-            const hasRealOutput = outputPre.textContent && outputPre.textContent.trim().length > 0;
-            
-            if (error) {
-                finishMessage = 'Failed';
-                statusClass = 'error';
-                const helpfulHint = error.includes("Docker service is unavailable") ? "\n\nHint: Is Docker Desktop running?" : "";
-                addCodeOutput(outputPre, 'stderr', `Error: ${error}${helpfulHint}`, language);
-                outputContent = outputPre.textContent;
-                outputContainer.style.display = ''; // Show on error
-            } else if (language === 'html') {
-                const iframe = document.createElement('iframe');
-                iframe.className = 'html-render-iframe';
-                htmlContent = outputPre.htmlBuffer || '';
-                const style = `<style>body { margin: 0; background-color: white; color: black; font-family: sans-serif; padding: 1rem; }</style>`;
-                iframe.srcdoc = style + htmlContent;
-                iframe.onload = () => { try { /* iframe resize logic */ } catch (e) { iframe.style.height = '400px'; } };
-                outputPre.replaceWith(iframe);
-                outputConsoleDiv.style.maxHeight = 'none';
-                finishMessage = `Finished (Rendered HTML)`;
-                statusClass = 'success';
-                outputContainer.style.display = ''; // Show for HTML
-            } else {
-                finishMessage = `Finished (Exit: ${exit_code})`;
-                statusClass = (exit_code === 0) ? 'success' : 'error';
-                outputContent = outputPre.textContent;
-                
-                // Hide output block if no real output and no error
-                if (!hasRealOutput && exit_code === 0) {
-                    outputContainer.style.display = 'none';
-                } else {
-                    outputContainer.style.display = '';
-                }
-            }
-            
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                const codeBlockParts = codeBlockId.split('-');
-                const extractedTurnId = codeBlockParts[2].replace('turn', '');
-                websocket.send(JSON.stringify({
-                    type: 'save_code_result',
-                    payload: {
-                        code_block_id: codeBlockId,
-                        language: language,
-                        code_content: codeContent,
-                        output_content: outputContent,
-                        html_content: htmlContent,
-                        exit_code: exit_code,
-                        error_message: error,
-                        execution_status: error ? 'error' : 'completed',
-                        turn_id: parseInt(extractedTurnId)
-                    }
-                }));
-            }
-            
-            updateHeaderStatus(outputContainer, finishMessage, statusClass);
-            runStopBtn.dataset.status = 'idle';
-            runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
-            runStopBtn.title = 'Run Code';
-            break;
-        }
-    }
+    renderPlotWhenReady(plotDivId, plotData);
 }
 
 function saveCodeBlockContent(blockId, content) {
@@ -1383,42 +928,6 @@ function createOutputHeaderHTML(blockNumber, statusText = 'Running...', statusCl
 }
 
 
-function setupIframeResizing(iframe) {
-    iframe.setAttribute('scrolling', 'no');
-    iframe.style.overflow = 'hidden';
-
-    iframe.onload = () => {
-        try {
-            const iWin = iframe.contentWindow;
-            const iDoc = iWin.document;
-
-            const updateHeight = () => {
-                if (!iDoc || !iDoc.body) return;
-                // The +2 is a small buffer to prevent scrollbars from appearing in some edge cases
-                const newHeight = Math.max(
-                    iDoc.body.scrollHeight, iDoc.documentElement.scrollHeight,
-                    iDoc.body.offsetHeight, iDoc.documentElement.offsetHeight
-                ) + 2;
-                iframe.style.height = `${newHeight}px`;
-            };
-
-            updateHeight(); // Initial resize
-
-            // Use ResizeObserver to automatically adjust height if iframe content changes
-            const observer = new ResizeObserver(updateHeight);
-            if (iDoc.body) observer.observe(iDoc.body);
-
-            // Fallback resizes for dynamic content that might not trigger observer
-            setTimeout(updateHeight, 150);
-            setTimeout(updateHeight, 500);
-
-        } catch (e) {
-            console.error("Error resizing iframe:", e);
-            // Fallback to a reasonable default height on error
-            iframe.style.height = '400px'; 
-        }
-    };
-}
 
 async function handleRunStopCodeClick(event) {
     const button = event.currentTarget;
@@ -1426,117 +935,75 @@ async function handleRunStopCodeClick(event) {
     if (!container) return;
 
     const codeBlockId = container.id;
-    const language = container.dataset.language;
-    const codeElement = container.querySelector('code');
-    const code = codeElement ? codeElement.textContent || '' : '';
+    const status = button.dataset.status;
 
-    // --- FIX: Handle STOP action ---
-    if (button.dataset.status === 'running') {
+    if (status === 'running' || status === 'previewing') {
         if (websocket && websocket.readyState === WebSocket.OPEN) {
-            console.log(`Sending stop_code for ${codeBlockId}`);
             websocket.send(JSON.stringify({
                 type: 'stop_code',
-                payload: { code_block_id: codeBlockId }
+                payload: { project_id: codeBlockId }
             }));
-            // The `code_finished` message from the server will reset the button state.
-            // Visually update the output header to show it's stopping.
-            const outputContainer = document.getElementById(`output-for-${codeBlockId}`);
-            if (outputContainer) {
-                updateHeaderStatus(outputContainer, 'Stopping...', 'running');
-            }
         }
-        return; // Exit after sending the stop command.
+        return;
     }
 
-    // --- FIX: Handle RUN action ---
-    saveCodeBlockContent(codeBlockId, code);
+    const turnIdMatch = codeBlockId.match(/turn(\d+)/);
+    const turnId = turnIdMatch ? parseInt(turnIdMatch[1], 10) : null;
+    const projectData = turnId ? projectDataCache[turnId] : null;
 
-    // Always create a fresh output container, removing any old one.
-    let outputContainer = document.getElementById(`output-for-${codeBlockId}`);
-    if (outputContainer) {
-        outputContainer.remove();
+    if (!projectData) {
+        alert("Error: Could not find project data for this execution.");
+        return;
     }
     
-    outputContainer = document.createElement('div');
-    outputContainer.id = `output-for-${codeBlockId}`;
-    outputContainer.className = 'block-container';
-    const blockNumber = codeBlockId.split('-').pop();
-    const outputHeader = document.createElement('div');
-    outputHeader.className = 'block-header';
-    const outputConsoleDiv = document.createElement('div');
-    outputConsoleDiv.className = 'block-output-console';
-    outputContainer.appendChild(outputHeader);
-    outputContainer.appendChild(outputConsoleDiv);
-    container.insertAdjacentElement('afterend', outputContainer);
+    // --- START: NEW LOGIC TO CAPTURE EDITS ---
+    // Create a deep copy of the project data to avoid modifying the cache directly
+    const updatedProjectData = JSON.parse(JSON.stringify(projectData));
 
-    if (language === 'html') {
-        outputHeader.innerHTML = createOutputHeaderHTML(blockNumber, 'Rendered HTML', 'success');
-        const iframe = document.createElement('iframe');
-        iframe.className = 'html-render-iframe';
-        const style = `<style>body { margin: 0; background-color: white; color: black; font-family: sans-serif; padding: 1rem; }</style>`;
-        iframe.srcdoc = style + code;
-
-        // --- MODIFICATION START ---
-        setupIframeResizing(iframe); // Call the new helper function
-        // --- MODIFICATION END ---
-
-        outputConsoleDiv.appendChild(iframe);
-
-        // Save the rendered HTML to the database for chat history.
-        if (websocket && websocket.readyState === WebSocket.OPEN) {
-            const codeBlockParts = codeBlockId.split('-');
-            const extractedTurnId = codeBlockParts[2].replace('turn', '');
-            websocket.send(JSON.stringify({
-                type: 'save_code_result',
-                payload: {
-                    code_block_id: codeBlockId, language: language, code_content: code,
-                    html_content: code, execution_status: 'completed', turn_id: parseInt(extractedTurnId)
+    // Find all code blocks for the current turn
+    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turnId}']`);
+    if (turnContainer) {
+        updatedProjectData.files.forEach(file => {
+            // Find the corresponding code block UI element by its title (file path)
+            const codeBlock = Array.from(turnContainer.querySelectorAll('.block-container .block-title .title-text'))
+                                 .find(span => span.textContent === file.path);
+            if (codeBlock) {
+                const codeElement = codeBlock.closest('.block-container').querySelector('code');
+                if (codeElement) {
+                    file.content = codeElement.textContent; // Update the content with the user's edits
                 }
-            }));
-        }
-        return; // Exit here, no need to change button state as it's instant.
+            }
+        });
     }
-    
-    // --- Existing logic for other languages ---
-    outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
-    const outputPre = document.createElement('pre');
-    outputConsoleDiv.appendChild(outputPre);
-    
-    // Add event listeners for the new output block's buttons
-    outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-        const isHidden = outputConsoleDiv.classList.toggle('hidden');
-        e.target.textContent = isHidden ? 'Show' : 'Hide';
-    });
-    outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
-        try {
-            await navigator.clipboard.writeText(outputPre.textContent || '');
-            e.target.textContent = 'Copied!';
-            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-        } catch (err) { console.error('Failed to copy output:', err); }
-    });
-    
-    // Set button to "running" state
-    button.dataset.status = 'running';
-    button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><rect width="100" height="100" rx="15"/></svg>`;
-    button.title = 'Stop Execution';
+    // --- END: NEW LOGIC TO CAPTURE EDITS ---
+
+
+    let mainLanguage = 'bash';
+    const languagePriority = ['html', 'python', 'javascript', 'cpp', 'c', 'rust', 'go', 'java', 'csharp', 'typescript'];
+    for (const lang of languagePriority) {
+        if (updatedProjectData.files.some(file => file.language === lang)) {
+            mainLanguage = lang;
+            break;
+        }
+    }
     
     if (websocket && websocket.readyState === WebSocket.OPEN) {
+        const outputContainer = createOrClearOutputContainer(codeBlockId);
+        updateHeaderStatus(outputContainer, 'Starting...', 'running');
+        button.dataset.status = 'running';
+        button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><rect width="100" height="100" rx="15"/></svg>`;
+        button.title = 'Stop Execution';
+
         websocket.send(JSON.stringify({
             type: 'run_code',
-            payload: { code_block_id: codeBlockId, language: language, code: code }
-        }));
-        
-        // Scroll to the new output block
-        setTimeout(() => {
-            if (outputContainer) {
-                outputContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            payload: {
+                project_data: updatedProjectData, // Send the updated data with edits
+                project_id: codeBlockId,
+                language: mainLanguage
             }
-        }, 100);
+        }));
     } else {
         addErrorMessage("Cannot run code: Not connected to server.");
-        button.dataset.status = 'idle';
-        button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
-        button.title = 'Run Code';
     }
 }
 
@@ -1687,122 +1154,26 @@ function saveCodeBlockState(blockId, content) {
     }, 2000);
 }
 
-
-
-
 function restoreCodeExecutionResult(result) {
-    const codeContainer = document.getElementById(result.code_block_id);
-    if (!codeContainer) {
+    // Only create an output block if there's actual terminal output to show.
+    if (!result.output_content) {
         return;
     }
 
-    const outputBlockId = `output-for-${result.code_block_id}`;
-    let outputContainer = document.getElementById(outputBlockId);
-    
-    if (outputContainer) {
-        outputContainer.remove();
+    const codeContainer = document.getElementById(result.code_block_id);
+    if (!codeContainer) return;
+
+    // Create or clear the output container for the historical output
+    const outputContainer = createOrClearOutputContainer(result.code_block_id);
+    const outputPre = outputContainer.querySelector('.block-output-console pre');
+
+    if (outputPre) {
+        outputPre.textContent = result.output_content;
     }
 
-    outputContainer = document.createElement('div');
-    outputContainer.id = outputBlockId;
-    outputContainer.className = 'block-container';
-
-    const blockNumber = result.code_block_id.split('-').pop();
-
-    const outputHeader = document.createElement('div');
-    outputHeader.className = 'block-header';
-    
-    let statusText = '';
-    let statusClass = '';
-    if (result.error_message) {
-        statusText = 'Failed';
-        statusClass = 'error';
-    } else if (result.language === 'html') {
-        statusText = 'Finished (Rendered HTML)';
-        statusClass = 'success';
-    } else {
-        statusText = `Finished (Exit: ${result.exit_code})`;
-        statusClass = (result.exit_code === 0) ? 'success' : 'error';
-    }
-    
-    outputHeader.innerHTML = `
-        <div class="block-buttons">
-            <button class="toggle-output-btn block-action-btn">Hide</button>
-            <button class="copy-output-btn block-action-btn">Copy</button>
-        </div>
-        <span class="block-title">Output Block ${blockNumber}</span>
-        <span class="block-status ${statusClass}">${statusText}</span>
-    `;
-    
-    const outputConsoleDiv = document.createElement('div');
-    outputConsoleDiv.className = 'block-output-console';
-    
-    if (result.language === 'html' && result.html_content) {
-        const iframe = document.createElement('iframe');
-        iframe.className = 'html-render-iframe';
-        iframe.style.width = '100%';
-        iframe.style.border = '1px solid #e2e8f0';
-        iframe.setAttribute('scrolling', 'no');
-        iframe.style.overflow = 'hidden';
-        iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-        
-        const style = `<style>body { margin: 0; background-color: white; color: black; font-family: sans-serif; padding: 1rem; }</style>`;
-        iframe.srcdoc = style + result.html_content;
-        
-        iframe.onload = () => {
-            try {
-                const iWin = iframe.contentWindow;
-                const iDoc = iWin.document;
-                const updateHeight = () => {
-                    if (!iDoc || !iDoc.body) return;
-                    const newHeight = Math.max(
-                        iDoc.body.scrollHeight, iDoc.documentElement.scrollHeight,
-                        iDoc.body.offsetHeight, iDoc.documentElement.offsetHeight
-                    );
-                    iframe.style.height = `${newHeight}px`;
-                };
-                updateHeight();
-                const observer = new ResizeObserver(updateHeight);
-                if (iDoc.body) observer.observe(iDoc.body);
-                setTimeout(updateHeight, 150);
-                setTimeout(updateHeight, 500);
-            } catch (e) {
-                iframe.style.height = '400px';
-            }
-        };
-        
-        outputConsoleDiv.appendChild(iframe);
-        outputConsoleDiv.style.maxHeight = 'none';
-    } else {
-        const outputPre = document.createElement('pre');
-        if (result.output_content) {
-            outputPre.textContent = result.output_content;
-        }
-        outputConsoleDiv.appendChild(outputPre);
-    }
-
-    outputContainer.appendChild(outputHeader);
-    outputContainer.appendChild(outputConsoleDiv);
-
-    codeContainer.insertAdjacentElement('afterend', outputContainer);
-
-    outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-        const isHidden = outputConsoleDiv.classList.toggle('hidden');
-        e.target.textContent = isHidden ? 'Show' : 'Hide';
-    });
-    
-    const copyBtn = outputContainer.querySelector('.copy-output-btn');
-    copyBtn.addEventListener('click', async (e) => {
-        try {
-            const textToCopy = result.language === 'html' && result.html_content ? 
-                result.html_content : (result.output_content || '');
-            await navigator.clipboard.writeText(textToCopy);
-            e.target.textContent = 'Copied!';
-            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-        } catch (err) { 
-            console.error('Failed to copy output:', err); 
-        }
-    });
+    const statusText = result.error_message ? 'Failed' : `Finished (Exit: ${result.exit_code})`;
+    const statusClass = result.error_message || result.exit_code !== 0 ? 'error' : 'success';
+    updateHeaderStatus(outputContainer, statusText, statusClass);
 }
 
 async function loadAndDisplayChatHistory(sessionId) {
@@ -2000,47 +1371,24 @@ function unstickHeader(header) {
     delete header.dataset.stickyId;
 }
 
-function finalizeTurnOnErrorOrClose() {
-    if (currentAnswerElement && !currentAnswerElement.querySelector('.timestamp-p')) {
-        const timestampElem = document.createElement('p');
-        timestampElem.classList.add('text-xs', 'text-slate-500', 'mt-1', 'text-left', 'timestamp-p');
-        timestampElem.textContent = new Date().toLocaleString();
-        currentAnswerElement.appendChild(timestampElem);
-    }
-    
-    // Clean up streaming dots from any active code blocks
-    activeStreamingCodeBlocks.forEach((blockData) => {
-        const container = document.getElementById(blockData.blockId);
-        if (container) {
-            const dotsSpan = container.querySelector('.streaming-dots');
-            if (dotsSpan) dotsSpan.remove();
-        }
-    });
-    
-    // Reset state
-    codeBlockCounterThisTurn = 0;
-    accumulatedAnswerText = '';
-    hasThinkingContentArrivedThisTurn = false;
-    firstAnswerTokenReceived = false;
-    thinkingRequestedForCurrentTurn = false;
-    activeStreamingCodeBlocks.clear();
-    streamingCodeBlockCounter = 0;
-    
-    setInputDisabledState(false, false);
-    if (messageInput && messageInput.offsetParent !== null) {
-        messageInput.focus();
-    }
-}
 
+let currentStreamingAnswerElement = null;
+let currentStreamingFile = {
+    container: null,
+    codeElement: null,
+    path: null
+};
+
+// --- New WebSocket Connection Logic (REPLACE the old function) ---
 function connectWebSocket() {
     let sessionId = getSessionIdFromPath();
     if (!sessionId) {
         addErrorMessage("Cannot connect to chat: Invalid session ID in URL.");
-        setInputDisabledState(true);
+        setInputDisabledState(true, false);
         return;
     }
-    
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+    const wsProtocol = window.location.protocol === 'https' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/${sessionId}/${clientId}`;
 
     try {
@@ -2048,13 +1396,13 @@ function connectWebSocket() {
         websocket = ws;
 
         ws.onopen = () => {
+            console.log("[WS_CLIENT] WebSocket connection opened.");
             setInputDisabledState(false, false);
             addSystemMessage("Connected to the chat server.");
-            updateAllRunButtonStates();
-            if (messageInput) messageInput.focus();
         };
 
         ws.onclose = (event) => {
+            console.error(`[WS_CLIENT] WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
             if (window.isNavigatingAway) return;
             addSystemMessage(`Connection closed: ${event.reason || 'Normal closure'} (Code: ${event.code})`);
             finalizeTurnOnErrorOrClose();
@@ -2071,7 +1419,7 @@ function connectWebSocket() {
         };
 
         ws.onerror = (event) => {
-            console.error("WebSocket error:", event);
+            console.error("[WS_CLIENT] WebSocket error:", event);
             addErrorMessage("WebSocket connection error. Please try refreshing.");
             finalizeTurnOnErrorOrClose();
             resetAllCodeButtonsOnErrorOrClose();
@@ -2080,71 +1428,222 @@ function connectWebSocket() {
         };
 
         ws.onmessage = (event) => {
-            let messageData;
-            try {
-                messageData = JSON.parse(event.data);
-            } catch (e) {
-                messageData = null;
-            }
-
-            if (messageData && messageData.type) {
-                switch (messageData.type) {
-                    case 'participants_update':
-                        if (window.updateAndDisplayParticipants) {
-                            window.updateAndDisplayParticipants(messageData.payload);
-                        }
-                        break;
-                    case 'new_message':
-                        if (messageData.payload && messageData.payload.client_id_temp !== clientId) {
-                            renderSingleMessage(messageData.payload, chatHistory, true, {});
-                            scrollToBottom('smooth');
-                        }
-                        break;
-                    case 'ai_chunk':
-                        if (!currentAiTurnContainer) {
-                            setupNewAiTurn();
-                        }
-                        accumulatedAnswerText += messageData.payload;
-                        renderLiveMessage(accumulatedAnswerText);
-                        break;
-                    case 'ai_stream_end':
-                        renderLiveMessage(accumulatedAnswerText);
-                        finalizeTurnOnErrorOrClose();
-                        setInputDisabledState(false, false);
-                        break;
-                    case 'session_deleted':
-                        const chatTitle = document.getElementById('chat-session-title');
-                        if (chatTitle) {
-                            chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`;
-                        }
-                        const banner = document.createElement('div');
-                        banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold';
-                        banner.textContent = 'The host has deleted this session. The chat is now read-only.';
-                        chatHistory.prepend(banner);
-                        setInputDisabledState(true, false);
-                        break;
-                    default:
-                        handleStructuredMessage(messageData);
-                        break;
-                }
-            } else if (typeof event.data === 'string' && event.data.startsWith("<ERROR>")) {
+            if (typeof event.data !== 'string') return;
+            
+            // Handle simple error string for backward compatibility
+            if (event.data.startsWith("<ERROR>")) {
                 addErrorMessage(event.data.substring(7));
                 finalizeTurnOnErrorOrClose();
-                setInputDisabledState(false, false);
+                return;
+            }
+
+            const messageData = JSON.parse(event.data);
+            switch (messageData.type) {
+                case 'start_answer_stream':
+                    handleStartAnswerStream();
+                    break;
+                case 'ai_chunk':
+                    handleAnswerChunk(messageData.payload);
+                    break;
+                case 'end_answer_stream':
+                    handleEndAnswerStream();
+                    break;
+                case 'start_file_stream':
+                    handleStartFileStream(messageData.payload);
+                    break;
+                case 'file_chunk':
+                    handleFileChunk(messageData.payload);
+                    break;
+                case 'end_file_stream':
+                    handleEndFileStream();
+                    break;
+                case 'ai_project_created_complete':
+                    handleProjectCreatedComplete(messageData.payload);
+                    break;
+                case 'ai_stream_end':
+                    finalizeTurnOnErrorOrClose();
+                    break;
+                // --- Keep other handlers like new_message, participant_typing, etc. ---
+                case 'new_message':
+                    if (messageData.payload && messageData.payload.client_id_temp !== clientId) {
+                        renderSingleMessage(messageData.payload, chatHistory, true, {});
+                    }
+                    scrollToBottom('smooth');
+                    break;
+                case 'participant_typing':
+                    handleTypingIndicators(messageData.payload);
+                    break;
+                case 'participants_update':
+                    updateAndDisplayParticipants(messageData.payload);
+                    break;
+                case 'session_deleted':
+                    const chatTitle = document.getElementById('chat-session-title');
+                    if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`;
+                    const banner = document.createElement('div');
+                    banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold';
+                    banner.textContent = 'The host has deleted this session. The chat is now read-only.';
+                    chatHistory.prepend(banner);
+                    setInputDisabledState(true, false);
+                    break;
+                default:
+                    handleStructuredMessage(messageData); // For legacy code execution output
+                    break;
             }
         };
     } catch (error) {
         console.error("WebSocket creation error:", error);
-        addErrorMessage(`WebSocket Creation Error: ${error.message}.`);
-        setInputDisabledState(true, false);
-        updateAllRunButtonStates();
+    }
+}
+
+function handleStartAnswerStream() {
+    // The bubble with the loading dots already exists.
+    // We just need to remove the dots to prepare for the real content.
+    if (currentStreamingAnswerElement) {
+        const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
+        if (loadingDots) loadingDots.remove();
+    }
+}
+
+function handleAnswerChunk(chunk) {
+    if (!currentStreamingAnswerElement) return;
+
+    // Remove loading dots on first chunk
+    const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
+    if (loadingDots) loadingDots.remove();
+    
+    // Append and re-render markdown
+    const currentContent = (currentStreamingAnswerElement.dataset.rawContent || '') + chunk;
+    currentStreamingAnswerElement.dataset.rawContent = currentContent;
+    currentStreamingAnswerElement.innerHTML = marked.parse(currentContent);
+    scrollToBottom('auto');
+}
+
+function handleEndAnswerStream() {
+    if (currentStreamingAnswerElement && currentStreamingAnswerElement.dataset.rawContent) {
+        // Final render with KaTeX and Prism
+        parseAndRenderAiContent(
+            currentStreamingAnswerElement.dataset.rawContent,
+            currentStreamingAnswerElement,
+            document.createElement('div'), // Dummy element for code blocks
+            currentTurnId
+        );
+    }
+    currentStreamingAnswerElement = null;
+}
+
+function createThinkingBubble(turnId) {
+    const turnContainer = document.createElement('div');
+    turnContainer.className = 'ai-turn-container';
+    turnContainer.dataset.turnId = turnId;
+
+    const messageBubble = document.createElement('div');
+    // Remove the hardcoded color class from here
+    messageBubble.className = 'message ai-message';
+
+    // --- NEW: Look up the AI's color from the participant list ---
+    const aiParticipantData = window.participantInfo ? window.participantInfo['AI'] : null;
+    if (aiParticipantData && aiParticipantData.color) {
+        messageBubble.style.backgroundColor = aiParticipantData.color;
+    } else {
+        // Fallback color if the AI isn't in the list for some reason
+        messageBubble.classList.add('bg-gray-200');
+    }
+    // --- END NEW ---
+
+    const senderElem = document.createElement('p');
+    senderElem.className = 'font-semibold text-sm mb-1 text-gray-800 italic';
+    senderElem.textContent = 'AI Assistant';
+
+    const contentArea = document.createElement('div');
+    contentArea.className = 'text-gray-800 text-sm message-content live-ai-content-area';
+    contentArea.innerHTML = '<span class="loading-dots"></span>';
+    
+    messageBubble.appendChild(senderElem);
+    messageBubble.appendChild(contentArea);
+    turnContainer.appendChild(messageBubble);
+    chatHistory.appendChild(turnContainer);
+    
+    scrollToBottom('smooth');
+    
+    // Return the content area so we can stream into it later
+    return contentArea;
+}
+
+function handleStartFileStream(payload) {
+    // If this is the first file for a turn, initialize the project cache
+    if (!projectDataCache[currentTurnId]) {
+        projectDataCache[currentTurnId] = { files: [] };
+    }
+
+    // Find or create the turn container
+    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${currentTurnId}']`) || document.createElement('div');
+    if (!turnContainer.parentElement) {
+        turnContainer.className = 'ai-turn-container';
+        turnContainer.dataset.turnId = currentTurnId;
+        chatHistory.appendChild(turnContainer);
+    }
+
+    const codeBlocksArea = turnContainer.querySelector('.code-blocks-area') || document.createElement('div');
+    if (!codeBlocksArea.parentElement) {
+        codeBlocksArea.className = 'code-blocks-area';
+        turnContainer.appendChild(codeBlocksArea);
+    }
+
+    streamingCodeBlockCounter++;
+    const isRunnable = payload.path.endsWith('run.sh');
+    
+    // --- THIS IS THE FIX ---
+    // Use payload.language instead of 'plaintext'
+    const newBlock = createCodeBlock(
+        payload.language || 'plaintext', // Use the language from the backend
+        '', '', currentTurnId, 
+        streamingCodeBlockCounter, codeBlocksArea, isRunnable
+    );
+    // --- END FIX ---
+
+    newBlock.querySelector('.block-title .title-text').textContent = payload.path;
+    
+    // Store references for the streaming process
+    currentStreamingFile = {
+        container: newBlock,
+        codeElement: newBlock.querySelector('code'),
+        path: payload.path,
+        // Add the new file to the cache immediately
+        fileData: { path: payload.path, content: "" }
+    };
+    projectDataCache[currentTurnId].files.push(currentStreamingFile.fileData);
+}
+
+function handleFileChunk(payload) {
+    if (!currentStreamingFile || !currentStreamingFile.codeElement) return;
+    currentStreamingFile.codeElement.textContent += payload.content;
+}
+
+function handleEndFileStream() {
+    if (currentStreamingFile && currentStreamingFile.codeElement) {
+        Prism.highlightElement(currentStreamingFile.codeElement);
+    }
+    currentStreamingFile = { container: null, codeElement: null, path: null };
+}
+
+function handleProjectCreatedComplete(payload) {
+    // Cache the final project data for the "Run" button
+    projectDataCache[payload.turn_id] = payload;
+    
+    // Find the run.sh button for this turn and set its project_id
+    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${payload.turn_id}']`);
+    if (turnContainer) {
+        const runButton = turnContainer.querySelector('.run-code-btn');
+        const runBlock = runButton ? runButton.closest('.block-container') : null;
+        if (runBlock) {
+            runBlock.id = payload.project_id;
+        }
     }
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
     await loadLanguagesConfig();
     await initializeCurrentUser();
-
     setInputDisabledState(true, false);
 
     if (typeof marked !== 'undefined' && typeof marked.setOptions === 'function') {
@@ -2154,42 +1653,81 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (chatForm && messageInput && sendButton && stopAiButton) {
-        chatForm.addEventListener('submit', (event) => {
-            event.preventDefault();
-            const userMessage = messageInput.value.trim();
-            if (!userMessage) return;
-            if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
-            
-            try {
-                const mentionRegex = /@(\w+)/gi;
-                const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
-                
-                if (recipients.includes("AI")) {
-                    if (!window.isAiConfigured) {
-                        alert("AI provider has not been configured. Please go to User Settings to select a provider and add your API key.");
-                        return;
-                    }
-                    setupNewAiTurn();
-                    setInputDisabledState(true, true);
-                }
-                
-                addUserMessage(userMessage);
-                
-                const messagePayload = {
-                    type: "chat_message",
-                    payload: {
-                        user_input: userMessage,
-                        turn_id: ++currentTurnId,
-                        recipient_ids: recipients,
-                        reply_to_id: null
-                    }
-                };
-                websocket.send(JSON.stringify(messagePayload));
-                messageInput.value = '';
-            } catch (sendError) {
-                addErrorMessage(`Failed to send message: ${sendError.message}`);
+        let typingTimeout;
+        const sendTypingSignal = (isTyping) => {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({ type: 'user_typing', payload: { is_typing: isTyping } }));
             }
+        };
+
+        messageInput.addEventListener('input', () => {
+            if (messageInput.value.trim() === '' && typingTimeout) {
+                clearTimeout(typingTimeout);
+                typingTimeout = null;
+                sendTypingSignal(false);
+                return;
+            }
+            if (!typingTimeout) {
+                sendTypingSignal(true);
+            }
+            clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => {
+                sendTypingSignal(false);
+                typingTimeout = null;
+            }, 2000);
         });
+
+        chatForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        
+        if(typingTimeout) {
+            clearTimeout(typingTimeout);
+            typingTimeout = null;
+            sendTypingSignal(false);
+        }
+        
+        const userMessage = messageInput.value.trim();
+        if (!userMessage) return;
+        if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+            console.error("[FORM] WebSocket not open, cannot send message.");
+            return;
+        }
+        
+        try {
+            addUserMessage(userMessage);
+            messageInput.value = '';
+
+            const mentionRegex = /@(\w+)/gi;
+            const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
+            
+            currentTurnId++; // A new user message always creates a new turn
+            
+            if (recipients.includes("AI")) {
+                if (!window.isAiConfigured) {
+                    alert("AI provider has not been configured. Please go to User Settings to select a provider and add your API key.");
+                    currentTurnId--; // Roll back turn increment if we abort
+                    return;
+                }
+                setInputDisabledState(true, true);
+                // Immediately create the thinking bubble and store its content area
+                currentStreamingAnswerElement = createThinkingBubble(currentTurnId);
+            }
+            
+            const messagePayload = {
+                type: "chat_message",
+                payload: {
+                    user_input: userMessage,
+                    turn_id: currentTurnId,
+                    recipient_ids: recipients,
+                    reply_to_id: null
+                }
+            };
+            websocket.send(JSON.stringify(messagePayload));
+
+        } catch (sendError) {
+            addErrorMessage(`Failed to send message: ${sendError.message}`);
+        }
+    });
 
         stopAiButton.addEventListener('click', () => {
             if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
@@ -2240,35 +1778,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (shouldStick) {
                         stickHeader(m.header, scrollerRect);
                         
-                        // Handle clipping when approaching the bottom of content
                         const stickyId = m.header.dataset.stickyId;
                         if (stickyId) {
                             const stickyClone = document.getElementById(stickyId);
                             if (stickyClone) {
                                 const headerHeight = stickyClone.offsetHeight;
                                 const contentBottom = m.contentRect.bottom;
-                                const viewportTop = scrollerRect.top + 1; // Add 1px offset
-                                
-                                // Calculate how much space is available for the header (add 2px buffer)
+                                const viewportTop = scrollerRect.top + 1;
                                 const availableSpace = contentBottom - viewportTop + 3;
                                 
                                 if (availableSpace < headerHeight && availableSpace > 0) {
-                                    // Clip the header from the top by moving it up and adjusting height
                                     const clipAmount = headerHeight - availableSpace - 1;
-                                    stickyClone.style.top = `${viewportTop - clipAmount - 1}px`; // Move up by clip amount
-                                    stickyClone.style.clipPath = `inset(${clipAmount}px 0 0 0)`; // Clip from top
-                                    stickyClone.style.height = `${headerHeight}px`; // Keep original height for proper clipping
+                                    stickyClone.style.top = `${viewportTop - clipAmount - 1}px`;
+                                    stickyClone.style.clipPath = `inset(${clipAmount}px 0 0 0)`;
+                                    stickyClone.style.height = `${headerHeight}px`;
                                     stickyClone.style.borderBottomLeftRadius = '0.375rem';
                                     stickyClone.style.borderBottomRightRadius = '0.375rem';
                                 } else if (availableSpace <= 2) {
-                                    // Content has scrolled completely past, hide the sticky header
                                     stickyClone.style.display = 'none';
                                 } else {
-                                    // Normal case: full header visible
                                     stickyClone.style.height = 'auto';
-                                    stickyClone.style.top = `${scrollerRect.top}px`; // Use original viewport top without offset
+                                    stickyClone.style.top = `${scrollerRect.top}px`;
                                     stickyClone.style.display = 'flex';
-                                    stickyClone.style.clipPath = 'none'; // Reset clipping
+                                    stickyClone.style.clipPath = 'none';
                                     stickyClone.style.borderBottomLeftRadius = '0';
                                     stickyClone.style.borderBottomRightRadius = '0';
                                 }
@@ -2282,10 +1814,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         chatHistoryScroller.addEventListener('scroll', function(e) {
-            // Only handle scroll if it's specifically from the chat history scroller
             if (e.target === chatHistoryScroller) {
                 handleScroll();
             }
         }, { passive: true });
-            }
+    }
 });

@@ -24,6 +24,7 @@ Relevant files and folders (excluding specified patterns):
 │   ├── llm.py
 │   ├── main.py
 │   ├── models.py
+│   ├── project_utils.py
 │   ├── state.py
 │   ├── utils.py
 │   ├── static/
@@ -45,9 +46,14 @@ Relevant files and folders (excluding specified patterns):
 │   │   │   ├── session-manager.js
 │   │   │   ├── settings.js
 │   │   │   ├── sidebar-toggle.js
-│   │   │   ├── temp.js
 ├── dockerfiles/
+│   ├── dotnet/
+│   ├── gcc/
+│   ├── go/
+│   ├── java/
+│   ├── node/
 │   ├── python/
+│   ├── rust/
 ├── tests/
 │   ├── test_coding.py
 
@@ -73,7 +79,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 static_dir = os.path.join(script_dir, 'app', 'static')
 assets_dir = os.path.join(static_dir, 'assets')
 css_dir = os.path.join(assets_dir, 'css')
-fonts_dir = os.path.join(assets_dir, 'fonts')
+fonts_dir = os.path.join(css_dir, 'fonts')
 js_dir = os.path.join(static_dir, 'js')
 
 # --- Base URL for KaTeX assets ---
@@ -321,6 +327,7 @@ Relevant files and folders (excluding specified patterns):
 │   ├── llm.py
 │   ├── main.py
 │   ├── models.py
+│   ├── project_utils.py
 │   ├── state.py
 │   ├── utils.py
 │   ├── static/
@@ -342,9 +349,14 @@ Relevant files and folders (excluding specified patterns):
 │   │   │   ├── session-manager.js
 │   │   │   ├── settings.js
 │   │   │   ├── sidebar-toggle.js
-│   │   │   ├── temp.js
 ├── dockerfiles/
+│   ├── dotnet/
+│   ├── gcc/
+│   ├── go/
+│   ├── java/
+│   ├── node/
 │   ├── python/
+│   ├── rust/
 ├── tests/
 │   ├── test_coding.py
 
@@ -420,8 +432,10 @@ module.exports = {
         'js-sticky',
     ],
     content: [
-      "./app/static/**/*.html", // Scan HTML files in static
-      "./app/static/**/*.js",   // Scan JS files in static
+      './app/static/**/*.html',      // Scan all our HTML files
+      './app/static/script.js',        // Scan our main script file
+      './app/static/js/**/*.js',     // Scan our custom JS modules in the js/ folder
+      '!./app/static/js/**/*.min.js', // IMPORTANT: Exclude minified vendor files
     ],
     theme: {
       extend: {},
@@ -549,6 +563,18 @@ def update_database_schema():
         conn.commit()
         print("\n--- Schema Update Complete ---")
 
+        # 4. Update 'chat_messages' table: Add 'project_id' column
+        print("\nChecking 'chat_messages' table...")
+        chat_columns = get_existing_columns('chat_messages')
+        if 'project_id' not in chat_columns:
+            print("-> Adding 'project_id' column to 'chat_messages' table.")
+            cursor.execute("ALTER TABLE chat_messages ADD COLUMN project_id TEXT")
+            print("-> 'project_id' column added successfully.")
+        else:
+            print("-> 'project_id' column already exists. Skipping.")
+        
+        conn.commit()
+
     except sqlite3.Error as e:
         print(f"\nAn error occurred: {e}")
         if conn:
@@ -608,6 +634,8 @@ exclude_exact_filenames = (
     'katex.min.css',
     'katex.min.js',
     'build.js',
+    "build_all_images.ps1",
+    "create_dockerfiles.ps1"
     # Add other large or irrelevant files by name here
 )
 
@@ -1457,6 +1485,7 @@ def init_db():
         model_provider_id TEXT,
         model_id TEXT,
         reply_to_message_id INTEGER,
+        project_id TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL,
         FOREIGN KEY (reply_to_message_id) REFERENCES chat_messages (id) ON DELETE SET NULL
@@ -1465,7 +1494,8 @@ def init_db():
     print("Ensured 'chat_messages' table exists.")
 
     chat_messages_columns_to_add = {
-        "reply_to_message_id": "INTEGER"
+        "reply_to_message_id": "INTEGER",
+        "project_id": "TEXT"
     }
     cursor.execute("PRAGMA table_info(chat_messages)")
     existing_chat_columns = [col[1] for col in cursor.fetchall()]
@@ -1597,63 +1627,25 @@ if __name__ == "__main__":
 
 
 === app/docker_utils.py ===
+# app/docker_utils.py
+
 import asyncio
-import tempfile
 import traceback
-from pathlib import Path
 import docker
-from docker.errors import DockerException, ImageNotFound, APIError, NotFound
+from docker.errors import DockerException
 from docker.models.containers import Container
-from fastapi import WebSocket
-import time
+from fastapi import WebSocket, HTTPException
 import socket
-import json # Ensure json is imported
-import re   # --- NEW: Import re module ---
-import ast
-import os
-from typing import List
-
-STD_LIB_MODULES = {
-    'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat', 'asyncio', 'asyncore', 'atexit',
-    'audioop', 'base64', 'bdb', 'binascii', 'binhex', 'bisect', 'builtins', 'bz2',
-    'calendar', 'cgi', 'cgitb', 'chunk', 'cmath', 'cmd', 'code', 'codecs', 'codeop',
-    'collections', 'colorsys', 'compileall', 'concurrent', 'configparser', 'contextlib',
-    'contextvars', 'copy', 'copyreg', 'crypt', 'csv', 'ctypes', 'curses', 'dataclasses',
-    'datetime', 'dbm', 'decimal', 'difflib', 'dis', 'distutils', 'doctest', 'dummy_threading',
-    'email', 'encodings', 'ensurepip', 'enum', 'errno', 'faulthandler', 'fcntl', 'filecmp',
-    'fileinput', 'fnmatch', 'fractions', 'ftplib', 'functools', 'gc', 'getopt', 'getpass',
-    'gettext', 'glob', 'grp', 'gzip', 'hashlib', 'heapq', 'hmac', 'html', 'http', 'imaplib',
-    'imghdr', 'imp', 'importlib', 'inspect', 'io', 'ipaddress', 'itertools', 'json',
-    'keyword', 'lib2to3', 'linecache', 'locale', 'logging', 'lzma', 'mailbox', 'mailcap',
-    'marshal', 'math', 'mimetypes', 'mmap', 'modulefinder', 'multiprocessing', 'netrc',
-    'nis', 'nntplib', 'numbers', 'operator', 'optparse', 'os', 'ossaudiodev', 'parser',
-    'pathlib', 'pdb', 'pickle', 'pickletools', 'pipes', 'pkgutil', 'platform', 'plistlib',
-    'poplib', 'posix', 'pprint', 'profile', 'pstats', 'pty', 'pwd', 'py_compile', 'pyclbr',
-    'pydoc', 'queue', 'quopri', 'random', 're', 'readline', 'reprlib', 'resource', 'rlcompleter',
-    'runpy', 'sched', 'secrets', 'select', 'selectors', 'shelve', 'shlex', 'shutil',
-    'signal', 'site', 'smtpd', 'smtplib', 'sndhdr', 'socket', 'socketserver', 'spwd',
-    'sqlite3', 'ssl', 'stat', 'statistics', 'string', 'stringprep', 'struct', 'subprocess',
-    'sunau', 'symbol', 'symtable', 'sys', 'sysconfig', 'syslog', 'tabnanny', 'tarfile',
-    'telnetlib', 'tempfile', 'termios', 'textwrap', 'threading', 'time', 'timeit', 'tkinter',
-    'token', 'tokenize', 'trace', 'traceback', 'tracemalloc', 'tty', 'turtle', 'turtledemo',
-    'types', 'typing', 'unicodedata', 'unittest', 'urllib', 'uu', 'uuid', 'venv', 'warnings',
-    'wave', 'weakref', 'webbrowser', 'wsgiref', 'xdrlib', 'xml', 'xmlrpc', 'zipapp',
-    'zipfile', 'zipimport', 'zlib'
-}
-
-# Import pywintypes if on Windows, otherwise ignore
-try:
-    import pywintypes
-    PIPE_ENDED_ERROR = pywintypes.error
-except ImportError:
-    class DummyPipeEndedError(Exception):
-        pass
-    PIPE_ENDED_ERROR = DummyPipeEndedError
+import re
+from typing import Dict, Any
+from pathlib import Path
+import json
 
 from . import config
 from . import state
 from .utils import send_ws_message
 
+# --- Docker Client Initialization ---
 docker_client = None
 try:
     docker_client = docker.from_env()
@@ -1661,354 +1653,253 @@ try:
     print("Successfully connected to Docker daemon.")
 except DockerException as e:
     print(f"CRITICAL WARNING: Could not connect to Docker daemon: {e}")
-    print("Code execution via Docker will be unavailable.")
     docker_client = None
+
+try:
+    import pywintypes
+    PIPE_ENDED_ERROR = pywintypes.error
+except ImportError:
+    # Create a dummy exception class if pywintypes is not available (for non-Windows)
+    class DummyPipeEndedError(Exception):
+        pass
+    PIPE_ENDED_ERROR = DummyPipeEndedError
 
 def get_docker_client():
     return docker_client
 
-def find_python_imports(code: str) -> List[str]:
-    """
-    Analyzes Python code using AST to find top-level modules that need to be installed.
-    """
-    try:
-        tree = ast.parse(code)
-        imports = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.add(alias.name.split('.')[0])
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    imports.add(node.module.split('.')[0])
-        
-        # Filter out standard library modules from the found imports
-        non_std_lib_imports = {imp for imp in imports if imp not in STD_LIB_MODULES}
-        
-        print(f"[find_python_imports] Found potential packages to install: {non_std_lib_imports}")
-        return sorted(list(non_std_lib_imports))
-    except SyntaxError as e:
-        print(f"[find_python_imports] Syntax error analyzing code: {e}")
-        return []
-    except Exception as e:
-        print(f"[find_python_imports] Error analyzing code with AST: {e}")
-        return []
+# --- Networking Helper ---
+def _find_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
 
 async def read_from_socket_and_stream(
     loop: asyncio.AbstractEventLoop,
     websocket: WebSocket,
-    code_block_id: str,
+    project_id: str,
     container: Container,
     socket: socket.socket,
-    timeout_seconds: int  # <-- MODIFICATION: Added timeout parameter
+    timeout_seconds: int
 ):
     import struct
     buffer = b''
     try:
         while True:
             try:
-                # --- MODIFICATION START: Wrap the blocking call in a timeout ---
                 raw_data = await asyncio.wait_for(
                     asyncio.to_thread(socket.recv, 8192),
                     timeout=timeout_seconds
                 )
-                # --- MODIFICATION END ---
             except asyncio.TimeoutError:
-                # Re-raise the timeout to be caught by the calling function
-                print(f"[SocketStreamer-{code_block_id}] Inactivity timeout after {timeout_seconds}s.")
+                print(f"[SocketStreamer-{project_id}] Inactivity timeout after {timeout_seconds}s.")
                 raise
-            except PIPE_ENDED_ERROR:
-                print(f"[SocketStreamer-{code_block_id}] Container finished normally (pipe ended)")
-                break
-            except (ConnectionResetError, BrokenPipeError, OSError) as e:
-                print(f"[SocketStreamer-{code_block_id}] Connection closed: {e}")
+            except (ConnectionResetError, BrokenPipeError, OSError, PIPE_ENDED_ERROR) as e:
+                print(f"[SocketStreamer-{project_id}] Connection closed normally: {e}")
                 break
 
             if not raw_data:
-                print(f"[SocketStreamer-{code_block_id}] No more data, container finished")
+                print(f"[SocketStreamer-{project_id}] No more data, container finished.")
                 break
 
             buffer += raw_data
             while len(buffer) >= 8:
                 header_bytes = buffer[:8]
                 stream_type, size = struct.unpack('>BxxxL', header_bytes)
-
                 if len(buffer) < 8 + size:
-                    break 
-
+                    break
                 payload_bytes = buffer[8 : 8 + size]
                 buffer = buffer[8 + size:]
-
                 stream_name = 'stdout' if stream_type == 1 else 'stderr'
                 chunk_str = payload_bytes.decode('utf-8', 'replace')
 
                 await send_ws_message(websocket, "code_output", {
-                    "code_block_id": code_block_id, "stream": stream_name, "data": chunk_str
+                    "project_id": project_id, "stream": stream_name, "data": chunk_str
                 })
-
-                if stream_name == 'stdout':
-                    stripped_chunk = chunk_str.rstrip()
-                    if stripped_chunk and stripped_chunk.endswith((':', '?', '>')):
-                        print(f"[SocketStreamer-{code_block_id}] Detected input prompt: '{chunk_str}'")
-                        await send_ws_message(websocket, "code_waiting_input", {"code_block_id": code_block_id, "prompt": chunk_str})
-
     except Exception as e:
-        # Re-raising asyncio.TimeoutError will be caught here, but we pass it up
         if isinstance(e, asyncio.TimeoutError):
             raise
-        print(f"[SocketStreamer-{code_block_id}] Unexpected error in stream: {e}")
+        print(f"[SocketStreamer-{project_id}] Unexpected error in stream: {e}")
         traceback.print_exc()
     finally:
-        print(f"[SocketStreamer-{code_block_id}] Stream finished - entering finally block")
-        try:
-            print(f"[SocketStreamer-{code_block_id}] Reloading container to check status...")
-            await asyncio.to_thread(container.reload)
-            container_status = container.status
-            print(f"[SocketStreamer-{code_block_id}] Container status: {container_status}")
-
-            if container_status == 'running':
-                print(f"[SocketStreamer-{code_block_id}] Container still running, getting state without waiting...")
-                result = {"StatusCode": 0, "Error": None}
-            else:
-                print(f"[SocketStreamer-{code_block_id}] Container already finished, getting exit code...")
-                container_state = container.attrs.get('State', {})
-                exit_code = container_state.get('ExitCode', 0)
-                error_detail = container_state.get('Error')
-                result = {"StatusCode": exit_code, "Error": error_detail}
-                print(f"[SocketStreamer-{code_block_id}] Exit code: {exit_code}, Error: {error_detail}")
-
-            exit_code = result.get("StatusCode", 0)
-            error_msg = result.get("Error")
-
-            print(f"[SocketStreamer-{code_block_id}] About to send code_finished with exit_code: {exit_code}")
-
-            if websocket.client_state.name != 'CONNECTED':
-                print(f"[SocketStreamer-{code_block_id}] WARNING: WebSocket not connected (state: {websocket.client_state.name})")
-
-            await send_ws_message(websocket, "code_finished", {
-                "code_block_id": code_block_id, 
-                "exit_code": exit_code, 
-                "error": error_msg
-            })
-            print(f"[SocketStreamer-{code_block_id}] ✓ code_finished message sent successfully")
-
-        except Exception as e:
-            print(f"[SocketStreamer-{code_block_id}] ERROR in finally block: {e}")
-            traceback.print_exc()
-            try:
-                await send_ws_message(websocket, "code_finished", {
-                    "code_block_id": code_block_id, 
-                    "exit_code": 0, 
-                    "error": None
-                })
-                print(f"[SocketStreamer-{code_block_id}] ✓ Fallback code_finished message sent")
-            except Exception as fallback_error:
-                print(f"[SocketStreamer-{code_block_id}] ✗ Even fallback message failed: {fallback_error}")
-
+        result = await asyncio.to_thread(container.wait, timeout=10)
+        exit_code = result.get("StatusCode", 0)
+        error_msg = result.get("Error")
+        await send_ws_message(websocket, "code_finished", {
+            "project_id": project_id, "exit_code": exit_code, "error": error_msg
+        })
         try:
             socket.close()
-            print(f"[SocketStreamer-{code_block_id}] Socket closed")
-        except Exception as socket_error:
-            print(f"[SocketStreamer-{code_block_id}] Error closing socket: {socket_error}")
+        except Exception:
+            pass
 
-
-
-async def run_code_in_docker_stream(websocket: WebSocket, client_id: str, code_block_id: str, language: str, code: str):
-    print(f"[DockerRun-{code_block_id}] === STARTING DOCKER CODE EXECUTION ===")
-    
+async def run_code_in_docker(
+    websocket: WebSocket,
+    client_id: str,
+    project_id: str,
+    project_path: str,
+    run_command: str,
+    lang_config: Dict[str, Any]
+):
     local_docker_client = get_docker_client()
     if not local_docker_client:
-        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": "Docker service is unavailable."})
+        await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Docker service is unavailable."})
         return
 
-    lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
-    if not lang_config:
-        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": f"Language '{language}' not supported."})
-        return
-
-    tmpdir_obj = tempfile.TemporaryDirectory()
-    tmp_path = Path(tmpdir_obj.name)
-    container = None
+    # --- BRANCH 1: Web Server Preview (Unchanged) ---
+    if lang_config.get("is_preview_server"):
+        # ... (This logic remains the same as before)
+        port_match = re.search(r'\b(\d{4,5})\b', run_command)
+        container_port = int(port_match.group(1)) if port_match else 8000
+        host_port = _find_free_port()
+        port_mapping = {f'{container_port}/tcp': host_port}
+        try:
+            container = await asyncio.to_thread(
+                local_docker_client.containers.run,
+                image=lang_config["image"],
+                command=["sh", "-c", run_command],
+                volumes={project_path: {'bind': '/app', 'mode': 'rw'}},
+                working_dir='/app',
+                ports=port_mapping,
+                detach=True,
+                remove=True,
+                mem_limit=config.DOCKER_MEM_LIMIT
+            )
+            preview_url = f"http://127.0.0.1:{host_port}"
+            async with state.running_previews_lock:
+                state.running_previews[project_id] = { "container": container, "url": preview_url }
+            await send_ws_message(websocket, "project_preview_ready", { "project_id": project_id, "url": preview_url })
+        except Exception as e:
+            await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Failed to start preview: {e}"})
     
-    final_command = lang_config["command"]
-    volumes_to_mount = {str(tmp_path): {'bind': '/app', 'mode': 'rw'}}
-    code_to_run = code
-
-    if language.lower() == 'python':
-        code = re.sub(r'^\s*plt\.show\(\s*\)\s*$', '', code, flags=re.MULTILINE)
-        
-        packages_to_install = find_python_imports(code)
-        required_plot_packages = {'matplotlib', 'mpld3'}
-        for pkg in required_plot_packages:
-            if pkg not in packages_to_install:
-                packages_to_install.append(pkg)
-
-        volumes_to_mount['tesseracs-uv-cache'] = {'bind': '/root/.cache/uv', 'mode': 'rw'}
-        
-        python_harness_script = f"""
-import sys
-import json
-import traceback
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import mpld3
-
-user_code = '''
-{code}
-'''
-
+    # --- BRANCH 2: Standard Interactive Execution ---
+    else:
+        # --- START: New Matplotlib Plot Handling Logic ---
+        is_plot_script = False
+        original_run_command = run_command
+        try:
+            is_python_run = "python" in run_command and run_command.strip().endswith(".py")
+            if is_python_run:
+                script_name = run_command.strip().split(" ")[-1]
+                script_path = Path(project_path) / script_name
+                if script_path.exists():
+                    script_content = script_path.read_text()
+                    if "plt.show()" in script_content:
+                        is_plot_script = True
+                        print(f"[DockerPlot] Matplotlib plot detected in {script_name}. Using plot harness.")
+                        harness_script_content = f"""
+import matplotlib; matplotlib.use('Agg')
+import matplotlib.pyplot as plt, mpld3, json, traceback
+user_code = \"\"\"
+{script_content}
+\"\"\"
 try:
+    plt.figure()
     exec(user_code, globals())
-
-finally:
-    fignums = plt.get_fignums()
-    if fignums:
-        print(f"[Harness] {{len(fignums)}} Matplotlib plots detected. Capturing all.", file=sys.stderr)
+    if plt.get_fignums():
         all_plots_data = []
-        for i in fignums:
+        for i in plt.get_fignums():
             fig = plt.figure(i)
-            try:
-                plot_dict = mpld3.fig_to_dict(fig)
-                all_plots_data.append(plot_dict)
-            except Exception as e:
-                print(f"[Harness] Error capturing plot figure {{i}}: {{e}}", file=sys.stderr)
-            finally:
-                plt.close(fig)
-        
+            if fig.axes:
+                all_plots_data.append(mpld3.fig_to_dict(fig))
+            plt.close(fig)
         if all_plots_data:
             with open('/app/plot_output.json', 'w') as f:
                 json.dump(all_plots_data, f)
+            print("Plot data successfully generated.")
+except Exception:
+    traceback.print_exc()
 """
-        code_to_run = python_harness_script
-        install_command_parts = []
-        if packages_to_install:
-            install_command_parts.append(f"uv pip install --system --no-cache-dir {' '.join(packages_to_install)}")
-        
-        run_command = "stdbuf -o0 python -u /app/script.py"
-        install_command_parts.append(run_command)
-        
-        final_command = ["sh", "-c", " && ".join(install_command_parts)]
-        print(f"[DockerRun-{code_block_id}] Modified command for Python: {final_command}")
+                        harness_path = Path(project_path) / "harness.py"
+                        harness_path.write_text(harness_script_content)
+                        run_command = "python harness.py"
+        except Exception as e:
+            print(f"[DockerPlot] Error during plot detection: {e}")
+        # --- END: New Matplotlib Plot Handling Logic ---
 
-    try:
-        (tmp_path / lang_config["filename"]).write_text(code_to_run, encoding="utf-8")
-        
-        is_interactive = lang_config.get("interactive", True)
-        
-        container = local_docker_client.containers.run(
-            image=lang_config["image"],
-            command=final_command,
-            volumes=volumes_to_mount,
-            working_dir='/app',
-            mem_limit=config.DOCKER_MEM_LIMIT,
-            stdin_open=True,
-            tty=False,
-            detach=True,
-            remove=False
-        )
-
-        if is_interactive:
+        container = None
+        try:
+            container = await asyncio.to_thread(
+                local_docker_client.containers.run,
+                image=lang_config["image"],
+                command=["sh", "-c", run_command], # Uses harness command if it's a plot
+                # ... (rest of the container run config is the same)
+                volumes={project_path: {'bind': '/app', 'mode': 'rw'}},
+                working_dir='/app', mem_limit=config.DOCKER_MEM_LIMIT,
+                stdin_open=True, tty=False, detach=True, remove=False
+            )
+            
             params = {'stdin': 1, 'stdout': 1, 'stderr': 1, 'stream': 1}
-            interactive_socket = container.attach_socket(params=params)
+            interactive_socket = await asyncio.to_thread(container.attach_socket, params=params)
 
             async with state.running_containers_lock:
-                state.running_containers[code_block_id] = {
-                    "container": container, "client_id": client_id, "socket": interactive_socket
-                }
+                state.running_containers[project_id] = { "container": container, "client_id": client_id, "socket": interactive_socket }
 
             loop = asyncio.get_running_loop()
-            # --- MODIFICATION: Pass timeout and remove wait_for wrapper ---
-            reader_task = loop.create_task(
-                read_from_socket_and_stream(loop, websocket, code_block_id, container, interactive_socket, timeout_seconds=config.DOCKER_TIMEOUT_SECONDS)
-            )
-            await reader_task
-        else: # Batch mode for non-interactive
-            container.wait(timeout=config.DOCKER_TIMEOUT_SECONDS)
+            await read_from_socket_and_stream(loop, websocket, project_id, container, interactive_socket, config.DOCKER_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Execution timed out."})
+        except Exception as e:
+            await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Execution failed: {e}"})
+        finally:
+            # --- START: New Plot Data Extraction Logic ---
+            if is_plot_script:
+                plot_output_path = Path(project_path) / "plot_output.json"
+                if plot_output_path.exists():
+                    try:
+                        plot_data = json.loads(plot_output_path.read_text())
+                        await send_ws_message(websocket, "plot_output", {
+                            "project_id": project_id,
+                            "plot_data": plot_data
+                        })
+                        plot_output_path.unlink() # Clean up the file
+                    except Exception as e:
+                        print(f"[DockerPlot] Error reading or sending plot data: {e}")
+            # --- END: New Plot Data Extraction Logic ---
+            await stop_container(project_id)
 
-    except asyncio.TimeoutError:
-        # This block now catches the inactivity timeout from the reader task
-        print(f"[DockerRun-{code_block_id}] Session timed out after {config.DOCKER_TIMEOUT_SECONDS}s of inactivity.")
-        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": 137, "error": "Execution timed out due to inactivity."})
-    except Exception as e:
-        error_payload = f"Server Execution Error: {e}"
-        print(f"[DockerRun-{code_block_id}] CRITICAL ERROR: {error_payload}")
-        traceback.print_exc()
-        await send_ws_message(websocket, "code_finished", {"code_block_id": code_block_id, "exit_code": -1, "error": error_payload})
-    finally:
-        plot_output_path = tmp_path / "plot_output.json"
-        if plot_output_path.exists():
-            print(f"[DockerRun-{code_block_id}] Found plot_output.json. Sending to client.")
-            try:
-                with open(plot_output_path, 'r') as f:
-                    plot_data = json.load(f) # This will now be a list
-                await send_ws_message(websocket, "plot_output", {
-                    "code_block_id": code_block_id,
-                    "plot_data": plot_data
-                })
-            except Exception as e:
-                print(f"[DockerRun-{code_block_id}] Error reading or sending plot data: {e}")
-        
-        print(f"[DockerRun-{code_block_id}] === CLEANUP PHASE ===")
-        await stop_docker_container(code_block_id)
-        if tmpdir_obj:
-            try:
-                tmpdir_obj.cleanup()
-            except Exception as e:
-                print(f"[DockerRun-{code_block_id}] Error cleaning temp directory: {e}")
-        
-        print(f"[DockerRun-{code_block_id}] === DOCKER EXECUTION COMPLETE ===")
-
-async def send_input_to_container(code_block_id: str, user_input: str):
-    # This function remains unchanged...
+# --- Cleanup and Input Functions ---
+async def send_input_to_container(project_id: str, user_input: str):
     async with state.running_containers_lock:
-        container_info = state.running_containers.get(code_block_id)
+        container_info = state.running_containers.get(project_id)
         if container_info and (socket := container_info.get("socket")):
             try:
                 await asyncio.to_thread(socket.sendall, user_input.encode('utf-8'))
-                print(f"Sent input to {code_block_id}: {user_input.strip()}")
             except Exception as e:
                 print(f"Error sending input via socket: {e}")
-        else:
-            print(f"Send input failed: No active container or socket for {code_block_id}")
 
-async def stop_docker_container(code_block_id: str):
-    # This function remains unchanged...
-    container_info = None
-    async with state.running_containers_lock:
-        container_info = state.running_containers.pop(code_block_id, None)
+async def stop_container(project_id: str):
+    # This function now intelligently stops either a preview or a standard container
+    async with state.running_previews_lock:
+        preview_info = state.running_previews.pop(project_id, None)
     
-    if not container_info:
+    if preview_info and (container := preview_info.get("container")):
+        try:
+            await asyncio.to_thread(container.stop, timeout=5)
+            print(f"[DockerPreview] Stopped preview container for {project_id}")
+        except Exception as e:
+            print(f"[DockerPreview] Error stopping preview container for {project_id}: {e}")
         return
 
-    if socket := container_info.get("socket"):
+    async with state.running_containers_lock:
+        container_info = state.running_containers.pop(project_id, None)
+    
+    if container_info and (container := container_info.get("container")):
         try:
-            socket.close()
-            print(f"Socket for {code_block_id} closed.")
-        except Exception as e_sock:
-            print(f"Error closing socket for {code_block_id}: {e_sock}")
-
-    if container := container_info.get("container"):
-        try:
-            await asyncio.to_thread(container.reload)
-            if container.status == 'running':
-                await asyncio.to_thread(container.kill)
-                print(f"Container for {code_block_id} killed.")
-            else:
-                print(f"Container for {code_block_id} already stopped (status: {container.status}).")
-            
+            if (socket := container_info.get("socket")):
+                socket.close()
+            await asyncio.to_thread(container.stop, timeout=5)
             await asyncio.to_thread(container.remove, force=True)
-            print(f"Container for {code_block_id} removed.")
+            print(f"[DockerExec] Stopped standard container for {project_id}")
         except Exception as e:
-            print(f"Error stopping/removing container for {code_block_id}: {e}")
+            print(f"[DockerExec] Error stopping standard container for {project_id}: {e}")
 
 async def cleanup_client_containers(client_id: str):
-    # This function remains unchanged...
     async with state.running_containers_lock:
-        ids_for_client = [cb_id for cb_id, info in state.running_containers.items() if info.get("client_id") == client_id]
+        ids_for_client = [p_id for p_id, info in state.running_containers.items() if info.get("client_id") == client_id]
     
     if ids_for_client:
-        await asyncio.gather(*[stop_docker_container(cb_id) for cb_id in ids_for_client], return_exceptions=True)
+        await asyncio.gather(*[stop_container(p_id) for p_id in ids_for_client])
 
 === app/email_utils.py ===
 # app/email_utils.py
@@ -2310,13 +2201,14 @@ import traceback
 from typing import List, Callable, Optional, Any
 import asyncio
 import sqlite3
+from pathlib import Path
 
 from fastapi import WebSocket
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, Runnable, RunnableLambda
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_ollama.llms import OllamaLLM
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -2327,19 +2219,33 @@ from . import state
 from . import database
 from . import utils
 from . import encryption_utils
+from . import project_utils
 
-# --- System Prompt Definition ---
 SYSTEM_PROMPT = (
-    "You are a versatile and helpful AI assistant with expertise in programming and data visualization.\n\n"
-    "## Your Core Directives:\n"
-    "1.  **Interpret the User's Goal:** First, determine if the user is asking for information, a plot, or code in a specific language.\n"
-    "2.  **Provide Direct Answers:** For general questions, facts, explanations, or summaries, provide the answer directly using clear text and Markdown formatting (like tables and lists).\n"
-    "3.  **Generate Code in the Requested Language:** If the user asks for a script, a webpage, or mentions a language (e.g., 'Python', 'HTML', 'JavaScript'), you MUST generate code in that specific language. Use the correct language identifier in the fenced code block (e.g., ```python, ```html).\n"
-    "4.  **Code-Only Responses:** When the user's request is primarily for a code snippet, your response must contain ONLY the Markdown-fenced code block. Do not include any extra explanatory text or conversational phrases before or after the code block.\n"
-    "5.  **Never Wrap Code in Python:** Your environment can render `html` code blocks directly. Therefore, NEVER write Python code to print or display another language's code (e.g., do not use `IPython.display` or `print(html_code)`). If the final desired output is HTML, write it in an `html` code block.\n"
-    "6.  **Use `matplotlib` for Plots:** All plotting must be done using the `matplotlib.pyplot` library in a Python code block. The system will render the plots automatically.\n"
-    "7.  **Use LaTeX for Mathematics:** When writing mathematical equations or formulas, you MUST enclose them in LaTeX notation. Use `$$...$$` for block equations and `$...$` for inline equations.\n"
-    "8.  **Use the Thinking Process:** For complex requests, explain your reasoning using the `\\think` command at the start of your response."
+    "You are a helpful AI assistant. Follow the user's instructions carefully.\n\n"
+    "RESPONSE FORMATTING RULES:\n"
+    "1.  **Standard Text:** For questions and explanations, respond directly using Markdown and LaTeX for math (`$$...$$` or `$...$`).\n"
+    "2.  **Code Projects:** For any request that requires executable code, YOU MUST use the following project format.\n\n"
+    "PROJECT FORMAT:\n"
+    "-   Start with `PROJECT_METADATA:`, followed by a JSON block with the project `name`.\n"
+    "-   The first file MUST be `./run.sh` containing the shell commands to execute the project.\n"
+    "-   Provide all other source files with their file paths (e.g., `./main.py:`).\n"
+    "-   For plots, the `run.sh` must execute a standard Python script that uses `matplotlib.pyplot` and ends with `plt.show()`.\n\n"
+    "EXAMPLE:\n"
+    "PROJECT_METADATA:\n"
+    "```json\n"
+    "{\n"
+    '  "name": "Hello World Script"\n'
+    "}\n"
+    "```\n"
+    "./run.sh:\n"
+    "```bash\n"
+    "python main.py\n"
+    "```\n"
+    "./main.py:\n"
+    "```python\n"
+    "print('Hello, World!')\n"
+    "```"
 )
 
 def get_model(
@@ -2412,7 +2318,7 @@ def get_model(
         return None
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
+    SystemMessage(content=SYSTEM_PROMPT),
     MessagesPlaceholder(variable_name="history"),
     ("human", "{input}")
 ])
@@ -2449,7 +2355,6 @@ def create_chain(
         print(f"LLM Chain CRITICAL_ERROR: Failed to create LangChain chain: {e}")
         traceback.print_exc()
         return None
-
 async def invoke_llm_for_session(
     session_id: str,
     websocket: WebSocket,
@@ -2504,14 +2409,22 @@ async def invoke_llm_for_session(
             raise ValueError(f"Failed to create chain for provider {provider_id}")
 
         stream = chain.astream({"input": user_input_raw})
+        print(f"--- LLM LOG: Stream created for '{stream_id}'. Awaiting chunks... ---")
 
+        chunk_count = 0
         async for chunk in stream:
             if stop_event.is_set():
+                print(f"--- LLM LOG: Stream '{stream_id}' stopped by event. ---")
                 break
+            
+            chunk_count += 1
+            print(f"--- LLM LOG: Chunk #{chunk_count} received from model for '{stream_id}' ---")
             
             full_response_content += chunk
             await utils.send_ws_message(websocket, "ai_chunk", chunk)
             await asyncio.sleep(0.01)
+        
+        print(f"--- LLM LOG: Finished iterating chunks for '{stream_id}'. Total chunks: {chunk_count} ---")
 
     except Exception as e:
         print(f"--- LLM ERROR for stream '{stream_id}' ---")
@@ -2520,14 +2433,34 @@ async def invoke_llm_for_session(
         await websocket.send_text(error_message)
     finally:
         print(f"--- LLM STREAM: Finalizing stream '{stream_id}' ---")
+        
+        project_id_for_db = None
+        parsed_project = project_utils.parse_project_from_content(full_response_content)
+
+        if parsed_project:
+            project_path = project_utils.create_project_directory_and_files(parsed_project)
+            if project_path:
+                project_id_for_db = Path(project_path).name
+                print(f"--- PROJECT CREATED successfully with ID {project_id_for_db} ---")
+                
+                project_payload = {
+                    "project_id": project_id_for_db,
+                    "name": parsed_project["name"],
+                    "files": parsed_project["files"],
+                    "turn_id": turn_id
+                }
+                await utils.send_ws_message(websocket, "ai_project_created", project_payload)
+            else:
+                print(f"--- PROJECT CREATION FAILED for {parsed_project['name']} ---")
+
         if full_response_content:
             try:
                 db_conn = database.get_db_connection()
                 cursor = db_conn.cursor()
                 cursor.execute(
-                    """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id, timestamp)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'))""",
-                    (session_id, user_id, 'AI', 'ai', full_response_content, turn_id, reply_to_message_id)
+                    """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id, project_id, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'))""",
+                    (session_id, user_id, 'AI', 'ai', full_response_content, turn_id, reply_to_message_id, project_id_for_db)
                 )
                 ai_message_id = cursor.lastrowid
                 db_conn.commit()
@@ -2539,9 +2472,9 @@ async def invoke_llm_for_session(
                 if db_conn:
                     db_conn.close()
 
-        await utils.send_ws_message(websocket, "ai_stream_end", {"message_id": ai_message_id})
+        print(f"--- LLM LOG: Finalizing stream '{stream_id}'. Sending ai_stream_end message. ---")
+        await utils.send_ws_message(websocket, "ai_stream_end", {"message_id": ai_message_id, "turn_id": turn_id})
         await state.unregister_ai_stream(stream_id)
-
 
 === app/main.py ===
 import os
@@ -2549,12 +2482,15 @@ import sys
 import traceback
 from pathlib import Path
 import asyncio
+import uuid
+import tempfile
 import json
 import sqlite3
 import uuid
 from urllib.parse import urlparse
 import datetime
 from typing import Optional, Dict, Any, List
+
 
 from fastapi import (
     FastAPI,
@@ -2595,6 +2531,7 @@ from . import auth
 from . import email_utils
 from . import models
 from . import encryption_utils
+from . import project_utils
 
 app = FastAPI(title="Tesseracs Chat CSRF Example")
 
@@ -3397,7 +3334,25 @@ async def get_chat_messages_for_session(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
         
         cursor.execute("SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC", (session_id,))
-        return [models.MessageItem(**dict(row)) for row in cursor.fetchall()]
+        
+        # --- START of MODIFICATION ---
+        messages_to_return = []
+        rows = cursor.fetchall()
+        for row in rows:
+            msg_dict = dict(row)
+            parsed_project = None  # Default to None for every message
+
+            # If the message has a project, parse it
+            if msg_dict.get("project_id") and msg_dict.get("content"):
+                parsed_project = project_utils.parse_project_from_content(msg_dict["content"])
+            
+            # ALWAYS add the project_data key before validation
+            msg_dict["project_data"] = parsed_project
+            
+            messages_to_return.append(models.MessageItem(**msg_dict))
+        return messages_to_return
+        # --- END of MODIFICATION ---
+
     finally:
         if conn: conn.close()
 
@@ -3451,11 +3406,21 @@ def _get_session_participants_logic(session_id: str, user_id: int) -> Optional[L
         if not cursor.fetchone():
             return None
         
+        # This query now filters out bots AND any user named "AI Assistant"
         cursor.execute(
-            """SELECT u.id, u.name, u.email FROM users u JOIN session_participants sp ON u.id = sp.user_id WHERE sp.session_id = ?""",
+            """SELECT u.id, u.name, u.email 
+               FROM users u JOIN session_participants sp ON u.id = sp.user_id 
+               WHERE sp.session_id = ? AND u.is_bot = FALSE AND u.name != 'AI Assistant'
+               ORDER BY u.name""",
             (session_id,)
         )
-        return [models.UserResponseModel(**dict(row)) for row in cursor.fetchall()]
+        participants = [dict(row) for row in cursor.fetchall()]
+        
+        participants = _generate_unique_initials(participants)
+        for i, p in enumerate(participants):
+            p['color'] = PARTICIPANT_COLORS[p['id'] % len(PARTICIPANT_COLORS)]
+
+        return [models.UserResponseModel(**p) for p in participants]
     except sqlite3.Error:
         return None
     finally:
@@ -3561,7 +3526,7 @@ async def websocket_endpoint(
             await state.broadcast(session_id_ws, {
                 "type": "participants_update",
                 "payload": [p.model_dump() for p in live_participants]
-            })
+            }, exclude_websocket=websocket)
 
     await broadcast_participants()
     
@@ -3578,16 +3543,12 @@ async def websocket_endpoint(
                 recipient_ids = payload.get("recipient_ids", [])
                 reply_to_id = payload.get("reply_to_id")
                 
-                user_input_cleaned = user_input_raw
-                if user_input_raw.startswith(config.NO_THINK_PREFIX):
-                    user_input_cleaned = user_input_raw[len(config.NO_THINK_PREFIX):].lstrip()
-                
                 db_conn = database.get_db_connection()
                 cursor = db_conn.cursor()
                 cursor.execute(
                     """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, client_id_temp, turn_id, reply_to_message_id, timestamp) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'))""",
-                    (session_id_ws, user_id, user_name, 'user', user_input_cleaned, client_js_id, turn_id, reply_to_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'))""",
+                    (session_id_ws, user_id, user_name, 'user', user_input_raw, client_js_id, turn_id, reply_to_id)
                 )
                 message_id = cursor.lastrowid
                 db_conn.commit()
@@ -3595,19 +3556,23 @@ async def websocket_endpoint(
                 new_msg_row = cursor.fetchone()
                 db_conn.close()
 
+                msg_dict = dict(new_msg_row)
+                msg_dict["project_data"] = None
+
                 current_participants = _get_session_participants_logic(session_id_ws, user_id)
                 sender_info = next((p for p in current_participants if p.id == user_id), None)
 
-                message_model = models.MessageItem(**dict(new_msg_row))
+                message_model = models.MessageItem(**msg_dict)
                 if sender_info:
                     message_model.sender_color = sender_info.color
 
                 await state.broadcast(
                     session_id_ws,
-                    {"type": "new_message", "payload": message_model.model_dump()}
+                    {"type": "new_message", "payload": message_model.model_dump()},
+                    exclude_websocket=websocket
                 )
 
-                if any(recipient.upper() == 'AI' for recipient in recipient_ids):
+                if any(recipient.upper() in ['AI', 'A'] for recipient in recipient_ids):
                     stream_id = f"{session_id_ws}-{client_js_id}-{turn_id}"
                     asyncio.create_task(
                         llm.invoke_llm_for_session(
@@ -3621,21 +3586,52 @@ async def websocket_endpoint(
                         )
                     )
             
-            elif message_type == "stop_ai_stream" and payload:
-                turn_id = payload.get("turn_id")
-                stream_id_to_stop = f"{session_id_ws}-{client_js_id}-{turn_id}"
-                await state.signal_stop_ai_stream(stream_id_to_stop)
+            elif message_type == "user_typing" and payload is not None:
+                await state.broadcast(
+                    session_id_ws,
+                    {"type": "participant_typing", "payload": {"user_id": user_id, "user_name": user_name, "is_typing": payload.get("is_typing", False)}},
+                    exclude_websocket=websocket
+                )
 
             elif message_type == "run_code" and payload:
-                asyncio.create_task(docker_utils.run_code_in_docker_stream(
-                    websocket, client_js_id, payload['code_block_id'], payload['language'], payload['code']
-                ))
+                project_data = payload.get("project_data")
+                project_id = payload.get("project_id")
+                language = payload.get("language")
 
+                if not all([project_data, project_id, language]):
+                    continue
+
+                project_path = project_utils.create_project_directory_and_files(project_data)
+                if not project_path:
+                    await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Failed to create project files."})
+                    continue
+
+                lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
+                if not lang_config:
+                    await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Language '{language}' is not configured."})
+                    continue
+                
+                run_script = next((f for f in project_data.get("files", []) if f["path"].endswith('run.sh')), None)
+                if not run_script:
+                        await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Could not find run.sh in project."})
+                        continue
+
+                asyncio.create_task(docker_utils.run_code_in_docker(
+                    websocket=websocket,
+                    client_id=client_js_id,
+                    project_id=project_id,
+                    project_path=project_path,
+                    run_command="sh run.sh",
+                    lang_config=lang_config
+                ))
+            
             elif message_type == "stop_code" and payload:
-                await docker_utils.stop_docker_container(payload['code_block_id'])
+                project_id = payload.get("project_id")
+                if project_id:
+                    await docker_utils.stop_container(project_id)
 
             elif message_type == "code_input" and payload:
-                await docker_utils.send_input_to_container(payload['code_block_id'], payload['input'])
+                await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
             
             elif message_type == "save_code_content" and payload:
                 database.save_edited_code_content(
@@ -3995,6 +3991,7 @@ class MessageItem(BaseModel):
     content: str
     client_id_temp: Optional[str] = None
     thinking_content: Optional[str] = None
+    project_data: Optional[Dict[str, Any]]
     timestamp: str
     turn_id: Optional[int] = None
     model_provider_id: Optional[str] = None
@@ -4015,6 +4012,110 @@ class JoinSessionRequest(BaseModel):
     passcode: Optional[str] = None
 
 
+=== app/project_utils.py ===
+# app/project_utils.py
+
+import re
+import os
+import tempfile
+import subprocess
+import json
+from pathlib import Path
+from typing import Optional, Dict, List, Any
+
+# In app/project_utils.py
+
+def parse_project_from_content(content: str) -> Optional[Dict[str, Any]]:
+    """
+    Parses a multi-file project from a string using a JSON metadata block.
+    """
+    try:
+        metadata_regex = re.compile(
+            r"PROJECT_METADATA:\s*\n"
+            r"```json\s*\n"
+            r"([\s\S]+?)\n"
+            r"```",
+            re.MULTILINE
+        )
+        metadata_match = metadata_regex.search(content)
+        
+        if not metadata_match:
+            return None
+
+        metadata = json.loads(metadata_match.group(1))
+        project_name = metadata.get("name")
+
+        if not project_name:
+            return None
+
+        content_after_metadata = content[metadata_match.end():]
+        
+        file_regex = re.compile(
+            r"^\s*(?P<path>[\w\./\-\_]+):\s*\n"
+            r"```(?P<language>\w*)\n"
+            r"(?P<content>[\s\S]*?)\n?"
+            r"```",
+            re.MULTILINE
+        )
+        
+        files = []
+        for match in file_regex.finditer(content_after_metadata):
+            files.append({
+                "path": match.group("path").strip(),
+                "language": match.group("language").strip(),
+                "content": match.group("content")
+            })
+
+        # Ensure the run.sh script is present
+        if not any(f['path'] in ['./run.sh', 'run.sh'] for f in files):
+            return None
+
+        return {
+            "name": project_name,
+            "files": files
+        }
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"PROJECT_UTILS PARSE ERROR: Failed to parse project - {e}")
+        return None
+
+def create_project_directory_and_files(project_data: Dict[str, Any]) -> Optional[str]:
+    """
+    Creates a temporary directory, saves project files, and initializes a git repo.
+    Returns the path to the created directory, or None on failure.
+    """
+    try:
+        project_dir = tempfile.mkdtemp(prefix="tesseracs_proj_")
+        print(f"PROJECT_UTILS: Created temporary project directory at {project_dir}")
+
+        for file_info in project_data.get("files", []):
+            file_path_str = file_info.get("path")
+            content = file_info.get("content", "")
+
+            if not file_path_str or file_path_str.startswith("/") or ".." in file_path_str:
+                 print(f"PROJECT_UTILS WARNING: Skipping potentially unsafe file path: {file_path_str}")
+                 continue
+
+            full_path = Path(project_dir) / file_path_str
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            print(f"    - Wrote file: {full_path}")
+
+        # Initialize Git repository and make the first commit
+        subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "AI Assistant"], cwd=project_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "ai@tesseracs.com"], cwd=project_dir, check=True)
+        subprocess.run(["git", "add", "."], cwd=project_dir, check=True)
+        commit_message = f"Initial commit: Create project '{project_data.get('name', 'Untitled Project')}'"
+        subprocess.run(["git", "commit", "-m", commit_message], cwd=project_dir, check=True, capture_output=True)
+        
+        print(f"PROJECT_UTILS: Initialized Git repo and committed files for '{project_data.get('name')}'")
+
+        return project_dir
+
+    except (subprocess.CalledProcessError, OSError, Exception) as e:
+        print(f"PROJECT_UTILS ERROR: Failed to create project directory or files: {e}")
+        return None
+
 === app/state.py ===
 import asyncio
 import json
@@ -4032,6 +4133,8 @@ running_containers: Dict[str, Dict[str, Any]] = {}
 running_containers_lock = asyncio.Lock()
 active_ai_streams: Dict[str, asyncio.Event] = {}
 active_ai_streams_lock = asyncio.Lock()
+running_previews: Dict[str, Dict[str, Any]] = {}
+running_previews_lock = asyncio.Lock()
 
 import re
 
@@ -4273,7 +4376,6 @@ async def broadcast_to_lobby(message: dict):
 
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.websockets import WebSocketState
-import re
 import html
 import traceback
 from typing import Any
@@ -4288,37 +4390,45 @@ def escape_html(s: str) -> str:
 
 def is_valid_email(email: str) -> bool:
     """
-    Validates an email address.
-    (This is a basic example, consider a more robust library for production)
+    Validates an email address. A simple check.
     """
     if not email:
         return False
     # Basic regex for email validation
+    import re
     pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
     if re.match(pattern, email):
         return True
     return False
 
 async def send_ws_message(websocket: WebSocket, message_type: str, payload: Any):
-    """Safely sends a JSON message over the WebSocket."""
-    code_block_id = payload.get('code_block_id', 'N/A') if isinstance(payload, dict) else 'N/A'
+    """Safely sends a JSON message over the WebSocket with improved logging."""
     
-    print(f"[utils] Attempting to send {message_type} for {code_block_id}")
+    # --- Start of New Logging Logic ---
+    log_msg = f"[utils] Attempting to send {message_type}"
+    if isinstance(payload, dict):
+        # Look for a specific ID to make the log more useful
+        identifier = payload.get('project_id') or payload.get('code_block_id')
+        if identifier:
+            log_msg += f" for {identifier}"
+    # For simple string payloads like 'ai_chunk', we don't add an identifier.
+    print(log_msg)
+    # --- End of New Logging Logic ---
     
     if websocket.client_state != WebSocketState.CONNECTED:
-        print(f"[utils] ✗ WebSocket not connected (state: {websocket.client_state.name}), cannot send {message_type} for {code_block_id}")
+        print(f"[utils] ✗ WebSocket not connected (state: {websocket.client_state.name}), cannot send message")
         return False
         
     try:
         message = {"type": message_type, "payload": payload}
         await websocket.send_json(message)
-        print(f"[utils] ✓ Successfully sent {message_type} for {code_block_id}")
+        print(f"[utils] ✓ Successfully sent {message_type}")
         return True
     except WebSocketDisconnect:
-        print(f"[utils] ✗ WebSocket disconnected while trying to send {message_type} for {code_block_id}")
+        print(f"[utils] ✗ WebSocket disconnected while trying to send {message_type}")
         return False
     except Exception as e:
-        print(f"[utils] ✗ Error sending WebSocket message ({message_type}) for {code_block_id}: {e}")
+        print(f"[utils] ✗ Error sending WebSocket message ({message_type}): {e}")
         traceback.print_exc()
         return False
 
@@ -5018,74 +5128,38 @@ span[data-katex-rendered="true"] .katex { line-height: normal; vertical-align: b
 === app/static/languages.json ===
 {
   "html": {
-    "image": "alpine:latest",
-    "filename": "script.html",
-    "command": ["cat", "/app/script.html"],
-    "executable": true,
-    "interactive": false
+    "image": "tesseracs-node",
+    "is_preview_server": true
   },
   "python": {
-    "image": "python-runner-with-uv",
-    "filename": "script.py",
-    "command": ["stdbuf", "-o0", "python", "-u", "/app/script.py"],
-    "executable": true,
-    "interactive": true
+    "image": "python-runner-with-uv"
   },
   "javascript": {
-    "image": "node:18-alpine",
-    "filename": "script.js",
-    "command": ["stdbuf", "-o0", "node", "/app/script.js"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-node"
+  },
+  "bash": {
+    "image": "python-runner-with-uv"
   },
   "c": {
-    "image": "gcc:latest",
-    "filename": "script.c",
-    "command": ["sh", "-c", "gcc /app/script.c -o /app/output_executable && exec stdbuf -o0 /app/output_executable"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-gcc"
   },
   "cpp": {
-    "image": "gcc:latest",
-    "filename": "script.cpp",
-    "command": ["sh", "-c", "g++ /app/script.cpp -o /app/output_executable && exec stdbuf -o0 /app/output_executable"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-gcc"
   },
   "csharp": {
-    "image": "mcr.microsoft.com/dotnet/sdk:latest",
-    "filename": "Script.cs",
-    "command": ["sh", "-c", "cd /app && dotnet new console --force -o . > /dev/null && cp Script.cs Program.cs && rm Script.cs && exec dotnet run"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-dotnet"
   },
   "typescript": {
-    "image": "node:18-alpine",
-    "filename": "script.ts",
-    "command": ["sh", "-c", "npm install -g typescript > /dev/null 2>&1 && tsc --module commonjs /app/script.ts && exec stdbuf -o0 node /app/script.js"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-node"
   },
   "java": {
-    "image": "openjdk:17-jdk-slim",
-    "filename": "Main.java",
-    "command": ["sh", "-c", "javac /app/Main.java && exec stdbuf -o0 java -cp /app Main"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-java"
   },
   "go": {
-    "image": "golang:1.21-alpine",
-    "filename": "script.go",
-    "command": ["stdbuf", "-o0", "go", "run", "/app/script.go"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-go"
   },
   "rust": {
-    "image": "rust:1-slim",
-    "filename": "main.rs",
-    "command": ["sh", "-c", "cd /app && rustc main.rs -o main_executable && exec stdbuf -o0 ./main_executable"],
-    "executable": true,
-    "interactive": true
+    "image": "tesseracs-rust"
   }
 }
 
@@ -5548,14 +5622,8 @@ const sendButton = document.getElementById('send-button');
 const thinkCheckbox = document.getElementById('think-checkbox');
 const stopAiButton = document.getElementById('stop-ai-button');
 
-// --- Core Variables ---
-let websocket;
-const clientId = `web-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-let currentTurnId = 0;
 
-// --- Constants ---
-const NO_THINK_PREFIX = "\\no_think";
-const THINK_PREFIX = "\\think";
+
 
 const LANGUAGE_ALIASES = {
     'python': 'python', 'py': 'python',
@@ -5588,68 +5656,23 @@ const PRISM_LANGUAGE_MAP = {
 };
 
 // --- State Variables ---
+let websocket;
+const clientId = `web-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+let currentTurnId = 0;
+let projectDataCache = {};
+
+// --- State Variables ---
 let supportedLanguagesConfig = {};
+
+// Turn-specific state, reset by resetStreamingState()
+let streamingState = {};
 let currentAiTurnContainer = null;
 let currentAnswerElement = null;
-let currentThinkingArea = null;
-let currentThinkingPreElement = null;
 let currentCodeBlocksArea = null;
-let codeBlockCounterThisTurn = 0;
-let thinkingRequestedForCurrentTurn = false;
-let accumulatedAnswerText = '';
-let hasThinkingContentArrivedThisTurn = false;
 let firstAnswerTokenReceived = false;
-let activeStreamingCodeBlocks = new Map(); // blockId -> { element, language, content }
+let activeStreamingCodeBlocks = new Map();
 let streamingCodeBlockCounter = 0;
 
-
-
-
-function addTerminalPrompt(outputPreElement, promptText) {
-    if (!outputPreElement) return;
-    
-    const outputContainer = outputPreElement.closest('.block-container');
-    if (!outputContainer) return;
-    
-    const inputField = document.createElement('input');
-    inputField.type = 'text';
-    inputField.style.border = 'none';
-    inputField.style.outline = 'none';
-    inputField.style.background = 'transparent';
-    inputField.style.color = 'inherit';
-    inputField.style.font = 'inherit';
-    inputField.style.padding = '0';
-    inputField.style.margin = '0';
-    inputField.style.display = 'inline';
-    inputField.style.width = 'auto';
-    inputField.style.minWidth = '200px';
-    
-    outputPreElement.appendChild(inputField);
-    inputField.focus();
-    
-    inputField.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            const userInput = inputField.value;
-            
-            const textNode = document.createTextNode(userInput + '\n');
-            outputPreElement.replaceChild(textNode, inputField);
-            
-            // FIX: Get the output block's ID and strip the prefix to find the original code block ID.
-            const outputBlockId = outputContainer.id; // e.g., "output-for-code-block-turn1-1"
-            const originalCodeBlockId = outputBlockId.replace('output-for-', ''); // results in "code-block-turn1-1"
-
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                websocket.send(JSON.stringify({
-                    type: 'code_input',
-                    payload: { 
-                        code_block_id: originalCodeBlockId, // Send the CORRECT ID
-                        input: userInput + '\n' 
-                    }
-                }));
-            }
-        }
-    });
-}
 
 function escapeHTML(str) {
     if (str === null || str === undefined) return '';
@@ -5754,6 +5777,7 @@ async function loadLanguagesConfig() {
     }
 }
 
+
 async function initializeCurrentUser() {
     try {
         const response = await fetch('/api/me');
@@ -5829,11 +5853,38 @@ function setInputDisabledState(inputsDisabled, aiResponding) {
 }
 
 
+function handleTypingIndicators(payload) {
+    const { user_id, user_name, is_typing, color } = payload;
+    const indicatorId = `typing-indicator-${user_id}`;
+    let existingIndicator = document.getElementById(indicatorId);
+
+    if (is_typing && !existingIndicator) {
+        const bubble = document.createElement('div');
+        bubble.id = indicatorId;
+        bubble.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'flex', 'flex-col', 'self-start', 'mr-auto');
+        bubble.style.backgroundColor = color || '#dbeafe';
+
+        const senderElem = document.createElement('p');
+        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800');
+        senderElem.textContent = escapeHTML(user_name);
+
+        const dots = document.createElement('span');
+        dots.classList.add('loading-dots');
+
+        bubble.appendChild(senderElem);
+        bubble.appendChild(dots);
+        chatHistory.appendChild(bubble);
+        scrollToBottom('smooth');
+    } else if (!is_typing && existingIndicator) {
+        existingIndicator.remove();
+    }
+}
+
 function addUserMessage(text) {
     if (!chatHistory) return;
 
     const messageElement = document.createElement('div');
-    messageElement.classList.add('message', 'user-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'self-end', 'ml-auto');
+    messageElement.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'self-end', 'ml-auto');
     
     const currentUser = window.currentUserInfo;
     const participantData = currentUser && window.participantInfo ? window.participantInfo[currentUser.id] : null;
@@ -5841,7 +5892,7 @@ function addUserMessage(text) {
     if (participantData && participantData.color) {
         messageElement.style.backgroundColor = participantData.color;
     } else {
-        messageElement.classList.add('bg-gray-200'); // Fallback color
+        messageElement.classList.add('bg-gray-200');
     }
 
     const senderElem = document.createElement('p');
@@ -5851,13 +5902,7 @@ function addUserMessage(text) {
 
     const contentElem = document.createElement('div');
     contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
-    
-    let displayedText = text;
-    // Always strip the prefix for display, regardless of who the message is for.
-    if (text.startsWith(NO_THINK_PREFIX)) {
-        displayedText = text.substring(NO_THINK_PREFIX.length).trim();
-    }
-    contentElem.textContent = displayedText.replace(/@\w+/g, '').trim(); 
+    contentElem.textContent = text.replace(/@\w+/g, '').trim();
     messageElement.appendChild(contentElem);
 
     chatHistory.appendChild(messageElement);
@@ -5868,12 +5913,54 @@ function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBl
     if (!parentElement || !msg) return;
 
     const senderType = msg.sender_type;
-    const senderName = msg.sender_name || (senderType === 'ai' ? 'AI' : 'User');
-    const timestamp = msg.timestamp;
+    const senderName = msg.sender_name || (senderType === 'ai' ? 'AI Assistant' : 'User');
     const currentUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
     const isCurrentUser = msg.user_id === currentUserId;
 
-    if (senderType === 'user' || senderType === 'system' || senderType === 'ai') {
+    if (senderType === 'ai') {
+        const aiTurnContainer = document.createElement('div');
+        aiTurnContainer.classList.add('ai-turn-container');
+        if (msg.turn_id) aiTurnContainer.dataset.turnId = msg.turn_id;
+
+        const messageBubble = document.createElement('div');
+        messageBubble.classList.add('message', 'ai-message', 'bg-sky-100');
+        
+        const senderElem = document.createElement('p');
+        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800', 'italic');
+        senderElem.textContent = 'AI Assistant';
+        messageBubble.appendChild(senderElem);
+
+        const contentElem = document.createElement('div');
+        contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
+        
+        const codeBlocksArea = document.createElement('div');
+        codeBlocksArea.classList.add('code-blocks-area');
+
+        if (msg.project_data) {
+            projectDataCache[msg.turn_id] = msg.project_data;
+            contentElem.innerHTML = `<strong>Project Created: ${escapeHTML(msg.project_data.name)}</strong>`;
+            
+            const runScript = msg.project_data.files.find(f => f.path.endsWith('run.sh'));
+            if (runScript) {
+                const block = createCodeBlock('bash', runScript.content, runScript.content, msg.turn_id, 1, codeBlocksArea, true);
+                block.querySelector('.block-title .title-text').textContent = runScript.path;
+            }
+            msg.project_data.files.forEach((file, index) => {
+                if (file.path.endsWith('run.sh')) return;
+                const blockId = `code-block-turn${msg.turn_id}-${index + 2}`;
+                const block = createCodeBlock(file.language, editedCodeBlocks[blockId] || file.content, file.content, msg.turn_id, index + 2, codeBlocksArea, false);
+                block.querySelector('.block-title .title-text').textContent = file.path;
+            });
+        } else {
+            parseAndRenderAiContent(msg.content, contentElem, codeBlocksArea, msg.turn_id, editedCodeBlocks);
+        }
+        
+        messageBubble.appendChild(contentElem);
+        aiTurnContainer.appendChild(messageBubble);
+        aiTurnContainer.appendChild(codeBlocksArea);
+        parentElement.appendChild(aiTurnContainer);
+
+    } else if (senderType === 'user' || senderType === 'system') {
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
         messageDiv.setAttribute('data-sender', senderType);
@@ -5885,27 +5972,16 @@ function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBl
             } else {
                 messageDiv.classList.add('self-start', 'mr-auto');
             }
-
-            // --- THIS IS THE FIX ---
-            // 1. Check for color on the message object itself (for live messages).
-            // 2. If not found, look up the color from the globally stored participant info.
             let bubbleColor = msg.sender_color;
             if (!bubbleColor && window.participantInfo && msg.user_id) {
                 const participant = window.participantInfo[msg.user_id];
-                if (participant) {
-                    bubbleColor = participant.color;
-                }
+                if (participant) bubbleColor = participant.color;
             }
-            
             if (bubbleColor) {
                 messageDiv.style.backgroundColor = bubbleColor;
             } else {
-                messageDiv.classList.add('bg-gray-200'); // Final fallback for unknown/past users
+                messageDiv.classList.add('bg-gray-200');
             }
-            // --- END OF FIX ---
-
-        } else if (senderType === 'ai') {
-            messageDiv.classList.add('bg-sky-100', 'self-start', 'mr-auto');
         } else {
              messageDiv.classList.add('bg-slate-200', 'self-center', 'mx-auto', 'text-xs', 'italic');
         }
@@ -5918,23 +5994,219 @@ function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBl
         const contentElem = document.createElement('div');
         contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
         
-        if (senderType === 'ai') {
-            const codeBlocksArea = document.createElement('div');
-            codeBlocksArea.classList.add('code-blocks-area');
-            parseAndRenderAiContent(msg.content, contentElem, codeBlocksArea, msg.turn_id, editedCodeBlocks);
-            messageDiv.appendChild(contentElem);
-            messageDiv.appendChild(codeBlocksArea);
-        } else {
-            let displayedText = msg.content || '';
-            if (displayedText.startsWith(NO_THINK_PREFIX)) {
-                displayedText = displayedText.substring(NO_THINK_PREFIX.length).trim();
-            }
-            contentElem.innerHTML = marked.parse(displayedText);
-            messageDiv.appendChild(contentElem);
-        }
+        // --- START: MODIFIED LOGIC ---
+        // Strip the @ai mention before rendering, just like we do for new messages
+        const cleanContent = (msg.content || '').replace(/@\w+/g, '').trim();
+        contentElem.innerHTML = marked.parse(cleanContent);
+        // --- END: MODIFIED LOGIC ---
 
+        messageDiv.appendChild(contentElem);
         parentElement.appendChild(messageDiv);
     }
+}
+
+function resetStreamingState() {
+    streamingState = {
+        isProject: null,
+        metadataComplete: false,
+        accumulatedContent: "",
+        projectData: null,
+        currentFile: null,
+    };
+
+    // Reset DOM element references
+    currentAiTurnContainer = null;
+    currentAnswerElement = null;
+    
+    // Reset flags and counters
+    firstAnswerTokenReceived = false;
+    activeStreamingCodeBlocks.clear();
+    streamingCodeBlockCounter = 0;
+}
+
+function updateStreamingCodeBlockContent(blockId, language, content, isComplete) {
+    const container = document.getElementById(blockId);
+    if (!container) return;
+
+    const codeElement = container.querySelector('code');
+    const dotsSpan = container.querySelector('.streaming-dots');
+    
+    if (codeElement) {
+        codeElement.textContent = content;
+        if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+            Prism.highlightElement(codeElement);
+        }
+    }
+    
+    if (isComplete && dotsSpan) {
+        dotsSpan.remove();
+    }
+}
+
+function setupNewAiTurn() {
+    currentTurnId++;
+    resetStreamingState();
+    firstAnswerTokenReceived = false;
+
+    currentAiTurnContainer = document.createElement('div');
+    currentAiTurnContainer.classList.add('ai-turn-container');
+    currentAiTurnContainer.dataset.turnId = currentTurnId;
+
+    currentAnswerElement = document.createElement('div');
+    currentAnswerElement.classList.add('message', 'ai-message', 'bg-sky-100');
+    
+    const senderElem = document.createElement('p');
+    senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800', 'italic');
+    senderElem.textContent = 'AI Assistant';
+
+    const contentArea = document.createElement('div');
+    contentArea.classList.add('live-ai-content-area');
+    contentArea.innerHTML = '<span class="loading-dots"></span>';
+    
+    currentAnswerElement.appendChild(senderElem);
+    currentAnswerElement.appendChild(contentArea);
+    
+    currentCodeBlocksArea = document.createElement('div');
+    currentCodeBlocksArea.classList.add('code-blocks-area');
+
+    currentAiTurnContainer.appendChild(currentAnswerElement);
+    currentAiTurnContainer.appendChild(currentCodeBlocksArea);
+    chatHistory.appendChild(currentAiTurnContainer);
+    scrollToBottom('smooth');
+}
+
+function handleStandardStream() {
+    const contentArea = currentAnswerElement.querySelector('.live-ai-content-area');
+    const codeArea = currentCodeBlocksArea;
+    if (!contentArea || !codeArea) return;
+
+    parseAndRenderStreamingContent(streamingState.accumulatedContent, contentArea, codeArea, currentTurnId);
+    scrollToBottom('auto');
+}
+
+function handleProjectStream() {
+    const contentArea = currentAnswerElement.querySelector('.live-ai-content-area');
+    const codeArea = currentCodeBlocksArea;
+    if (!contentArea || !codeArea) return;
+
+    // Step 1: Look for and parse metadata if not already done
+    if (!streamingState.metadataComplete) {
+        const endOfMetadataRegex = /```\s*\n/m;
+        const match = streamingState.accumulatedContent.match(endOfMetadataRegex);
+        
+        if (match) {
+            streamingState.metadataComplete = true;
+            const metadataBlock = streamingState.accumulatedContent.substring(0, match.index + match[0].length);
+            const metadataJsonRegex = /```json\s*([\s\S]+?)\n```/m;
+            const jsonMatch = metadataBlock.match(metadataJsonRegex);
+            
+            try {
+                const metadata = JSON.parse(jsonMatch[1]);
+                streamingState.projectData = { name: metadata.name, files: [] };
+                projectDataCache[currentTurnId] = streamingState.projectData;
+                contentArea.innerHTML = `<strong>Project Created: ${escapeHTML(metadata.name)}</strong>`;
+                streamingState.accumulatedContent = streamingState.accumulatedContent.substring(metadataBlock.length);
+            } catch (e) {
+                streamingState.isProject = false;
+                handleStandardStream(); // Fallback to standard rendering
+                return;
+            }
+        } else {
+            return; // Wait for more data to complete metadata block
+        }
+    }
+    
+    // Step 2: Process file content from the rest of the buffer
+    while (true) {
+        if (!streamingState.currentFile) {
+            const fileHeaderRegex = /^\s*([\w\./\-\_]+):\s*\n```(\w*)\n?/m;
+            const match = streamingState.accumulatedContent.match(fileHeaderRegex);
+            if (match) {
+                const [fullMatch, path, language] = match;
+                streamingCodeBlockCounter++;
+                const isRunnable = path.endsWith('run.sh');
+                
+                const newBlock = createCodeBlock(language, "", "", currentTurnId, streamingCodeBlockCounter, codeArea, isRunnable);
+                const titleElement = newBlock.querySelector('.block-title');
+                if (titleElement) {
+                    titleElement.querySelector('.title-text').textContent = path;
+                    const dotsSpan = document.createElement('span');
+                    dotsSpan.className = 'streaming-dots ml-2';
+                    dotsSpan.textContent = '...';
+                    titleElement.appendChild(dotsSpan);
+                }
+                
+                const fileData = { path, language, content: "" };
+                projectDataCache[currentTurnId].files.push(fileData);
+
+                streamingState.currentFile = { path, language, content: "", element: newBlock, fileData };
+                streamingState.accumulatedContent = streamingState.accumulatedContent.substring(fullMatch.length);
+            } else {
+                break;
+            }
+        }
+
+        const endOfBlock = streamingState.accumulatedContent.indexOf('```');
+        if (endOfBlock !== -1) {
+            const chunk = streamingState.accumulatedContent.substring(0, endOfBlock);
+            streamingState.currentFile.content += chunk;
+            streamingState.currentFile.fileData.content = streamingState.currentFile.content;
+            updateStreamingCodeBlockContent(streamingState.currentFile.element.id, streamingState.currentFile.language, streamingState.currentFile.content, true);
+
+            streamingState.accumulatedContent = streamingState.accumulatedContent.substring(endOfBlock + 3);
+            streamingState.currentFile = null;
+        } else {
+            streamingState.currentFile.content += streamingState.accumulatedContent;
+            streamingState.currentFile.fileData.content = streamingState.currentFile.content;
+            updateStreamingCodeBlockContent(streamingState.currentFile.element.id, streamingState.currentFile.language, streamingState.currentFile.content, false);
+            streamingState.accumulatedContent = "";
+            break;
+        }
+    }
+}
+
+
+function renderLiveMessage(chunk) {
+    console.log(`[STREAM] renderLiveMessage called with chunk of length ${chunk ? chunk.length : 0}`);
+    if (!currentAiTurnContainer) {
+        console.warn("[STREAM] renderLiveMessage called but currentAiTurnContainer is null. Bailing.");
+        return;
+    }
+
+    // Remove loading dots on the very first non-empty chunk of a turn
+    if (!firstAnswerTokenReceived && chunk.trim().length > 0) {
+        const loadingDots = currentAnswerElement ? currentAnswerElement.querySelector('.loading-dots') : null;
+        if (loadingDots) loadingDots.remove();
+        firstAnswerTokenReceived = true;
+    }
+
+    streamingState.accumulatedContent += chunk;
+
+    // Decide stream type on first substantial chunk
+    if (streamingState.isProject === null) {
+        const accumulatedTrimmed = streamingState.accumulatedContent.trim();
+        if (accumulatedTrimmed.length > 0) {
+            streamingState.isProject = accumulatedTrimmed.startsWith("PROJECT_METADATA:");
+        }
+    }
+    
+    if (streamingState.isProject) {
+        handleProjectStream();
+    } else {
+        handleStandardStream();
+    }
+}
+
+function finalizeTurnOnErrorOrClose() {
+    console.log("[STREAM] finalizeTurnOnErrorOrClose called.");
+    setInputDisabledState(false, false);
+    if (messageInput) messageInput.focus();
+
+    if (streamingState.isProject && streamingState.currentFile && streamingState.currentFile.element) {
+        updateStreamingCodeBlockContent(streamingState.currentFile.element.id, streamingState.currentFile.language, streamingState.currentFile.content, true);
+    }
+
+    resetStreamingState();
 }
 
 function addSystemMessage(text) {
@@ -5959,109 +6231,6 @@ function addErrorMessage(text) {
     setTimeout(() => scrollToBottom('smooth'), 50);
 }
 
-function setupNewAiTurn() {
-    currentTurnId++;
-    codeBlockCounterThisTurn = 0;
-    accumulatedAnswerText = '';
-    hasThinkingContentArrivedThisTurn = false;
-    firstAnswerTokenReceived = false;
-
-    // This map is for tracking blocks within a single turn and MUST be cleared.
-    activeStreamingCodeBlocks.clear();
-    // streamingCodeBlockCounter is now session-wide and is NOT reset here.
-
-    currentAiTurnContainer = null;
-    currentThinkingArea = null;
-    currentThinkingPreElement = null;
-    currentAnswerElement = null;
-    currentCodeBlocksArea = null;
-
-    currentAiTurnContainer = document.createElement('div');
-    currentAiTurnContainer.classList.add('ai-turn-container');
-    currentAiTurnContainer.dataset.turnId = currentTurnId;
-
-    // Thinking Area Setup
-    currentThinkingArea = document.createElement('div');
-    currentThinkingArea.classList.add('thinking-area');
-    currentThinkingArea.dataset.turnId = currentTurnId;
-    if (!thinkingRequestedForCurrentTurn) {
-        currentThinkingArea.style.display = 'none';
-    }
-    
-    const details = document.createElement('details');
-    details.id = `thinking-details-${currentTurnId}`;
-    const summary = document.createElement('summary');
-    summary.classList.add('thinking-summary');
-    const summaryTextSpan = document.createElement('span');
-    summaryTextSpan.classList.add('text');
-    summaryTextSpan.textContent = 'Show Thinking';
-    const summaryDotsSpan = document.createElement('span');
-    summaryDotsSpan.classList.add('dots');
-    summary.appendChild(summaryTextSpan);
-    summary.appendChild(summaryDotsSpan);
-    currentThinkingPreElement = document.createElement('pre');
-    details.appendChild(summary);
-    details.appendChild(currentThinkingPreElement);
-    currentThinkingArea.appendChild(details);
-    currentAiTurnContainer.appendChild(currentThinkingArea);
-    
-    details.addEventListener('toggle', (event) => {
-        const textSpan = event.target.querySelector('.thinking-summary .text');
-        if (!textSpan) return;
-        textSpan.textContent = event.target.open ? 'Hide Thinking' : 'Show Thinking';
-    });
-
-    // Answer Element (AI Message Bubble) Setup
-    currentAnswerElement = document.createElement('div');
-    currentAnswerElement.classList.add('message', 'ai-message', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'bg-sky-100', 'self-start', 'mr-auto');
-
-    const senderElem = document.createElement('p');
-    senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-sky-700');
-    senderElem.textContent = 'AI';
-    currentAnswerElement.appendChild(senderElem);
-
-    const liveContentDiv = document.createElement('div');
-    liveContentDiv.classList.add('text-gray-800', 'text-sm', 'message-content', 'live-ai-content-area');
-    currentAnswerElement.appendChild(liveContentDiv);
-
-    if (thinkingRequestedForCurrentTurn) {
-        currentAnswerElement.style.display = 'none';
-    } else {
-        const loadingSpan = document.createElement('span');
-        loadingSpan.classList.add('loading-dots');
-        liveContentDiv.appendChild(loadingSpan);
-    }
-    currentAiTurnContainer.appendChild(currentAnswerElement);
-
-    // Code Blocks Area Setup
-    currentCodeBlocksArea = document.createElement('div');
-    currentCodeBlocksArea.classList.add('code-blocks-area');
-    currentAiTurnContainer.appendChild(currentCodeBlocksArea);
-
-    chatHistory.appendChild(currentAiTurnContainer);
-}
-
-// --- Live Rendering ---
-function renderLiveMessage(fullContent) {
-    if (!currentAiTurnContainer) return;
-
-    if (!firstAnswerTokenReceived && fullContent.trim().length > 0) {
-        if (currentAnswerElement && currentAnswerElement.style.display === 'none') {
-            currentAnswerElement.style.display = '';
-        }
-        const loadingDots = currentAnswerElement ? currentAnswerElement.querySelector('.loading-dots') : null;
-        if (loadingDots) loadingDots.remove();
-        firstAnswerTokenReceived = true;
-    }
-
-    const contentArea = currentAnswerElement.querySelector('.live-ai-content-area');
-    const codeArea = currentCodeBlocksArea;
-
-    if (!contentArea || !codeArea) return;
-    
-    parseAndRenderStreamingContent(fullContent, contentArea, codeArea, currentTurnId);
-    scrollToBottom('auto');
-}
 
 function parseAndRenderAiContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix, editedCodeBlocks = {}) {
     if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
@@ -6301,75 +6470,6 @@ function parseAndRenderStreamingContent(contentString, answerBubbleContentElemen
     }
 }
 
-function updateStreamingCodeBlockContent(blockId, language, content, isComplete) {
-    const container = document.getElementById(blockId);
-    if (!container) return;
-
-    const codeElement = container.querySelector('code');
-    const dotsSpan = container.querySelector('.streaming-dots');
-    const titleTextSpan = container.querySelector('.block-title .title-text');
-    const currentLanguage = container.dataset.language;
-
-    const rawLang = (language || 'plaintext').trim().toLowerCase();
-    const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
-
-    if (canonicalLang && canonicalLang !== currentLanguage) {
-        container.dataset.language = canonicalLang;
-        if (titleTextSpan) {
-            const blockNumber = blockId.split('-').pop();
-            titleTextSpan.textContent = `Code Block ${blockNumber} (${canonicalLang})`;
-        }
-        
-        const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
-        if (codeElement) {
-            codeElement.className = `language-${prismLang}`;
-        }
-
-        const runStopBtn = container.querySelector('.run-code-btn');
-        if (runStopBtn) {
-            const isLanguageSupported = supportedLanguagesConfig[canonicalLang]?.executable;
-            if (isLanguageSupported) {
-                runStopBtn.style.display = '';
-                runStopBtn.title = 'Run Code';
-            } else {
-                runStopBtn.style.display = 'none';
-                runStopBtn.title = `Run Code (language '${canonicalLang}' not supported for execution)`;
-            }
-        }
-        
-        initializeCodeBlockHistory(blockId, content);
-    }
-    
-    if (codeElement) {
-        const cursorPos = getCursorPosition(codeElement);
-        const wasEditing = document.activeElement === codeElement;
-        
-        codeElement.textContent = content;
-        
-        if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-            try {
-                Prism.highlightElement(codeElement);
-                if (wasEditing) {
-                    setCursorPosition(codeElement, cursorPos);
-                    codeElement.focus();
-                }
-            } catch (e) {
-                console.error(`Prism highlight error:`, e);
-            }
-        }
-        
-        if (window.codeBlockHistories && window.codeBlockHistories.has(blockId)) {
-            const historyData = window.codeBlockHistories.get(blockId);
-            if (historyData.history.length === 1) {
-                historyData.history[0] = content;
-            }
-        }
-    }
-    
-    if (isComplete && dotsSpan) {
-        dotsSpan.remove();
-    }
-}
 
 function updateAllRunButtonStates() {
     document.querySelectorAll('.run-code-btn').forEach(btn => {
@@ -6384,113 +6484,108 @@ function updateAllRunButtonStates() {
     });
 }
 
-function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isStreaming = false) {
-   if (!codeBlocksAreaElement) {
-       console.error("createCodeBlock: Code blocks area element is null!");
-       return;
-   }
 
-   const rawLang = (language || 'plaintext').trim().toLowerCase();
-   const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
-   const isLanguageSupported = supportedLanguagesConfig[canonicalLang]?.executable;
-   const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
+function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isRunnable = false) {
+    if (!codeBlocksAreaElement) {
+        console.error("createCodeBlock: Code blocks area element is null!");
+        return;
+    }
 
-   const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
+    const rawLang = (language || 'plaintext').trim().toLowerCase();
+    const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
+    const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
+    const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
 
-   const container = document.createElement('div');
-   container.classList.add('block-container');
-   container.id = blockId;
-   container.dataset.language = canonicalLang;
-   // Set the dataset to the TRUE original content, not the potentially edited content
-   container.dataset.originalContent = originalCodeForDataset;
+    const container = document.createElement('div');
+    container.classList.add('block-container');
+    container.id = blockId;
+    container.dataset.language = canonicalLang;
+    container.dataset.originalContent = originalCodeForDataset;
 
-   const codeHeader = document.createElement('div');
-   codeHeader.classList.add('block-header');
+    const codeHeader = document.createElement('div');
+    codeHeader.classList.add('block-header');
 
-   const codeButtonsDiv = document.createElement('div');
-   codeButtonsDiv.classList.add('block-buttons');
+    const codeButtonsDiv = document.createElement('div');
+    codeButtonsDiv.classList.add('block-buttons');
 
-   const runStopBtn = document.createElement('button');
-   runStopBtn.classList.add('run-code-btn', 'block-action-btn');
-   runStopBtn.dataset.status = 'idle';
-   runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
-   runStopBtn.addEventListener('click', handleRunStopCodeClick);
-   runStopBtn.disabled = false;
-   runStopBtn.title = 'Run Code';
+    const runStopBtn = document.createElement('button');
+    runStopBtn.classList.add('run-code-btn', 'block-action-btn');
+    runStopBtn.dataset.status = 'idle';
+    runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
+    runStopBtn.title = 'Run Project';
+    runStopBtn.addEventListener('click', handleRunStopCodeClick);
+    
+    if (!isRunnable) {
+        runStopBtn.style.display = 'none';
+    }
+    codeButtonsDiv.appendChild(runStopBtn);
 
-   if (!isLanguageSupported) {
-       runStopBtn.style.display = 'none';
-   }
+    const restoreBtn = document.createElement('button');
+    restoreBtn.classList.add('restore-code-btn', 'block-action-btn');
+    restoreBtn.textContent = 'Restore';
+    restoreBtn.title = 'Restore Original Code';
 
-   const restoreBtn = document.createElement('button');
-   restoreBtn.classList.add('restore-code-btn', 'block-action-btn');
-   restoreBtn.textContent = 'Restore';
-   restoreBtn.title = 'Restore Original Code';
+    const toggleCodeBtn = document.createElement('button');
+    toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
+    toggleCodeBtn.textContent = 'Hide';
+    toggleCodeBtn.title = 'Show/Hide Code';
 
-   const toggleCodeBtn = document.createElement('button');
-   toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
-   toggleCodeBtn.textContent = 'Hide';
-   toggleCodeBtn.title = 'Show/Hide Code';
+    const copyCodeBtn = document.createElement('button');
+    copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
+    copyCodeBtn.textContent = 'Copy';
+    copyCodeBtn.title = 'Copy Code';
 
-   const copyCodeBtn = document.createElement('button');
-   copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
-   copyCodeBtn.textContent = 'Copy';
-   copyCodeBtn.title = 'Copy Code';
+    codeButtonsDiv.appendChild(restoreBtn);
+    codeButtonsDiv.appendChild(toggleCodeBtn);
+    codeButtonsDiv.appendChild(copyCodeBtn);
 
-   codeButtonsDiv.appendChild(runStopBtn);
-   codeButtonsDiv.appendChild(restoreBtn);
-   codeButtonsDiv.appendChild(toggleCodeBtn);
-   codeButtonsDiv.appendChild(copyCodeBtn);
+    const codeTitle = document.createElement('span');
+    codeTitle.classList.add('block-title');
+    const titleTextSpan = document.createElement('span');
+    titleTextSpan.classList.add('title-text');
+    titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${canonicalLang})`;
+    codeTitle.appendChild(titleTextSpan);
 
-   const codeTitle = document.createElement('span');
-   codeTitle.classList.add('block-title');
-   const titleTextSpan = document.createElement('span');
-   titleTextSpan.classList.add('title-text');
-   titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${canonicalLang})`;
-   codeTitle.appendChild(titleTextSpan);
+    codeHeader.appendChild(codeButtonsDiv);
+    codeHeader.appendChild(codeTitle);
 
-   if (isStreaming) {
-       const dotsSpan = document.createElement('span');
-       dotsSpan.classList.add('streaming-dots');
-       dotsSpan.textContent = '...';
-       codeTitle.appendChild(dotsSpan);
-   }
+    const preElement = document.createElement('pre');
+    preElement.classList.add('manual');
+    const codeElement = document.createElement('code');
+    codeElement.className = `language-${prismLang}`;
+    codeElement.setAttribute('contenteditable', 'true');
+    codeElement.setAttribute('spellcheck', 'false');
+    codeElement.textContent = codeContent;
 
-   codeHeader.appendChild(codeButtonsDiv);
-   codeHeader.appendChild(codeTitle);
+    preElement.appendChild(codeElement);
+    container.appendChild(codeHeader);
+    container.appendChild(preElement);
+    codeBlocksAreaElement.appendChild(container);
 
-   const preElement = document.createElement('pre');
-   preElement.classList.add('manual');
-   const codeElement = document.createElement('code');
-   codeElement.className = `language-${prismLang}`;
-   codeElement.setAttribute('contenteditable', 'true');
-   codeElement.setAttribute('spellcheck', 'false');
-   // Display the final content (which could be an edit)
-   codeElement.textContent = codeContent;
+    if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+        try {
+            Prism.highlightElement(codeElement);
+        } catch (e) {
+            console.error(`Prism highlight error:`, e);
+        }
+    }
 
-   initializeCodeBlockHistory(blockId, codeContent);
+    toggleCodeBtn.addEventListener('click', () => {
+        const isHidden = preElement.classList.toggle('hidden');
+        toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide';
+    });
 
-   preElement.appendChild(codeElement);
-   container.appendChild(codeHeader);
-   container.appendChild(preElement);
-   codeBlocksAreaElement.appendChild(container);
+    copyCodeBtn.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(codeElement.textContent || '');
+            copyCodeBtn.textContent = 'Copied!';
+            setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500);
+        } catch (err) {
+            console.error('Failed to copy code: ', err);
+        }
+    });
 
-   toggleCodeBtn.addEventListener('click', () => {
-       const isHidden = preElement.classList.toggle('hidden');
-       toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide';
-   });
-
-   copyCodeBtn.addEventListener('click', async () => {
-       try {
-           await navigator.clipboard.writeText(codeElement.textContent || '');
-           copyCodeBtn.textContent = 'Copied!';
-           setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500);
-       } catch (err) {
-           console.error('Failed to copy code: ', err);
-       }
-   });
-
-   restoreBtn.addEventListener('click', async () => {
+    restoreBtn.addEventListener('click', async () => {
         const originalContent = container.dataset.originalContent;
         const sessionId = getSessionIdFromPath();
         if (!sessionId || !window.csrfTokenRaw) return;
@@ -6511,7 +6606,6 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
                         setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length));
                     } catch (e) { console.error(`Prism highlight error:`, e); }
                 }
-                // Add the restored state to the undo history instead of wiping it
                 saveCodeBlockState(blockId, originalContent);
             } else {
                 const error = await response.json();
@@ -6521,105 +6615,37 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
             console.error("Error restoring code block:", error);
             alert("An error occurred while restoring the code block.");
         }
-   });
-
-   codeElement.addEventListener('keydown', (event) => {
-       handleCodeBlockKeydown(event, blockId);
-   });
-
-   codeElement.addEventListener('blur', () => {
-       const content = codeElement.textContent || '';
-       saveCodeBlockContent(blockId, content);
-   });
-
-   codeElement.addEventListener('input', () => {
-       const cursorPos = getCursorPosition(codeElement);
-       const content = codeElement.textContent || '';
-
-       setTimeout(() => {
-           if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-               try {
-                   Prism.highlightElement(codeElement);
-                   setCursorPosition(codeElement, cursorPos);
-               } catch (e) {
-                   console.error(`Prism highlight error:`, e);
-               }
-           }
-       }, 10);
-
-       saveCodeBlockState(blockId, content);
-   });
-
-   return container;
-}
-
-function createPlotBlock(codeBlockId, plotData, uniquePlotBlockId, plotIndex) {
-    const codeContainer = document.getElementById(codeBlockId);
-    if (!codeContainer) return;
-
-    // Remove existing plot
-    const existingPlot = document.getElementById(uniquePlotBlockId);
-    if (existingPlot) {
-        existingPlot.remove();
-    }
-
-    // Find where to insert - after output block if it exists, otherwise after code block
-    const outputBlock = document.getElementById(`output-for-${codeBlockId}`);
-    const insertAfter = outputBlock || codeContainer;
-
-    const plotContainer = document.createElement('div');
-    plotContainer.id = uniquePlotBlockId;
-    plotContainer.className = 'block-container';
-
-    const blockNumber = codeBlockId.split('-').pop();
-
-    const plotHeader = document.createElement('div');
-    plotHeader.className = 'block-header';
-    plotHeader.innerHTML = `
-        <div class="block-buttons">
-            <button class="toggle-output-btn block-action-btn">Hide</button>
-            <button class="copy-plot-btn block-action-btn">Copy SVG</button>
-        </div>
-        <span class="block-title">Plot Output ${plotIndex}</span>
-        <span class="block-status success">Rendered</span>
-    `;
-
-    const plotDivId = `plot-div-${uniquePlotBlockId}`;
-    const plotDiv = document.createElement('div');
-    plotDiv.id = plotDivId;
-    plotDiv.className = 'mpld3-plot-container';
-
-    plotContainer.appendChild(plotHeader);
-    plotContainer.appendChild(plotDiv);
-
-    // Insert after the right element (output block or code block)
-    insertAfter.insertAdjacentElement('afterend', plotContainer);
-
-    // Add event listeners
-    plotHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-        const isHidden = plotDiv.classList.toggle('hidden');
-        e.target.textContent = isHidden ? 'Show' : 'Hide';
     });
 
-    plotHeader.querySelector('.copy-plot-btn').addEventListener('click', async (e) => {
-        try {
-            const svgElement = plotDiv.querySelector('svg');
-            if (svgElement) {
-                const svgString = new XMLSerializer().serializeToString(svgElement);
-                await navigator.clipboard.writeText(svgString);
-                e.target.textContent = 'Copied!';
-                setTimeout(() => { e.target.textContent = 'Copy SVG'; }, 1500);
+    codeElement.addEventListener('keydown', (event) => {
+        handleCodeBlockKeydown(event, blockId);
+    });
+
+    codeElement.addEventListener('blur', () => {
+        const content = codeElement.textContent || '';
+        saveCodeBlockContent(blockId, content);
+    });
+
+    codeElement.addEventListener('input', () => {
+        const cursorPos = getCursorPosition(codeElement);
+        const content = codeElement.textContent || '';
+
+        setTimeout(() => {
+            if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
+                try {
+                    Prism.highlightElement(codeElement);
+                    setCursorPosition(codeElement, cursorPos);
+                } catch (e) {
+                    console.error(`Prism highlight error:`, e);
+                }
             }
-        } catch (err) {
-            console.error('Failed to copy SVG:', err);
-        }
+        }, 10);
+
+        saveCodeBlockState(blockId, content);
     });
 
-    renderPlotWhenReady(plotDivId, plotData);
+    return container;
 }
-
-// In app/static/script.js
-// Replace the existing renderPlotWhenReady function with this one.
 
 function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
     const startTime = Date.now();
@@ -6676,182 +6702,142 @@ function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
 
 function handleStructuredMessage(messageData) {
     const { type, payload } = messageData;
-    console.log(`[handleStructuredMessage] Processing ${type} for ${payload?.code_block_id || 'unknown'}`);
-    
-    if (!payload || !payload.code_block_id) return;
-    
-    const codeBlockId = payload.code_block_id;
-    const codeContainer = document.getElementById(codeBlockId);
-    const outputBlockId = `output-for-${codeBlockId}`;
+    if (!payload || !payload.project_id) return;
+
+    const projectId = payload.project_id;
+    const codeContainer = document.getElementById(projectId);
+    const outputBlockId = `output-for-${projectId}`;
     let outputContainer = document.getElementById(outputBlockId);
 
-    if (!outputContainer && (type === 'code_output' || type === 'code_waiting_input')) {
+    // This function is now simplified, as createOrClearOutputContainer handles creation
+    if (!outputContainer) {
+        // If an output message arrives but there's no container, create it.
+        outputContainer = createOrClearOutputContainer(projectId);
+    }
+    
+    switch (type) {
+        case 'code_output': {
+            const outputPre = outputContainer.querySelector('.block-output-console pre');
+            if (outputPre) {
+                addCodeOutput(outputPre, payload.stream, payload.data);
+                outputContainer.style.display = ''; // Ensure it's visible
+            }
+            break;
+        }
+        case 'code_finished': {
+            const { exit_code, error } = payload;
+            let finishMessage = `Finished (Exit: ${exit_code})`;
+            let statusClass = (exit_code === 0) ? 'success' : 'error';
+            if (error) {
+                finishMessage = 'Failed';
+                statusClass = 'error';
+                const outputPre = outputContainer.querySelector('.block-output-console pre');
+                if (outputPre) addCodeOutput(outputPre, 'stderr', `Error: ${error}`);
+            }
+            
+            updateHeaderStatus(outputContainer, finishMessage, statusClass);
+            if (codeContainer) {
+                const runStopBtn = codeContainer.querySelector('.run-code-btn');
+                if (runStopBtn) {
+                    runStopBtn.dataset.status = 'idle';
+                    runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
+                    runStopBtn.title = 'Run Code';
+                }
+            }
+            break;
+        }
+    }
+}
+
+// Add these two new functions to app/static/script.js
+
+function createOrClearOutputContainer(projectId) {
+    const outputBlockId = `output-for-${projectId}`;
+    let outputContainer = document.getElementById(outputBlockId);
+    const codeContainer = document.getElementById(projectId);
+
+    if (outputContainer) {
+        // Clear previous output content
+        const outputPre = outputContainer.querySelector('.block-output-console pre');
+        if (outputPre) outputPre.innerHTML = '';
+    } else {
+        // Create the container if it doesn't exist
         outputContainer = document.createElement('div');
         outputContainer.id = outputBlockId;
         outputContainer.className = 'block-container';
-        outputContainer.style.display = 'none'; // Start hidden
-        
-        const blockNumber = codeBlockId.split('-').pop();
+        const blockNumber = projectId.split('-').pop();
+
         const outputHeader = document.createElement('div');
         outputHeader.className = 'block-header';
         outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
+        
         const outputConsoleDiv = document.createElement('div');
         outputConsoleDiv.className = 'block-output-console';
         const outputPre = document.createElement('pre');
         outputConsoleDiv.appendChild(outputPre);
+        
         outputContainer.appendChild(outputHeader);
         outputContainer.appendChild(outputConsoleDiv);
-        codeContainer.insertAdjacentElement('afterend', outputContainer);
 
-        outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+        if (codeContainer) {
+            codeContainer.insertAdjacentElement('afterend', outputContainer);
+        } else {
+            chatHistory.appendChild(outputContainer);
+        }
+
+        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
             const isHidden = outputConsoleDiv.classList.toggle('hidden');
             e.target.textContent = isHidden ? 'Show' : 'Hide';
         });
-        outputContainer.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
-            try {
-                await navigator.clipboard.writeText(outputPre.textContent || '');
-                e.target.textContent = 'Copied!';
-                setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-            } catch (err) { console.error('Failed to copy output:', err); }
+        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
+            await navigator.clipboard.writeText(outputPre.textContent || '');
+            e.target.textContent = 'Copied!';
+            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
         });
     }
+    outputContainer.style.display = ''; // Make sure it's visible
+    return outputContainer;
+}
 
+function createPlotBlock(projectId, plotData, plotIndex) {
+    const codeContainer = document.getElementById(projectId);
     if (!codeContainer) return;
+
+    const uniquePlotBlockId = `${projectId}-plot-${plotIndex}`;
+    const existingPlot = document.getElementById(uniquePlotBlockId);
+    if (existingPlot) existingPlot.remove();
+
+    const outputContainer = createOrClearOutputContainer(projectId);
     
-    switch (type) {
-        case 'plot_output': {
-            if (payload.plot_data) {
-                // Check if the data is an array (for multiple plots) or a single object
-                const plots = Array.isArray(payload.plot_data) ? payload.plot_data : [payload.plot_data];
-                plots.forEach((plotData, index) => {
-                    // Create a unique ID for each plot block to avoid conflicts
-                    const uniquePlotBlockId = `${codeBlockId}-plot-${index}`;
-                    createPlotBlock(codeBlockId, plotData, uniquePlotBlockId, index + 1);
-                });
-            }
-            break;
-        }
+    const plotContainer = document.createElement('div');
+    plotContainer.id = uniquePlotBlockId;
+    plotContainer.className = 'block-container';
 
-        case 'code_output': {
-            if (!outputContainer) return;
-            const outputPre = outputContainer.querySelector('.block-output-console pre');
-            const language = codeContainer.dataset.language;
-            const outputText = payload.data;
-            
-            // Filter out harness messages AND library warnings
-            const isHarnessOutput = /Using Python|Audited|packages in|Matplotlib plots detected|Capturing all|\[Harness\]|UserWarning.*Blended transforms not yet supported|warnings\.warn|mplexporter\/exporter\.py/i.test(outputText);
-            
-            if (isHarnessOutput) {
-                // Skip harness output and library warnings completely
-                return;
-            }
-            
-            const isInstallerOutput = /Resolving|Downloading|Installing|Installed|uv pip install/.test(outputText);
+    const plotHeader = document.createElement('div');
+    plotHeader.className = 'block-header';
+    plotHeader.innerHTML = `
+        <div class="block-buttons">
+            <button class="toggle-output-btn block-action-btn">Hide</button>
+        </div>
+        <span class="block-title">Plot Output ${plotIndex}</span>
+        <span class="block-status success">Rendered</span>
+    `;
 
-            if (isInstallerOutput) {
-                let statusMessage = outputText.trim();
-                if (statusMessage.startsWith('uv pip install')) { statusMessage = 'Preparing to install packages...'; }
-                updateHeaderStatus(outputContainer, statusMessage, 'running');
-            } else {
-                if (outputPre) { 
-                    addCodeOutput(outputPre, payload.stream, outputText, language); 
-                    // Make sure the output block is visible since we have real content
-                    outputContainer.style.display = '';
-                }
-            }
-            break;
-        }
+    const plotDivId = `plot-div-${uniquePlotBlockId}`;
+    const plotDiv = document.createElement('div');
+    plotDiv.id = plotDivId;
+    plotDiv.className = 'mpld3-plot-container';
 
-        case 'code_waiting_input': {
-            if (!outputContainer) return;
-            updateHeaderStatus(outputContainer, 'Waiting for input...', 'waiting-input');
-            const outputPre = outputContainer.querySelector('.block-output-console pre');
-            if (outputPre) { 
-                addTerminalPrompt(outputPre, payload.prompt || '');
-                // Show output block when waiting for input
-                outputContainer.style.display = '';
-            }
-            break;
-        }
+    plotContainer.appendChild(plotHeader);
+    plotContainer.appendChild(plotDiv);
+    outputContainer.insertAdjacentElement('afterend', plotContainer);
 
-        case 'code_finished': {
-            if (!outputContainer) return;
-            const runStopBtn = codeContainer.querySelector('.run-code-btn');
-            const outputConsoleDiv = outputContainer.querySelector('.block-output-console');
-            const outputPre = outputConsoleDiv ? outputConsoleDiv.querySelector('pre') : null;
+    plotHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+        plotContainer.classList.toggle('hidden');
+        e.target.textContent = plotContainer.classList.contains('hidden') ? 'Show' : 'Hide';
+    });
 
-            if (!runStopBtn || !outputConsoleDiv || !outputPre) { return; }
-
-            const { exit_code, error } = payload;
-            let finishMessage = '';
-            let statusClass = '';
-            const language = codeContainer.dataset.language;
-            const codeElement = codeContainer.querySelector('code');
-            const codeContent = codeElement ? codeElement.textContent || '' : '';
-            let outputContent = null;
-            let htmlContent = null;
-            
-            // Check if we actually have any real output (not just whitespace)
-            const hasRealOutput = outputPre.textContent && outputPre.textContent.trim().length > 0;
-            
-            if (error) {
-                finishMessage = 'Failed';
-                statusClass = 'error';
-                const helpfulHint = error.includes("Docker service is unavailable") ? "\n\nHint: Is Docker Desktop running?" : "";
-                addCodeOutput(outputPre, 'stderr', `Error: ${error}${helpfulHint}`, language);
-                outputContent = outputPre.textContent;
-                outputContainer.style.display = ''; // Show on error
-            } else if (language === 'html') {
-                const iframe = document.createElement('iframe');
-                iframe.className = 'html-render-iframe';
-                htmlContent = outputPre.htmlBuffer || '';
-                const style = `<style>body { margin: 0; background-color: white; color: black; font-family: sans-serif; padding: 1rem; }</style>`;
-                iframe.srcdoc = style + htmlContent;
-                iframe.onload = () => { try { /* iframe resize logic */ } catch (e) { iframe.style.height = '400px'; } };
-                outputPre.replaceWith(iframe);
-                outputConsoleDiv.style.maxHeight = 'none';
-                finishMessage = `Finished (Rendered HTML)`;
-                statusClass = 'success';
-                outputContainer.style.display = ''; // Show for HTML
-            } else {
-                finishMessage = `Finished (Exit: ${exit_code})`;
-                statusClass = (exit_code === 0) ? 'success' : 'error';
-                outputContent = outputPre.textContent;
-                
-                // Hide output block if no real output and no error
-                if (!hasRealOutput && exit_code === 0) {
-                    outputContainer.style.display = 'none';
-                } else {
-                    outputContainer.style.display = '';
-                }
-            }
-            
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                const codeBlockParts = codeBlockId.split('-');
-                const extractedTurnId = codeBlockParts[2].replace('turn', '');
-                websocket.send(JSON.stringify({
-                    type: 'save_code_result',
-                    payload: {
-                        code_block_id: codeBlockId,
-                        language: language,
-                        code_content: codeContent,
-                        output_content: outputContent,
-                        html_content: htmlContent,
-                        exit_code: exit_code,
-                        error_message: error,
-                        execution_status: error ? 'error' : 'completed',
-                        turn_id: parseInt(extractedTurnId)
-                    }
-                }));
-            }
-            
-            updateHeaderStatus(outputContainer, finishMessage, statusClass);
-            runStopBtn.dataset.status = 'idle';
-            runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
-            runStopBtn.title = 'Run Code';
-            break;
-        }
-    }
+    renderPlotWhenReady(plotDivId, plotData);
 }
 
 function saveCodeBlockContent(blockId, content) {
@@ -6889,42 +6875,6 @@ function createOutputHeaderHTML(blockNumber, statusText = 'Running...', statusCl
 }
 
 
-function setupIframeResizing(iframe) {
-    iframe.setAttribute('scrolling', 'no');
-    iframe.style.overflow = 'hidden';
-
-    iframe.onload = () => {
-        try {
-            const iWin = iframe.contentWindow;
-            const iDoc = iWin.document;
-
-            const updateHeight = () => {
-                if (!iDoc || !iDoc.body) return;
-                // The +2 is a small buffer to prevent scrollbars from appearing in some edge cases
-                const newHeight = Math.max(
-                    iDoc.body.scrollHeight, iDoc.documentElement.scrollHeight,
-                    iDoc.body.offsetHeight, iDoc.documentElement.offsetHeight
-                ) + 2;
-                iframe.style.height = `${newHeight}px`;
-            };
-
-            updateHeight(); // Initial resize
-
-            // Use ResizeObserver to automatically adjust height if iframe content changes
-            const observer = new ResizeObserver(updateHeight);
-            if (iDoc.body) observer.observe(iDoc.body);
-
-            // Fallback resizes for dynamic content that might not trigger observer
-            setTimeout(updateHeight, 150);
-            setTimeout(updateHeight, 500);
-
-        } catch (e) {
-            console.error("Error resizing iframe:", e);
-            // Fallback to a reasonable default height on error
-            iframe.style.height = '400px'; 
-        }
-    };
-}
 
 async function handleRunStopCodeClick(event) {
     const button = event.currentTarget;
@@ -6932,117 +6882,75 @@ async function handleRunStopCodeClick(event) {
     if (!container) return;
 
     const codeBlockId = container.id;
-    const language = container.dataset.language;
-    const codeElement = container.querySelector('code');
-    const code = codeElement ? codeElement.textContent || '' : '';
+    const status = button.dataset.status;
 
-    // --- FIX: Handle STOP action ---
-    if (button.dataset.status === 'running') {
+    if (status === 'running' || status === 'previewing') {
         if (websocket && websocket.readyState === WebSocket.OPEN) {
-            console.log(`Sending stop_code for ${codeBlockId}`);
             websocket.send(JSON.stringify({
                 type: 'stop_code',
-                payload: { code_block_id: codeBlockId }
+                payload: { project_id: codeBlockId }
             }));
-            // The `code_finished` message from the server will reset the button state.
-            // Visually update the output header to show it's stopping.
-            const outputContainer = document.getElementById(`output-for-${codeBlockId}`);
-            if (outputContainer) {
-                updateHeaderStatus(outputContainer, 'Stopping...', 'running');
-            }
         }
-        return; // Exit after sending the stop command.
+        return;
     }
 
-    // --- FIX: Handle RUN action ---
-    saveCodeBlockContent(codeBlockId, code);
+    const turnIdMatch = codeBlockId.match(/turn(\d+)/);
+    const turnId = turnIdMatch ? parseInt(turnIdMatch[1], 10) : null;
+    const projectData = turnId ? projectDataCache[turnId] : null;
 
-    // Always create a fresh output container, removing any old one.
-    let outputContainer = document.getElementById(`output-for-${codeBlockId}`);
-    if (outputContainer) {
-        outputContainer.remove();
+    if (!projectData) {
+        alert("Error: Could not find project data for this execution.");
+        return;
     }
     
-    outputContainer = document.createElement('div');
-    outputContainer.id = `output-for-${codeBlockId}`;
-    outputContainer.className = 'block-container';
-    const blockNumber = codeBlockId.split('-').pop();
-    const outputHeader = document.createElement('div');
-    outputHeader.className = 'block-header';
-    const outputConsoleDiv = document.createElement('div');
-    outputConsoleDiv.className = 'block-output-console';
-    outputContainer.appendChild(outputHeader);
-    outputContainer.appendChild(outputConsoleDiv);
-    container.insertAdjacentElement('afterend', outputContainer);
+    // --- START: NEW LOGIC TO CAPTURE EDITS ---
+    // Create a deep copy of the project data to avoid modifying the cache directly
+    const updatedProjectData = JSON.parse(JSON.stringify(projectData));
 
-    if (language === 'html') {
-        outputHeader.innerHTML = createOutputHeaderHTML(blockNumber, 'Rendered HTML', 'success');
-        const iframe = document.createElement('iframe');
-        iframe.className = 'html-render-iframe';
-        const style = `<style>body { margin: 0; background-color: white; color: black; font-family: sans-serif; padding: 1rem; }</style>`;
-        iframe.srcdoc = style + code;
-
-        // --- MODIFICATION START ---
-        setupIframeResizing(iframe); // Call the new helper function
-        // --- MODIFICATION END ---
-
-        outputConsoleDiv.appendChild(iframe);
-
-        // Save the rendered HTML to the database for chat history.
-        if (websocket && websocket.readyState === WebSocket.OPEN) {
-            const codeBlockParts = codeBlockId.split('-');
-            const extractedTurnId = codeBlockParts[2].replace('turn', '');
-            websocket.send(JSON.stringify({
-                type: 'save_code_result',
-                payload: {
-                    code_block_id: codeBlockId, language: language, code_content: code,
-                    html_content: code, execution_status: 'completed', turn_id: parseInt(extractedTurnId)
+    // Find all code blocks for the current turn
+    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turnId}']`);
+    if (turnContainer) {
+        updatedProjectData.files.forEach(file => {
+            // Find the corresponding code block UI element by its title (file path)
+            const codeBlock = Array.from(turnContainer.querySelectorAll('.block-container .block-title .title-text'))
+                                 .find(span => span.textContent === file.path);
+            if (codeBlock) {
+                const codeElement = codeBlock.closest('.block-container').querySelector('code');
+                if (codeElement) {
+                    file.content = codeElement.textContent; // Update the content with the user's edits
                 }
-            }));
-        }
-        return; // Exit here, no need to change button state as it's instant.
+            }
+        });
     }
-    
-    // --- Existing logic for other languages ---
-    outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
-    const outputPre = document.createElement('pre');
-    outputConsoleDiv.appendChild(outputPre);
-    
-    // Add event listeners for the new output block's buttons
-    outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-        const isHidden = outputConsoleDiv.classList.toggle('hidden');
-        e.target.textContent = isHidden ? 'Show' : 'Hide';
-    });
-    outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
-        try {
-            await navigator.clipboard.writeText(outputPre.textContent || '');
-            e.target.textContent = 'Copied!';
-            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-        } catch (err) { console.error('Failed to copy output:', err); }
-    });
-    
-    // Set button to "running" state
-    button.dataset.status = 'running';
-    button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><rect width="100" height="100" rx="15"/></svg>`;
-    button.title = 'Stop Execution';
+    // --- END: NEW LOGIC TO CAPTURE EDITS ---
+
+
+    let mainLanguage = 'bash';
+    const languagePriority = ['html', 'python', 'javascript', 'cpp', 'c', 'rust', 'go', 'java', 'csharp', 'typescript'];
+    for (const lang of languagePriority) {
+        if (updatedProjectData.files.some(file => file.language === lang)) {
+            mainLanguage = lang;
+            break;
+        }
+    }
     
     if (websocket && websocket.readyState === WebSocket.OPEN) {
+        const outputContainer = createOrClearOutputContainer(codeBlockId);
+        updateHeaderStatus(outputContainer, 'Starting...', 'running');
+        button.dataset.status = 'running';
+        button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><rect width="100" height="100" rx="15"/></svg>`;
+        button.title = 'Stop Execution';
+
         websocket.send(JSON.stringify({
             type: 'run_code',
-            payload: { code_block_id: codeBlockId, language: language, code: code }
-        }));
-        
-        // Scroll to the new output block
-        setTimeout(() => {
-            if (outputContainer) {
-                outputContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            payload: {
+                project_data: updatedProjectData, // Send the updated data with edits
+                project_id: codeBlockId,
+                language: mainLanguage
             }
-        }, 100);
+        }));
     } else {
         addErrorMessage("Cannot run code: Not connected to server.");
-        button.dataset.status = 'idle';
-        button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
-        button.title = 'Run Code';
     }
 }
 
@@ -7193,122 +7101,26 @@ function saveCodeBlockState(blockId, content) {
     }, 2000);
 }
 
-
-
-
 function restoreCodeExecutionResult(result) {
-    const codeContainer = document.getElementById(result.code_block_id);
-    if (!codeContainer) {
+    // Only create an output block if there's actual terminal output to show.
+    if (!result.output_content) {
         return;
     }
 
-    const outputBlockId = `output-for-${result.code_block_id}`;
-    let outputContainer = document.getElementById(outputBlockId);
-    
-    if (outputContainer) {
-        outputContainer.remove();
+    const codeContainer = document.getElementById(result.code_block_id);
+    if (!codeContainer) return;
+
+    // Create or clear the output container for the historical output
+    const outputContainer = createOrClearOutputContainer(result.code_block_id);
+    const outputPre = outputContainer.querySelector('.block-output-console pre');
+
+    if (outputPre) {
+        outputPre.textContent = result.output_content;
     }
 
-    outputContainer = document.createElement('div');
-    outputContainer.id = outputBlockId;
-    outputContainer.className = 'block-container';
-
-    const blockNumber = result.code_block_id.split('-').pop();
-
-    const outputHeader = document.createElement('div');
-    outputHeader.className = 'block-header';
-    
-    let statusText = '';
-    let statusClass = '';
-    if (result.error_message) {
-        statusText = 'Failed';
-        statusClass = 'error';
-    } else if (result.language === 'html') {
-        statusText = 'Finished (Rendered HTML)';
-        statusClass = 'success';
-    } else {
-        statusText = `Finished (Exit: ${result.exit_code})`;
-        statusClass = (result.exit_code === 0) ? 'success' : 'error';
-    }
-    
-    outputHeader.innerHTML = `
-        <div class="block-buttons">
-            <button class="toggle-output-btn block-action-btn">Hide</button>
-            <button class="copy-output-btn block-action-btn">Copy</button>
-        </div>
-        <span class="block-title">Output Block ${blockNumber}</span>
-        <span class="block-status ${statusClass}">${statusText}</span>
-    `;
-    
-    const outputConsoleDiv = document.createElement('div');
-    outputConsoleDiv.className = 'block-output-console';
-    
-    if (result.language === 'html' && result.html_content) {
-        const iframe = document.createElement('iframe');
-        iframe.className = 'html-render-iframe';
-        iframe.style.width = '100%';
-        iframe.style.border = '1px solid #e2e8f0';
-        iframe.setAttribute('scrolling', 'no');
-        iframe.style.overflow = 'hidden';
-        iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-        
-        const style = `<style>body { margin: 0; background-color: white; color: black; font-family: sans-serif; padding: 1rem; }</style>`;
-        iframe.srcdoc = style + result.html_content;
-        
-        iframe.onload = () => {
-            try {
-                const iWin = iframe.contentWindow;
-                const iDoc = iWin.document;
-                const updateHeight = () => {
-                    if (!iDoc || !iDoc.body) return;
-                    const newHeight = Math.max(
-                        iDoc.body.scrollHeight, iDoc.documentElement.scrollHeight,
-                        iDoc.body.offsetHeight, iDoc.documentElement.offsetHeight
-                    );
-                    iframe.style.height = `${newHeight}px`;
-                };
-                updateHeight();
-                const observer = new ResizeObserver(updateHeight);
-                if (iDoc.body) observer.observe(iDoc.body);
-                setTimeout(updateHeight, 150);
-                setTimeout(updateHeight, 500);
-            } catch (e) {
-                iframe.style.height = '400px';
-            }
-        };
-        
-        outputConsoleDiv.appendChild(iframe);
-        outputConsoleDiv.style.maxHeight = 'none';
-    } else {
-        const outputPre = document.createElement('pre');
-        if (result.output_content) {
-            outputPre.textContent = result.output_content;
-        }
-        outputConsoleDiv.appendChild(outputPre);
-    }
-
-    outputContainer.appendChild(outputHeader);
-    outputContainer.appendChild(outputConsoleDiv);
-
-    codeContainer.insertAdjacentElement('afterend', outputContainer);
-
-    outputContainer.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-        const isHidden = outputConsoleDiv.classList.toggle('hidden');
-        e.target.textContent = isHidden ? 'Show' : 'Hide';
-    });
-    
-    const copyBtn = outputContainer.querySelector('.copy-output-btn');
-    copyBtn.addEventListener('click', async (e) => {
-        try {
-            const textToCopy = result.language === 'html' && result.html_content ? 
-                result.html_content : (result.output_content || '');
-            await navigator.clipboard.writeText(textToCopy);
-            e.target.textContent = 'Copied!';
-            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-        } catch (err) { 
-            console.error('Failed to copy output:', err); 
-        }
-    });
+    const statusText = result.error_message ? 'Failed' : `Finished (Exit: ${result.exit_code})`;
+    const statusClass = result.error_message || result.exit_code !== 0 ? 'error' : 'success';
+    updateHeaderStatus(outputContainer, statusText, statusClass);
 }
 
 async function loadAndDisplayChatHistory(sessionId) {
@@ -7506,37 +7318,6 @@ function unstickHeader(header) {
     delete header.dataset.stickyId;
 }
 
-function finalizeTurnOnErrorOrClose() {
-    if (currentAnswerElement && !currentAnswerElement.querySelector('.timestamp-p')) {
-        const timestampElem = document.createElement('p');
-        timestampElem.classList.add('text-xs', 'text-slate-500', 'mt-1', 'text-left', 'timestamp-p');
-        timestampElem.textContent = new Date().toLocaleString();
-        currentAnswerElement.appendChild(timestampElem);
-    }
-    
-    // Clean up streaming dots from any active code blocks
-    activeStreamingCodeBlocks.forEach((blockData) => {
-        const container = document.getElementById(blockData.blockId);
-        if (container) {
-            const dotsSpan = container.querySelector('.streaming-dots');
-            if (dotsSpan) dotsSpan.remove();
-        }
-    });
-    
-    // Reset state
-    codeBlockCounterThisTurn = 0;
-    accumulatedAnswerText = '';
-    hasThinkingContentArrivedThisTurn = false;
-    firstAnswerTokenReceived = false;
-    thinkingRequestedForCurrentTurn = false;
-    activeStreamingCodeBlocks.clear();
-    streamingCodeBlockCounter = 0;
-    
-    setInputDisabledState(false, false);
-    if (messageInput && messageInput.offsetParent !== null) {
-        messageInput.focus();
-    }
-}
 
 function connectWebSocket() {
     let sessionId = getSessionIdFromPath();
@@ -7545,7 +7326,7 @@ function connectWebSocket() {
         setInputDisabledState(true);
         return;
     }
-    
+
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/${sessionId}/${clientId}`;
 
@@ -7554,6 +7335,7 @@ function connectWebSocket() {
         websocket = ws;
 
         ws.onopen = () => {
+            console.log("[WS_CLIENT] WebSocket connection opened.");
             setInputDisabledState(false, false);
             addSystemMessage("Connected to the chat server.");
             updateAllRunButtonStates();
@@ -7561,6 +7343,7 @@ function connectWebSocket() {
         };
 
         ws.onclose = (event) => {
+            console.error(`[WS_CLIENT] WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
             if (window.isNavigatingAway) return;
             addSystemMessage(`Connection closed: ${event.reason || 'Normal closure'} (Code: ${event.code})`);
             finalizeTurnOnErrorOrClose();
@@ -7577,7 +7360,7 @@ function connectWebSocket() {
         };
 
         ws.onerror = (event) => {
-            console.error("WebSocket error:", event);
+            console.error("[WS_CLIENT] WebSocket error:", event);
             addErrorMessage("WebSocket connection error. Please try refreshing.");
             finalizeTurnOnErrorOrClose();
             resetAllCodeButtonsOnErrorOrClose();
@@ -7586,58 +7369,88 @@ function connectWebSocket() {
         };
 
         ws.onmessage = (event) => {
+            console.log("--- START onmessage ---");
+            console.log("Raw data received:", event.data);
+
             let messageData;
             try {
                 messageData = JSON.parse(event.data);
+                console.log("Parsed message data:", messageData);
             } catch (e) {
-                messageData = null;
+                console.error("Failed to parse message JSON.", e);
+                // Check if it's the specific error message format
+                if (typeof event.data === 'string' && event.data.startsWith("<ERROR>")) {
+                    console.log("Processing <ERROR> message.");
+                    addErrorMessage(event.data.substring(7));
+                    finalizeTurnOnErrorOrClose();
+                    setInputDisabledState(false, false);
+                }
+                console.log("--- END onmessage (due to parse error) ---");
+                return;
             }
 
             if (messageData && messageData.type) {
-                switch (messageData.type) {
-                    case 'participants_update':
-                        if (window.updateAndDisplayParticipants) {
-                            window.updateAndDisplayParticipants(messageData.payload);
+                console.log(`Processing message type: "${messageData.type}"`);
+
+                if (messageData.type === 'ai_chunk') {
+                    console.log("-> Entering 'ai_chunk' handler.");
+                    renderLiveMessage(messageData.payload);
+                    console.log("<- Exited 'ai_chunk' handler.");
+                } else if (messageData.type === 'ai_stream_end') {
+                    console.log("-> Entering 'ai_stream_end' handler.");
+                    finalizeTurnOnErrorOrClose();
+                    console.log("<- Exited 'ai_stream_end' handler.");
+                } else if (messageData.type === 'new_message') {
+                    if (messageData.payload && messageData.payload.client_id_temp !== clientId) {
+                        renderSingleMessage(messageData.payload, chatHistory, true, {});
+                    }
+                    scrollToBottom('smooth');
+                } else if (messageData.type === 'participant_typing') {
+                    handleTypingIndicators(messageData.payload);
+                } else if (messageData.type === 'participants_update') {
+                    updateAndDisplayParticipants(messageData.payload);
+                } else if (messageData.type === 'session_deleted') {
+                    const chatTitle = document.getElementById('chat-session-title');
+                    if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`;
+                    const banner = document.createElement('div');
+                    banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold';
+                    banner.textContent = 'The host has deleted this session. The chat is now read-only.';
+                    chatHistory.prepend(banner);
+                    setInputDisabledState(true, false);
+                } else if (messageData.type === 'project_preview_ready') {
+                    const { project_id: preview_pid, url } = messageData.payload;
+                    const previewOutputContainer = createOrClearOutputContainer(preview_pid);
+                    updateHeaderStatus(previewOutputContainer, 'Preview Running', 'success');
+                    const previewConsoleDiv = previewOutputContainer.querySelector('.block-output-console');
+                    previewConsoleDiv.innerHTML = '';
+                    previewConsoleDiv.style.maxHeight = '600px';
+                    const iframe = document.createElement('iframe');
+                    iframe.className = 'html-render-iframe';
+                    iframe.style.cssText = 'width: 100%; height: 580px; border: none;';
+                    iframe.src = url;
+                    previewConsoleDiv.appendChild(iframe);
+                    const previewCodeContainer = document.getElementById(preview_pid);
+                    if (previewCodeContainer) {
+                        const btn = previewCodeContainer.querySelector('.run-code-btn');
+                        if (btn) {
+                            btn.dataset.status = 'previewing';
+                            btn.title = 'Stop Preview Server';
                         }
-                        break;
-                    case 'new_message':
-                        if (messageData.payload && messageData.payload.client_id_temp !== clientId) {
-                            renderSingleMessage(messageData.payload, chatHistory, true, {});
-                            scrollToBottom('smooth');
-                        }
-                        break;
-                    case 'ai_chunk':
-                        if (!currentAiTurnContainer) {
-                            setupNewAiTurn();
-                        }
-                        accumulatedAnswerText += messageData.payload;
-                        renderLiveMessage(accumulatedAnswerText);
-                        break;
-                    case 'ai_stream_end':
-                        renderLiveMessage(accumulatedAnswerText);
-                        finalizeTurnOnErrorOrClose();
-                        setInputDisabledState(false, false);
-                        break;
-                    case 'session_deleted':
-                        const chatTitle = document.getElementById('chat-session-title');
-                        if (chatTitle) {
-                            chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`;
-                        }
-                        const banner = document.createElement('div');
-                        banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold';
-                        banner.textContent = 'The host has deleted this session. The chat is now read-only.';
-                        chatHistory.prepend(banner);
-                        setInputDisabledState(true, false);
-                        break;
-                    default:
-                        handleStructuredMessage(messageData);
-                        break;
+                    }
+                } else if (messageData.type === 'plot_output') {
+                    const { project_id: plot_pid, plot_data } = messageData.payload;
+                    if (plot_data && Array.isArray(plot_data)) {
+                        plot_data.forEach((plot, index) => {
+                            createPlotBlock(plot_pid, plot, index + 1);
+                        });
+                    }
+                } else {
+                     handleStructuredMessage(messageData);
                 }
-            } else if (typeof event.data === 'string' && event.data.startsWith("<ERROR>")) {
-                addErrorMessage(event.data.substring(7));
-                finalizeTurnOnErrorOrClose();
-                setInputDisabledState(false, false);
+            } else {
+                console.warn("Received message that was not processed:", messageData);
             }
+            console.log("--- END onmessage ---");
         };
     } catch (error) {
         console.error("WebSocket creation error:", error);
@@ -7650,7 +7463,6 @@ function connectWebSocket() {
 document.addEventListener('DOMContentLoaded', async () => {
     await loadLanguagesConfig();
     await initializeCurrentUser();
-
     setInputDisabledState(true, false);
 
     if (typeof marked !== 'undefined' && typeof marked.setOptions === 'function') {
@@ -7660,26 +7472,65 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (chatForm && messageInput && sendButton && stopAiButton) {
+        let typingTimeout;
+        const sendTypingSignal = (isTyping) => {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({ type: 'user_typing', payload: { is_typing: isTyping } }));
+            }
+        };
+
+        messageInput.addEventListener('input', () => {
+            if (messageInput.value.trim() === '' && typingTimeout) {
+                clearTimeout(typingTimeout);
+                typingTimeout = null;
+                sendTypingSignal(false);
+                return;
+            }
+            if (!typingTimeout) {
+                sendTypingSignal(true);
+            }
+            clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => {
+                sendTypingSignal(false);
+                typingTimeout = null;
+            }, 2000);
+        });
+
         chatForm.addEventListener('submit', (event) => {
             event.preventDefault();
+            
+            console.log("[FORM] Submit event fired.");
+
+            if(typingTimeout) {
+                clearTimeout(typingTimeout);
+                typingTimeout = null;
+                sendTypingSignal(false);
+            }
+            
             const userMessage = messageInput.value.trim();
             if (!userMessage) return;
-            if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                console.error("[FORM] WebSocket not open, cannot send message.");
+                return;
+            }
             
             try {
+                addUserMessage(userMessage);
+                messageInput.value = '';
+
                 const mentionRegex = /@(\w+)/gi;
                 const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
                 
                 if (recipients.includes("AI")) {
+                    console.log("[FORM] AI message submitted. Calling setupNewAiTurn().");
                     if (!window.isAiConfigured) {
                         alert("AI provider has not been configured. Please go to User Settings to select a provider and add your API key.");
                         return;
                     }
+                    resetStreamingState();
                     setupNewAiTurn();
                     setInputDisabledState(true, true);
                 }
-                
-                addUserMessage(userMessage);
                 
                 const messagePayload = {
                     type: "chat_message",
@@ -7690,8 +7541,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         reply_to_id: null
                     }
                 };
+                console.log("[FORM] Sending message payload:", messagePayload);
                 websocket.send(JSON.stringify(messagePayload));
-                messageInput.value = '';
+
             } catch (sendError) {
                 addErrorMessage(`Failed to send message: ${sendError.message}`);
             }
@@ -7746,35 +7598,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (shouldStick) {
                         stickHeader(m.header, scrollerRect);
                         
-                        // Handle clipping when approaching the bottom of content
                         const stickyId = m.header.dataset.stickyId;
                         if (stickyId) {
                             const stickyClone = document.getElementById(stickyId);
                             if (stickyClone) {
                                 const headerHeight = stickyClone.offsetHeight;
                                 const contentBottom = m.contentRect.bottom;
-                                const viewportTop = scrollerRect.top + 1; // Add 1px offset
-                                
-                                // Calculate how much space is available for the header (add 2px buffer)
+                                const viewportTop = scrollerRect.top + 1;
                                 const availableSpace = contentBottom - viewportTop + 3;
                                 
                                 if (availableSpace < headerHeight && availableSpace > 0) {
-                                    // Clip the header from the top by moving it up and adjusting height
                                     const clipAmount = headerHeight - availableSpace - 1;
-                                    stickyClone.style.top = `${viewportTop - clipAmount - 1}px`; // Move up by clip amount
-                                    stickyClone.style.clipPath = `inset(${clipAmount}px 0 0 0)`; // Clip from top
-                                    stickyClone.style.height = `${headerHeight}px`; // Keep original height for proper clipping
+                                    stickyClone.style.top = `${viewportTop - clipAmount - 1}px`;
+                                    stickyClone.style.clipPath = `inset(${clipAmount}px 0 0 0)`;
+                                    stickyClone.style.height = `${headerHeight}px`;
                                     stickyClone.style.borderBottomLeftRadius = '0.375rem';
                                     stickyClone.style.borderBottomRightRadius = '0.375rem';
                                 } else if (availableSpace <= 2) {
-                                    // Content has scrolled completely past, hide the sticky header
                                     stickyClone.style.display = 'none';
                                 } else {
-                                    // Normal case: full header visible
                                     stickyClone.style.height = 'auto';
-                                    stickyClone.style.top = `${scrollerRect.top}px`; // Use original viewport top without offset
+                                    stickyClone.style.top = `${scrollerRect.top}px`;
                                     stickyClone.style.display = 'flex';
-                                    stickyClone.style.clipPath = 'none'; // Reset clipping
+                                    stickyClone.style.clipPath = 'none';
                                     stickyClone.style.borderBottomLeftRadius = '0';
                                     stickyClone.style.borderBottomRightRadius = '0';
                                 }
@@ -7788,12 +7634,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         chatHistoryScroller.addEventListener('scroll', function(e) {
-            // Only handle scroll if it's specifically from the chat history scroller
             if (e.target === chatHistoryScroller) {
                 handleScroll();
             }
         }, { passive: true });
-            }
+    }
 });
 
 === app/static/session-choice.html ===
@@ -8803,7 +8648,6 @@ export async function updateAndDisplayParticipants(participants) {
     const participantList = document.getElementById('participant-list');
     if (!participantList) return;
 
-    // Set a global flag to be used by the chat input
     window.isAiConfigured = false;
 
     if (!participants) {
@@ -8822,6 +8666,24 @@ export async function updateAndDisplayParticipants(participants) {
         }
     }
 
+    try {
+        const settingsResponse = await fetch('/api/me/llm-settings');
+        if (settingsResponse.ok) {
+            const settings = await settingsResponse.json();
+            if (settings.is_llm_ready) {
+                window.isAiConfigured = true;
+                const aiAlreadyExists = participants.some(p => p.name === 'AI Assistant');
+                if (!aiAlreadyExists) {
+                    participants.push({
+                        id: 'AI', name: 'AI Assistant', initials: 'AI', color: '#E0F2FE'
+                    });
+                }
+            }
+        }
+    } catch (error) {
+        console.error("Could not check LLM configuration:", error);
+    }
+    
     window.participantInfo = {};
     participants.forEach(p => {
         window.participantInfo[p.id] = { initials: p.initials, color: p.color, name: p.name };
@@ -8837,6 +8699,7 @@ export async function updateAndDisplayParticipants(participants) {
     participants.forEach(user => {
         const li = document.createElement('li');
         li.className = 'flex items-center space-x-2';
+        li.id = `participant-${user.id}`;
         const avatar = document.createElement('div');
         avatar.className = 'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-gray-700';
         avatar.style.backgroundColor = user.color;
@@ -8852,36 +8715,12 @@ export async function updateAndDisplayParticipants(participants) {
             hostLabel.textContent = '(Host)';
             nameSpan.appendChild(hostLabel);
         }
+        if (user.id === 'AI') { nameSpan.classList.add('italic'); }
         
         li.appendChild(avatar);
         li.appendChild(nameSpan);
         participantList.appendChild(li);
     });
-
-    try {
-        const settingsResponse = await fetch('/api/me/llm-settings');
-        if (settingsResponse.ok) {
-            const settings = await settingsResponse.json();
-            if (settings.is_llm_ready) {
-                window.isAiConfigured = true; // Set the flag
-                window.participantInfo['AI'] = { initials: 'AI', color: '#E0F2FE', name: 'AI Assistant' };
-                const aiLi = document.createElement('li');
-                aiLi.className = 'flex items-center space-x-2';
-                const aiAvatar = document.createElement('div');
-                aiAvatar.className = 'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-gray-700 italic';
-                aiAvatar.style.backgroundColor = window.participantInfo['AI'].color;
-                aiAvatar.textContent = 'AI';
-                const aiNameSpan = document.createElement('span');
-                aiNameSpan.className = 'text-sm text-gray-600 italic';
-                aiNameSpan.textContent = 'AI Assistant';
-                aiLi.appendChild(aiAvatar);
-                aiLi.appendChild(aiNameSpan);
-                participantList.appendChild(aiLi);
-            }
-        }
-    } catch (error) {
-        console.error("Could not check LLM configuration:", error);
-    }
 }
 
 export function connectToLobbySocket() {
@@ -9475,375 +9314,6 @@ export function initializeSidebarToggle() {
     });
 }
 
-
-=== app/static/js/temp.js ===
-// Add these new state variables at the top with other state variables
-let activeStreamingCodeBlocks = new Map(); // blockId -> { element, language, content }
-let streamingCodeBlockCounter = 0;
-
-// Replace the renderLiveMessage function
-function renderLiveMessage(fullContent) {
-    if (!currentAiTurnContainer) return;
-
-    if (!firstAnswerTokenReceived && fullContent.trim().length > 0) {
-        if (currentAnswerElement && currentAnswerElement.style.display === 'none') {
-            currentAnswerElement.style.display = '';
-        }
-        const loadingDots = currentAnswerElement ? currentAnswerElement.querySelector('.loading-dots') : null;
-        if (loadingDots) loadingDots.remove();
-        firstAnswerTokenReceived = true;
-    }
-
-    const contentArea = currentAnswerElement.querySelector('.live-ai-content-area');
-    const codeArea = currentCodeBlocksArea;
-
-    if (!contentArea || !codeArea) return;
-    
-    parseAndRenderStreamingContent(fullContent, contentArea, codeArea, currentTurnId);
-    scrollToBottom('auto');
-}
-
-// New function to handle streaming content with live code block creation
-function parseAndRenderStreamingContent(contentString, answerBubbleContentElement, codeBlocksDivElement, turnIdSuffix) {
-    if (!contentString || !answerBubbleContentElement || !codeBlocksDivElement) return;
-
-    let processedContent = contentString;
-    const codeBlockRegex = /```(\w*)\n?([\s\S]*?)(?:\n```|$)/g;
-    let match;
-    let lastIndex = 0;
-    let contentWithPlaceholders = '';
-
-    // Process each code block
-    while ((match = codeBlockRegex.exec(contentString)) !== null) {
-        const [fullMatch, language, code] = match;
-        const isComplete = fullMatch.endsWith('\n```') || fullMatch.endsWith('```');
-        
-        // Add content before this code block
-        contentWithPlaceholders += contentString.substring(lastIndex, match.index);
-        
-        const blockId = `streaming-code-block-turn${turnIdSuffix}-${++streamingCodeBlockCounter}`;
-        
-        if (!activeStreamingCodeBlocks.has(blockId)) {
-            // Create new streaming code block
-            createStreamingCodeBlock(language || 'plaintext', blockId, codeBlocksDivElement, turnIdSuffix, streamingCodeBlockCounter);
-            activeStreamingCodeBlocks.set(blockId, {
-                language: language || 'plaintext',
-                content: code,
-                isComplete: isComplete
-            });
-        } else {
-            // Update existing streaming code block
-            const blockData = activeStreamingCodeBlocks.get(blockId);
-            blockData.content = code;
-            blockData.isComplete = isComplete;
-            updateStreamingCodeBlockContent(blockId, code, isComplete);
-        }
-        
-        // Add placeholder reference
-        contentWithPlaceholders += ` [Code Block ${streamingCodeBlockCounter}] `;
-        lastIndex = codeBlockRegex.lastIndex;
-    }
-    
-    // Add remaining content after last code block
-    contentWithPlaceholders += contentString.substring(lastIndex);
-    
-    // Handle KaTeX and render markdown for non-code content
-    const KATEX_PLACEHOLDER_PREFIX_STREAMING = `%%STREAMING_KATEX_PLACEHOLDER_${turnIdSuffix}_`;
-    const storedKatex = {};
-    let katexPlaceholderIndex = 0;
-    
-    const katexRegexGlobal = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$((?:\\\$|[^$])+?)(?<!\\)\$/g;
-    let textForMarkdownParsing = contentWithPlaceholders.replace(katexRegexGlobal, (match, displayContent, inlineContent) => {
-        const isDisplayMode = !!displayContent;
-        const katexString = displayContent || inlineContent;
-        const cleanedKatexString = katexString.replace(/\\([$])/g, '$1');
-        let katexHtml = '';
-        try {
-            katexHtml = katex.renderToString(cleanedKatexString, {
-                displayMode: isDisplayMode, throwOnError: false, output: "html", strict: false
-            });
-        } catch (e) {
-            katexHtml = `<span class="katex-error" title="${escapeHTML(e.toString())}">${escapeHTML(match)}</span>`;
-        }
-        const placeholderId = `${KATEX_PLACEHOLDER_PREFIX_STREAMING}${katexPlaceholderIndex++}`;
-        storedKatex[placeholderId] = katexHtml;
-        return placeholderId;
-    });
-
-    answerBubbleContentElement.innerHTML = marked.parse(textForMarkdownParsing);
-
-    // Restore KaTeX content
-    if (Object.keys(storedKatex).length > 0) {
-        const walker = document.createTreeWalker(answerBubbleContentElement, NodeFilter.SHOW_TEXT, null, false);
-        let node;
-        const textNodesToModify = [];
-        while (node = walker.nextNode()) {
-            if (node.nodeValue && node.nodeValue.includes(KATEX_PLACEHOLDER_PREFIX_STREAMING)) {
-                textNodesToModify.push(node);
-            }
-        }
-        textNodesToModify.forEach(textNode => {
-            let currentTextValue = textNode.nodeValue;
-            const parent = textNode.parentNode;
-            if (!parent) return;
-            const fragment = document.createDocumentFragment();
-            let lastSplitEnd = 0;
-            const placeholderScanRegex = new RegExp(`(${KATEX_PLACEHOLDER_PREFIX_STREAMING}\\d+)`, 'g');
-            let placeholderMatch;
-            while((placeholderMatch = placeholderScanRegex.exec(currentTextValue)) !== null) {
-                const placeholderId = placeholderMatch[1];
-                const matchStartIndex = placeholderMatch.index;
-                if (matchStartIndex > lastSplitEnd) {
-                    fragment.appendChild(document.createTextNode(currentTextValue.substring(lastSplitEnd, matchStartIndex)));
-                }
-                if (storedKatex[placeholderId]) {
-                    const katexWrapperSpan = document.createElement('span');
-                    katexWrapperSpan.innerHTML = storedKatex[placeholderId];
-                    fragment.appendChild(katexWrapperSpan.firstChild || katexWrapperSpan);
-                } else {
-                    fragment.appendChild(document.createTextNode(placeholderId));
-                }
-                lastSplitEnd = placeholderScanRegex.lastIndex;
-            }
-            if (lastSplitEnd < currentTextValue.length) {
-                fragment.appendChild(document.createTextNode(currentTextValue.substring(lastSplitEnd)));
-            }
-            parent.replaceChild(fragment, textNode);
-        });
-    }
-}
-
-// New function to create streaming code blocks immediately
-function createStreamingCodeBlock(language, blockId, codeBlocksAreaElement, turnIdSuffix, codeBlockIndex) {
-    if (!codeBlocksAreaElement) {
-        console.error("createStreamingCodeBlock: Code blocks area element is null!");
-        return;
-    }
-
-    const safeLanguage = (language || '').trim().toLowerCase() || 'plaintext';
-    const langAlias = {
-        'python': 'python', 'py': 'python', 'javascript': 'javascript', 'js': 'javascript',
-        'html': 'markup', 'xml': 'markup', 'svg': 'markup', 'css': 'css', 'bash': 'bash',
-        'sh': 'bash', 'shell': 'bash', 'json': 'json', 'yaml': 'yaml', 'yml': 'yaml',
-        'markdown': 'markdown', 'md': 'markdown', 'sql': 'sql', 'java': 'java', 'c': 'c',
-        'cpp': 'cpp', 'c++': 'cpp', 'csharp': 'csharp', 'cs': 'csharp', 'go': 'go',
-        'rust': 'rust', 'php': 'php', 'ruby': 'ruby', 'rb': 'ruby',
-        'dockerfile': 'docker', 'docker': 'docker', 'typescript': 'typescript', 'ts': 'typescript',
-        'plaintext': 'plain', 'text': 'plain',
-    };
-    const prismLang = langAlias[safeLanguage] || safeLanguage;
-    const displayLang = safeLanguage;
-
-    const isLanguageSupported = supportedLanguagesConfig[displayLang]?.executable;
-    const playIconSvg = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
-
-    const container = document.createElement('div');
-    container.classList.add('block-container');
-    container.id = blockId;
-    container.dataset.language = displayLang;
-
-    const codeHeader = document.createElement('div');
-    codeHeader.classList.add('block-header');
-
-    const codeButtonsDiv = document.createElement('div');
-    codeButtonsDiv.classList.add('block-buttons');
-
-    const runStopBtn = document.createElement('button');
-    runStopBtn.classList.add('run-code-btn', 'block-action-btn');
-    runStopBtn.dataset.status = 'idle';
-    runStopBtn.innerHTML = playIconSvg;
-    runStopBtn.title = 'Run Code';
-    runStopBtn.addEventListener('click', handleRunStopCodeClick);
-
-    const toggleCodeBtn = document.createElement('button');
-    toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
-    toggleCodeBtn.textContent = 'Hide';
-    toggleCodeBtn.title = 'Show/Hide Code';
-
-    const copyCodeBtn = document.createElement('button');
-    copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
-    copyCodeBtn.textContent = 'Copy';
-    copyCodeBtn.title = 'Copy Code';
-
-    if (!isLanguageSupported) {
-        runStopBtn.style.display = 'none';
-        runStopBtn.title = `Run Code (language '${displayLang}' not supported for execution)`;
-    }
-
-    codeButtonsDiv.appendChild(runStopBtn);
-    codeButtonsDiv.appendChild(toggleCodeBtn);
-    codeButtonsDiv.appendChild(copyCodeBtn);
-
-    const codeTitle = document.createElement('span');
-    codeTitle.classList.add('block-title');
-    const titleTextSpan = document.createElement('span');
-    titleTextSpan.classList.add('title-text');
-    titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${displayLang})`;
-    const dotsSpan = document.createElement('span');
-    dotsSpan.classList.add('streaming-dots');
-    dotsSpan.textContent = '...';
-    codeTitle.appendChild(titleTextSpan);
-    codeTitle.appendChild(dotsSpan);
-    codeTitle.style.flexGrow = '1';
-    codeTitle.style.textAlign = 'left';
-
-    codeHeader.appendChild(codeButtonsDiv);
-    codeHeader.appendChild(codeTitle);
-
-    const preElement = document.createElement('pre');
-    preElement.classList.add('manual');
-    const codeElement = document.createElement('code');
-    codeElement.className = `language-${prismLang}`;
-    codeElement.setAttribute('contenteditable', 'true');
-    codeElement.setAttribute('spellcheck', 'false');
-    codeElement.textContent = '';
-
-    // Create output area structure (same as before)
-    const outputHeader = document.createElement('div');
-    outputHeader.classList.add('block-header');
-    outputHeader.style.display = 'none';
-    
-    const outputButtonsDiv = document.createElement('div');
-    outputButtonsDiv.classList.add('block-buttons');
-    const placeholderSpan = document.createElement('span');
-    placeholderSpan.classList.add('output-header-button-placeholder');
-    outputButtonsDiv.appendChild(placeholderSpan);
-    
-    const toggleOutputBtn = document.createElement('button');
-    toggleOutputBtn.classList.add('toggle-output-btn', 'block-action-btn');
-    toggleOutputBtn.textContent = 'Hide';
-    toggleOutputBtn.title = 'Show/Hide Output';
-    
-    const copyOutputBtn = document.createElement('button');
-    copyOutputBtn.classList.add('copy-output-btn', 'block-action-btn');
-    copyOutputBtn.textContent = 'Copy';
-    copyOutputBtn.title = 'Copy Output';
-    
-    outputButtonsDiv.appendChild(toggleOutputBtn);
-    outputButtonsDiv.appendChild(copyOutputBtn);
-    
-    const outputTitle = document.createElement('span');
-    outputTitle.classList.add('block-title');
-    outputTitle.textContent = `Output Code Block ${codeBlockIndex}`;
-    
-    const codeStatusSpan = document.createElement('span');
-    codeStatusSpan.classList.add('block-status');
-    codeStatusSpan.textContent = 'Idle';
-    
-    outputHeader.appendChild(outputButtonsDiv);
-    outputHeader.appendChild(outputTitle);
-    outputHeader.appendChild(codeStatusSpan);
-
-    const outputConsoleDiv = document.createElement('div');
-    outputConsoleDiv.classList.add('block-output-console');
-    outputConsoleDiv.style.display = 'none';
-    const outputPre = document.createElement('pre');
-    outputConsoleDiv.appendChild(outputPre);
-
-    preElement.appendChild(codeElement);
-    container.appendChild(codeHeader);
-    container.appendChild(preElement);
-    container.appendChild(outputHeader);
-    container.appendChild(outputConsoleDiv);
-
-    // Add all the same event listeners as the original function
-    toggleCodeBtn.addEventListener('click', () => {
-        const isHidden = preElement.classList.toggle('hidden');
-        toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide';
-    });
-
-    copyCodeBtn.addEventListener('click', async () => {
-        try {
-            await navigator.clipboard.writeText(codeElement.textContent || '');
-            copyCodeBtn.textContent = 'Copied!';
-            copyCodeBtn.classList.add('copied');
-            setTimeout(() => { 
-                copyCodeBtn.textContent = 'Copy'; 
-                copyCodeBtn.classList.remove('copied'); 
-            }, 1500);
-        } catch (err) {
-            console.error('Failed to copy code: ', err);
-            copyCodeBtn.textContent = 'Error';
-            setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500);
-        }
-    });
-
-    const debouncedHighlight = debounce(() => {
-        const savedPosition = getCursorPosition(codeElement);
-        try {
-            const currentText = codeElement.textContent;
-            codeElement.innerHTML = ''; 
-            codeElement.textContent = currentText; 
-            if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-                Prism.highlightElement(codeElement);
-            }
-            if (savedPosition !== -1) { 
-                setCursorPosition(codeElement, savedPosition); 
-            }
-        } catch (e) {
-            console.error("Error during debounced highlighting:", e);
-            if (savedPosition !== -1) { 
-                setCursorPosition(codeElement, savedPosition); 
-            }
-        }
-    }, 500);
-
-    codeElement.addEventListener('input', debouncedHighlight);
-    codeElement.addEventListener('paste', (e) => { 
-        setTimeout(debouncedHighlight, 100); 
-    });
-
-    toggleOutputBtn.addEventListener('click', () => {
-        const isHidden = outputConsoleDiv.classList.toggle('hidden');
-        toggleOutputBtn.textContent = isHidden ? 'Show' : 'Hide';
-    });
-
-    copyOutputBtn.addEventListener('click', async () => {
-        if (!outputPre) return;
-        try {
-            await navigator.clipboard.writeText(outputPre.textContent || '');
-            copyOutputBtn.textContent = 'Copied!';
-            copyOutputBtn.classList.add('copied');
-            setTimeout(() => { 
-                copyOutputBtn.textContent = 'Copy'; 
-                copyOutputBtn.classList.remove('copied'); 
-            }, 1500);
-        } catch (err) {
-            console.error('Failed to copy output: ', err);
-            copyOutputBtn.textContent = 'Error';
-            setTimeout(() => { copyOutputBtn.textContent = 'Copy'; }, 1500);
-        }
-    });
-
-    codeBlocksAreaElement.appendChild(container);
-}
-
-// New function to update streaming code block content
-function updateStreamingCodeBlockContent(blockId, content, isComplete) {
-    const container = document.getElementById(blockId);
-    if (!container) return;
-
-    const codeElement = container.querySelector('code');
-    const dotsSpan = container.querySelector('.streaming-dots');
-    
-    if (codeElement) {
-        codeElement.textContent = content;
-        
-        // Apply syntax highlighting
-        if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-            try {
-                Prism.highlightElement(codeElement);
-            } catch (e) {
-                console.error(`Prism highlight error:`, e);
-            }
-        }
-    }
-    
-    // Remove dots animation when complete
-    if (isComplete && dotsSpan) {
-        dotsSpan.remove();
-    }
-}
 
 === tests/test_coding.py ===
 import pytest

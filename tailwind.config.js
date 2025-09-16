@@ -4,8 +4,10 @@ module.exports = {
         'js-sticky',
     ],
     content: [
-      "./app/static/**/*.html", // Scan HTML files in static
-      "./app/static/**/*.js",   // Scan JS files in static
+      './app/static/**/*.html',      // Scan all our HTML files
+      './app/static/script.js',        // Scan our main script file
+      './app/static/js/**/*.js',     // Scan our custom JS modules in the js/ folder
+      '!./app/static/js/**/*.min.js', // IMPORTANT: Exclude minified vendor files
     ],
     theme: {
       extend: {},

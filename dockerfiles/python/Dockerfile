@@ -1,5 +1,5 @@
-# Start from the official Python image
+# dockerfiles/python/Dockerfile
 FROM python:3.11-slim
-
-# Install uv, then use uv to install the plotting libraries into the system environment
-RUN pip install uv && uv pip install --system matplotlib mpld3
+WORKDIR /app
+RUN pip install uv
+CMD ["/bin/sh"]

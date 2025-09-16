@@ -117,6 +117,18 @@ def update_database_schema():
         conn.commit()
         print("\n--- Schema Update Complete ---")
 
+        # 4. Update 'chat_messages' table: Add 'project_id' column
+        print("\nChecking 'chat_messages' table...")
+        chat_columns = get_existing_columns('chat_messages')
+        if 'project_id' not in chat_columns:
+            print("-> Adding 'project_id' column to 'chat_messages' table.")
+            cursor.execute("ALTER TABLE chat_messages ADD COLUMN project_id TEXT")
+            print("-> 'project_id' column added successfully.")
+        else:
+            print("-> 'project_id' column already exists. Skipping.")
+        
+        conn.commit()
+
     except sqlite3.Error as e:
         print(f"\nAn error occurred: {e}")
         if conn:

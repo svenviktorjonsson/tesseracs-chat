@@ -3,12 +3,15 @@ import sys
 import traceback
 from pathlib import Path
 import asyncio
+import uuid
+import tempfile
 import json
 import sqlite3
 import uuid
 from urllib.parse import urlparse
 import datetime
 from typing import Optional, Dict, Any, List
+
 
 from fastapi import (
     FastAPI,
@@ -49,6 +52,7 @@ from . import auth
 from . import email_utils
 from . import models
 from . import encryption_utils
+from . import project_utils
 
 app = FastAPI(title="Tesseracs Chat CSRF Example")
 
@@ -851,7 +855,29 @@ async def get_chat_messages_for_session(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
         
         cursor.execute("SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC", (session_id,))
-        return [models.MessageItem(**dict(row)) for row in cursor.fetchall()]
+        
+        messages_to_return = []
+        rows = cursor.fetchall()
+        for row in rows:
+            msg_dict = dict(row)
+            project_data_for_model = None 
+
+            # If the message content might contain file blocks, parse them
+            if msg_dict.get("content"):
+                parsed_files = project_utils.parse_file_blocks(msg_dict["content"])
+                if parsed_files:
+                    # Construct the project_data dictionary that the Pydantic model expects
+                    project_data_for_model = {
+                        "name": f"Project from message {msg_dict['id']}", # A placeholder name
+                        "files": parsed_files
+                    }
+            
+            # Add the key for Pydantic validation, even if it's None
+            msg_dict["project_data"] = project_data_for_model
+            
+            messages_to_return.append(models.MessageItem(**msg_dict))
+        return messages_to_return
+
     finally:
         if conn: conn.close()
 
@@ -896,25 +922,6 @@ async def join_session(
     finally:
         if conn: conn.close()
 
-def _get_session_participants_logic(session_id: str, user_id: int) -> Optional[List[models.UserResponseModel]]:
-    conn = None
-    try:
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user_id))
-        if not cursor.fetchone():
-            return None
-        
-        cursor.execute(
-            """SELECT u.id, u.name, u.email FROM users u JOIN session_participants sp ON u.id = sp.user_id WHERE sp.session_id = ?""",
-            (session_id,)
-        )
-        return [models.UserResponseModel(**dict(row)) for row in cursor.fetchall()]
-    except sqlite3.Error:
-        return None
-    finally:
-        if conn: conn.close()
-
 @app.get("/api/sessions/{session_id}/participants", response_model=List[models.UserResponseModel], tags=["Sessions"])
 async def get_session_participants(
     session_id: str = FastApiPath(..., description="The session ID."),
@@ -926,7 +933,6 @@ async def get_session_participants(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not a participant of this session.")
     return participants
 
-# In app/main.py
 
 PARTICIPANT_COLORS = [
     "#E0F2FE",  # sky-100
@@ -962,13 +968,45 @@ def _get_session_participants_logic(session_id: str, user_id: int) -> Optional[L
         if not cursor.fetchone():
             return None
         
+        # This query now filters out bots AND any user named "AI Assistant"
         cursor.execute(
-            """SELECT u.id, u.name, u.email FROM users u JOIN session_participants sp ON u.id = sp.user_id WHERE sp.session_id = ? ORDER BY u.name""",
+            """SELECT u.id, u.name, u.email 
+               FROM users u JOIN session_participants sp ON u.id = sp.user_id 
+               WHERE sp.session_id = ? AND u.is_bot = FALSE AND u.name != 'AI Assistant'
+               ORDER BY u.name""",
             (session_id,)
         )
         participants = [dict(row) for row in cursor.fetchall()]
         
-        # Generate initials and assign colors
+        participants = _generate_unique_initials(participants)
+        for i, p in enumerate(participants):
+            p['color'] = PARTICIPANT_COLORS[p['id'] % len(PARTICIPANT_COLORS)]
+
+        return [models.UserResponseModel(**p) for p in participants]
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn: conn.close()
+
+def _get_session_participants_logic(session_id: str, user_id: int) -> Optional[List[models.UserResponseModel]]:
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user_id))
+        if not cursor.fetchone():
+            return None
+        
+        # This query now filters out bots AND any user named "AI Assistant"
+        cursor.execute(
+            """SELECT u.id, u.name, u.email 
+               FROM users u JOIN session_participants sp ON u.id = sp.user_id 
+               WHERE sp.session_id = ? AND u.is_bot = FALSE AND u.name != 'AI Assistant'
+               ORDER BY u.name""",
+            (session_id,)
+        )
+        participants = [dict(row) for row in cursor.fetchall()]
+        
         participants = _generate_unique_initials(participants)
         for i, p in enumerate(participants):
             p['color'] = PARTICIPANT_COLORS[p['id'] % len(PARTICIPANT_COLORS)]
@@ -1015,7 +1053,7 @@ async def websocket_endpoint(
             await state.broadcast(session_id_ws, {
                 "type": "participants_update",
                 "payload": [p.model_dump() for p in live_participants]
-            })
+            }, exclude_websocket=websocket)
 
     await broadcast_participants()
     
@@ -1032,16 +1070,12 @@ async def websocket_endpoint(
                 recipient_ids = payload.get("recipient_ids", [])
                 reply_to_id = payload.get("reply_to_id")
                 
-                user_input_cleaned = user_input_raw
-                if user_input_raw.startswith(config.NO_THINK_PREFIX):
-                    user_input_cleaned = user_input_raw[len(config.NO_THINK_PREFIX):].lstrip()
-                
                 db_conn = database.get_db_connection()
                 cursor = db_conn.cursor()
                 cursor.execute(
                     """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, client_id_temp, turn_id, reply_to_message_id, timestamp) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'))""",
-                    (session_id_ws, user_id, user_name, 'user', user_input_cleaned, client_js_id, turn_id, reply_to_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'))""",
+                    (session_id_ws, user_id, user_name, 'user', user_input_raw, client_js_id, turn_id, reply_to_id)
                 )
                 message_id = cursor.lastrowid
                 db_conn.commit()
@@ -1049,19 +1083,23 @@ async def websocket_endpoint(
                 new_msg_row = cursor.fetchone()
                 db_conn.close()
 
+                msg_dict = dict(new_msg_row)
+                msg_dict["project_data"] = None
+
                 current_participants = _get_session_participants_logic(session_id_ws, user_id)
                 sender_info = next((p for p in current_participants if p.id == user_id), None)
 
-                message_model = models.MessageItem(**dict(new_msg_row))
+                message_model = models.MessageItem(**msg_dict)
                 if sender_info:
                     message_model.sender_color = sender_info.color
 
                 await state.broadcast(
                     session_id_ws,
-                    {"type": "new_message", "payload": message_model.model_dump()}
+                    {"type": "new_message", "payload": message_model.model_dump()},
+                    exclude_websocket=websocket
                 )
 
-                if any(recipient.upper() == 'AI' for recipient in recipient_ids):
+                if any(recipient.upper() in ['AI', 'A'] for recipient in recipient_ids):
                     stream_id = f"{session_id_ws}-{client_js_id}-{turn_id}"
                     asyncio.create_task(
                         llm.invoke_llm_for_session(
@@ -1075,21 +1113,52 @@ async def websocket_endpoint(
                         )
                     )
             
-            elif message_type == "stop_ai_stream" and payload:
-                turn_id = payload.get("turn_id")
-                stream_id_to_stop = f"{session_id_ws}-{client_js_id}-{turn_id}"
-                await state.signal_stop_ai_stream(stream_id_to_stop)
+            elif message_type == "user_typing" and payload is not None:
+                await state.broadcast(
+                    session_id_ws,
+                    {"type": "participant_typing", "payload": {"user_id": user_id, "user_name": user_name, "is_typing": payload.get("is_typing", False)}},
+                    exclude_websocket=websocket
+                )
 
             elif message_type == "run_code" and payload:
-                asyncio.create_task(docker_utils.run_code_in_docker_stream(
-                    websocket, client_js_id, payload['code_block_id'], payload['language'], payload['code']
-                ))
+                project_data = payload.get("project_data")
+                project_id = payload.get("project_id")
+                language = payload.get("language")
 
+                if not all([project_data, project_id, language]):
+                    continue
+
+                project_path = project_utils.create_project_directory_and_files(project_data)
+                if not project_path:
+                    await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Failed to create project files."})
+                    continue
+
+                lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
+                if not lang_config:
+                    await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Language '{language}' is not configured."})
+                    continue
+                
+                run_script = next((f for f in project_data.get("files", []) if f["path"].endswith('run.sh')), None)
+                if not run_script:
+                        await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Could not find run.sh in project."})
+                        continue
+
+                asyncio.create_task(docker_utils.run_code_in_docker(
+                    websocket=websocket,
+                    client_id=client_js_id,
+                    project_id=project_id,
+                    project_path=project_path,
+                    run_command="sh run.sh",
+                    lang_config=lang_config
+                ))
+            
             elif message_type == "stop_code" and payload:
-                await docker_utils.stop_docker_container(payload['code_block_id'])
+                project_id = payload.get("project_id")
+                if project_id:
+                    await docker_utils.stop_container(project_id)
 
             elif message_type == "code_input" and payload:
-                await docker_utils.send_input_to_container(payload['code_block_id'], payload['input'])
+                await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
             
             elif message_type == "save_code_content" and payload:
                 database.save_edited_code_content(

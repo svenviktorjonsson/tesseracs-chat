@@ -12,7 +12,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 static_dir = os.path.join(script_dir, 'app', 'static')
 assets_dir = os.path.join(static_dir, 'assets')
 css_dir = os.path.join(assets_dir, 'css')
-fonts_dir = os.path.join(assets_dir, 'fonts')
+fonts_dir = os.path.join(css_dir, 'fonts')
 js_dir = os.path.join(static_dir, 'js')
 
 # --- Base URL for KaTeX assets ---

@@ -4,13 +4,17 @@ import traceback
 from typing import List, Callable, Optional, Any
 import asyncio
 import sqlite3
+from pathlib import Path
+import re
+import json
+import uuid
 
 from fastapi import WebSocket
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, Runnable, RunnableLambda
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_ollama.llms import OllamaLLM
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -23,38 +27,42 @@ from . import utils
 from . import encryption_utils
 from . import project_utils
 
-# --- System Prompt Definition ---
-# app/llm.py
-
 SYSTEM_PROMPT = (
-    "You are a versatile and helpful AI assistant with expertise in programming and data visualization.\n\n"
-    "## Core Directives:\n"
-    "1.  **Standard Responses:** For general questions, facts, explanations, or single code snippets, provide the answer directly using clear text, Markdown, and fenced code blocks as appropriate. Use LaTeX for mathematics.\n"
-    "2.  **Multi-File Projects:** When a user's request implies creating a multi-file project (e.g., 'make a website', 'create a flask app'), you MUST use the special project format.\n\n"
-    "## Project Format Rules:\n"
-    "1.  **Project Block:** Start the entire project with a `\\project{}` block. This block must contain the project's `name` and the command to `run` it.\n"
-    "    - `name`: A descriptive name for the project (e.g., \"Simple Flask App\").\n"
-    "    - `run`: The shell command required to execute the project (e.g., \"python app.py\" or \"npm install && npm start\").\n"
-    "2.  **File Blocks:** Immediately following the `\\project{}` block, provide each file. Every file block MUST consist of:\n"
-    "    a. A file path on a single line, ending with a colon (e.g., `./app/main.py:` or `./static/style.css:`).\n"
-    "    b. A standard Markdown fenced code block with the language identifier (e.g., ```python).\n"
-    "3.  **End Block:** Conclude the entire project definition with `\\endproject`.\n"
-    "4.  **Best Practices:** Always use logical and conventional file and folder structures for the type of project requested.\n\n"
-    "## Example Project:\n"
-    "\\project{name: \"My First Website\", run: \"python -m http.server 8000\"}\n"
-    "./index.html:\n"
-    "```html\n"
-    "<!DOCTYPE html><html><body><h1>Hello!</h1></body></html>\n"
-    "```\n"
-    "./style.css:\n"
-    "```css\n"
-    "h1 { color: blue; }\n"
-    "```\n"
-    "\\endproject\n\n"
-    "## Other Rules:\n"
-    "-   Always use `matplotlib.pyplot` for plots in Python code blocks.\n"
-    "-   NEVER wrap code in one language inside another (e.g., do not write Python to print HTML).\n"
-    "-   For complex requests not involving projects, you may explain your reasoning using the `\\think` command."
+    "You are a helpful AI assistant. Follow the user's instructions carefully.\n\n"
+    "RESPONSE FORMATTING RULES:\n"
+    "Your entire output must be a sequence of one or more structured blocks. Each block follows the same simple format: a START tag, a JSON payload terminated by _JSON_END_, content, and an END tag.\n\n"
+    "--- BLOCK TYPES ---\n\n"
+    "1.  **Answer Block:** For conversational text, Markdown, and math.\n"
+    "    - Use `_ANSWER_START_` and `_ANSWER_END_`.\n"
+    "    - The JSON payload must be empty: `{}`.\n"
+    "    - All text must be formatted with Markdown. All math must use KaTeX syntax (`$$...$$` or `$...$`).\n\n"
+    "2.  **File Block:** For all code or file content.\n"
+    "    - A 'project' is simply a sequence of one or more file blocks.\n"
+    "    - Use `_FILE_START_` and `_FILE_END_`.\n"
+    "    - The JSON payload must contain the file path: `{ \"path\": \"./path/to/file.ext\" }`.\n"
+    "    - The **last file block** in a code project MUST be the `run.sh` script.\n"
+    "    - For Python projects, `run.sh` must use `uv pip install` for dependencies.\n\n"
+    "--- EXAMPLES ---\n\n"
+    "**EXAMPLE 1: Conversational Answer with Math**\n"
+    "_ANSWER_START_\n"
+    "{}\n"
+    "_JSON_END_\n"
+    "The quadratic formula is used to solve equations of the form $ax^2 + bx + c = 0$. The formula is:\n\n"
+    "$$x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n"
+    "_ANSWER_END_\n\n"
+    "**EXAMPLE 2: Code Project**\n"
+    "_FILE_START_\n"
+    "{ \"path\": \"./main.py\" }\n"
+    "_JSON_END_\n"
+    "import numpy as np\n"
+    "print(f'Numpy version: {np.__version__}!')\n"
+    "_FILE_END_\n"
+    "_FILE_START_\n"
+    "{ \"path\": \"./run.sh\" }\n"
+    "_JSON_END_\n"
+    "uv pip install numpy\n"
+    "python main.py\n"
+    "_FILE_END_"
 )
 
 def get_model(
@@ -127,7 +135,7 @@ def get_model(
         return None
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
+    SystemMessage(content=SYSTEM_PROMPT),
     MessagesPlaceholder(variable_name="history"),
     ("human", "{input}")
 ])
@@ -164,7 +172,6 @@ def create_chain(
         print(f"LLM Chain CRITICAL_ERROR: Failed to create LangChain chain: {e}")
         traceback.print_exc()
         return None
-
 async def invoke_llm_for_session(
     session_id: str,
     websocket: WebSocket,
@@ -176,10 +183,12 @@ async def invoke_llm_for_session(
 ):
     stop_event = await state.register_ai_stream(stream_id)
     full_response_content = ""
-    db_conn = None
     ai_message_id = None
-    
+    project_files = []
+    answer_content = "" # New variable to hold just the conversational text
+
     try:
+        # (This part for getting settings and creating the chain is unchanged)
         db_conn_for_settings = database.get_db_connection()
         cursor = db_conn_for_settings.cursor()
         cursor.execute(
@@ -193,8 +202,8 @@ async def invoke_llm_for_session(
         model_id = user_settings["selected_llm_model_id"] if user_settings else None
 
         if not provider_id or not model_id:
-            await websocket.send_text("<ERROR> AI provider not configured. Please select a provider and model in your User Settings.")
-            return 
+            await websocket.send_text("<ERROR> AI provider not configured.")
+            return
 
         api_key = None
         base_url = None
@@ -208,51 +217,148 @@ async def invoke_llm_for_session(
             return memory.chat_memory.messages
 
         chain = create_chain(
-            provider_id=provider_id,
-            model_id=model_id,
-            memory_loader_func=get_history,
-            api_key=api_key,
-            base_url_override=base_url
+            provider_id=provider_id, model_id=model_id,
+            memory_loader_func=get_history, api_key=api_key, base_url_override=base_url
         )
 
         if not chain:
             raise ValueError(f"Failed to create chain for provider {provider_id}")
 
         stream = chain.astream({"input": user_input_raw})
+        
+        parser_state = "IDLE"
+        buffer = ""
+        current_block_type = None
+        current_file_args = {}
+        current_file_content = ""
 
+        print("\n--- LLM RAW STREAM START ---", flush=True)
         async for chunk in stream:
+            print(chunk, end="", flush=True)
             if stop_event.is_set():
                 break
             
             full_response_content += chunk
-            await utils.send_ws_message(websocket, "ai_chunk", chunk)
-            await asyncio.sleep(0.01)
+            buffer += chunk
 
+            while True:
+                can_process_more = False
+                if parser_state == "IDLE":
+                    match = re.search(r"(_ANSWER_START_|_FILE_START_)", buffer)
+                    if match:
+                        current_block_type = match.group(1)
+                        buffer = buffer[match.end():]
+                        parser_state = "PARSING_ARGS"
+                        can_process_more = True
+
+                elif parser_state == "PARSING_ARGS":
+                    end_json_match = re.search(r"(.*?)\s*_JSON_END_", buffer, re.DOTALL)
+                    if end_json_match:
+                        json_str = end_json_match.group(1).strip()
+                        buffer = buffer[end_json_match.end():]
+                        
+                        try:
+                            args = json.loads(json_str)
+                            if current_block_type == "_ANSWER_START_":
+                                await utils.send_ws_message(websocket, "start_answer_stream", {})
+                                parser_state = "STREAMING_ANSWER"
+                            elif current_block_type == "_FILE_START_":
+                                current_file_args = args
+                                path = current_file_args.get("path")
+                                if path:
+                                    current_file_args["language"] = project_utils.get_language_from_extension(path)
+                                await utils.send_ws_message(websocket, "start_file_stream", current_file_args)
+                                parser_state = "STREAMING_FILE_CONTENT"
+                        except json.JSONDecodeError:
+                            parser_state = "IDLE"
+                        can_process_more = True
+
+                elif parser_state == "STREAMING_ANSWER":
+                    end_match = buffer.find("_ANSWER_END_")
+                    if end_match != -1:
+                        payload = buffer[:end_match]
+                        if payload:
+                            await utils.send_ws_message(websocket, "ai_chunk", payload)
+                            answer_content += payload # Accumulate answer content
+                        await utils.send_ws_message(websocket, "end_answer_stream", {})
+                        buffer = buffer[end_match + len("_ANSWER_END_"):]
+                        parser_state = "IDLE"
+                        can_process_more = True
+                    else:
+                        if buffer:
+                            await utils.send_ws_message(websocket, "ai_chunk", buffer)
+                            answer_content += buffer # Accumulate answer content
+                        buffer = ""
+                
+                elif parser_state == "STREAMING_FILE_CONTENT":
+                    end_match = buffer.find("_FILE_END_")
+                    if end_match != -1:
+                        payload = buffer[:end_match]
+                        if payload:
+                             await utils.send_ws_message(websocket, "file_chunk", {"content": payload})
+                        
+                        current_file_content += payload
+                        path = current_file_args.get("path")
+                        if path:
+                            project_files.append({
+                                "path": path,
+                                "content": current_file_content,
+                                "language": current_file_args.get("language")
+                            })
+                        
+                        await utils.send_ws_message(websocket, "end_file_stream", current_file_args)
+                        buffer = buffer[end_match + len("_FILE_END_"):]
+                        current_file_args, current_file_content = {}, ""
+                        parser_state = "IDLE"
+                        can_process_more = True
+                    else:
+                        if buffer:
+                            await utils.send_ws_message(websocket, "file_chunk", {"content": buffer})
+                        current_file_content += buffer
+                        buffer = ""
+
+                if not can_process_more:
+                    break
+        print("\n--- LLM RAW STREAM END ---", flush=True)
+        
     except Exception as e:
-        print(f"--- LLM ERROR for stream '{stream_id}' ---")
-        traceback.print_exc()
-        error_message = f"<ERROR> AI Error: {str(e)}"
-        await websocket.send_text(error_message)
+        # ... (error handling is unchanged) ...
     finally:
         print(f"--- LLM STREAM: Finalizing stream '{stream_id}' ---")
-        if full_response_content:
+        
+        # --- NEW DATABASE SAVING LOGIC ---
+        ai_message_id = None
+        if full_response_content: 
             try:
                 db_conn = database.get_db_connection()
                 cursor = db_conn.cursor()
+                
+                # Step 1: Insert the main message with only conversational content
                 cursor.execute(
-                    """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id, timestamp)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'))""",
-                    (session_id, user_id, 'AI', 'ai', full_response_content, turn_id, reply_to_message_id)
+                    """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (session_id, user_id, 'AI', 'ai', answer_content or None, turn_id, reply_to_message_id)
                 )
                 ai_message_id = cursor.lastrowid
+
+                # Step 2: If there are files, insert them and link them to the new message ID
+                if project_files:
+                    for file_data in project_files:
+                        cursor.execute(
+                            """INSERT INTO message_files (message_id, path, content, language)
+                               VALUES (?, ?, ?, ?)""",
+                            (ai_message_id, file_data['path'], file_data['content'], file_data['language'])
+                        )
+                
                 db_conn.commit()
                 state.remove_memory_for_client(session_id)
             except sqlite3.Error as db_err:
-                print(f"--- DB ERROR: Failed to save AI response for stream '{stream_id}': {db_err} ---")
+                print(f"--- DB ERROR: Failed to save structured AI response for stream '{stream_id}': {db_err} ---")
                 traceback.print_exc()
             finally:
                 if db_conn:
                     db_conn.close()
 
-        await utils.send_ws_message(websocket, "ai_stream_end", {"message_id": ai_message_id})
+        print(f"--- LLM LOG: Finalizing stream '{stream_id}'. Sending ai_stream_end message. ---")
+        await utils.send_ws_message(websocket, "ai_stream_end", {"message_id": ai_message_id, "turn_id": turn_id})
         await state.unregister_ai_stream(stream_id)

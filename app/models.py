@@ -104,22 +104,24 @@ class UserResponseModel(BaseModel):
     initials: str = ""
     color: str = "#E5E7EB"
 
+class FileItem(BaseModel):
+    path: str
+    content: str
+    language: Optional[str] = None
+
 class MessageItem(BaseModel):
     id: int
     session_id: str
     user_id: Optional[int] = None
     sender_name: Optional[str] = None
     sender_type: str
-    content: str
-    client_id_temp: Optional[str] = None
-    thinking_content: Optional[str] = None
+    content: Optional[str] = None  # This is now for conversational text only
     timestamp: str
     turn_id: Optional[int] = None
-    model_provider_id: Optional[str] = None
-    model_id: Optional[str] = None
     reply_to_message_id: Optional[int] = None
     sender_initials: Optional[str] = None
     sender_color: Optional[str] = None
+    files: Optional[List[FileItem]] = None # This replaces the old project_data
 
 class MessageListContainerResponse(BaseModel):
     messages: List[MessageItem]

@@ -42,6 +42,8 @@ exclude_exact_filenames = (
     'katex.min.css',
     'katex.min.js',
     'build.js',
+    "build_all_images.ps1",
+    "create_dockerfiles.ps1"
     # Add other large or irrelevant files by name here
 )
 

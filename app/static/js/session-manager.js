@@ -265,7 +265,6 @@ export async function updateAndDisplayParticipants(participants) {
     const participantList = document.getElementById('participant-list');
     if (!participantList) return;
 
-    // Set a global flag to be used by the chat input
     window.isAiConfigured = false;
 
     if (!participants) {
@@ -284,6 +283,24 @@ export async function updateAndDisplayParticipants(participants) {
         }
     }
 
+    try {
+        const settingsResponse = await fetch('/api/me/llm-settings');
+        if (settingsResponse.ok) {
+            const settings = await settingsResponse.json();
+            if (settings.is_llm_ready) {
+                window.isAiConfigured = true;
+                const aiAlreadyExists = participants.some(p => p.name === 'AI Assistant');
+                if (!aiAlreadyExists) {
+                    participants.push({
+                        id: 'AI', name: 'AI Assistant', initials: 'AI', color: '#E0F2FE'
+                    });
+                }
+            }
+        }
+    } catch (error) {
+        console.error("Could not check LLM configuration:", error);
+    }
+    
     window.participantInfo = {};
     participants.forEach(p => {
         window.participantInfo[p.id] = { initials: p.initials, color: p.color, name: p.name };
@@ -299,6 +316,7 @@ export async function updateAndDisplayParticipants(participants) {
     participants.forEach(user => {
         const li = document.createElement('li');
         li.className = 'flex items-center space-x-2';
+        li.id = `participant-${user.id}`;
         const avatar = document.createElement('div');
         avatar.className = 'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-gray-700';
         avatar.style.backgroundColor = user.color;
@@ -314,36 +332,12 @@ export async function updateAndDisplayParticipants(participants) {
             hostLabel.textContent = '(Host)';
             nameSpan.appendChild(hostLabel);
         }
+        if (user.id === 'AI') { nameSpan.classList.add('italic'); }
         
         li.appendChild(avatar);
         li.appendChild(nameSpan);
         participantList.appendChild(li);
     });
-
-    try {
-        const settingsResponse = await fetch('/api/me/llm-settings');
-        if (settingsResponse.ok) {
-            const settings = await settingsResponse.json();
-            if (settings.is_llm_ready) {
-                window.isAiConfigured = true; // Set the flag
-                window.participantInfo['AI'] = { initials: 'AI', color: '#E0F2FE', name: 'AI Assistant' };
-                const aiLi = document.createElement('li');
-                aiLi.className = 'flex items-center space-x-2';
-                const aiAvatar = document.createElement('div');
-                aiAvatar.className = 'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-gray-700 italic';
-                aiAvatar.style.backgroundColor = window.participantInfo['AI'].color;
-                aiAvatar.textContent = 'AI';
-                const aiNameSpan = document.createElement('span');
-                aiNameSpan.className = 'text-sm text-gray-600 italic';
-                aiNameSpan.textContent = 'AI Assistant';
-                aiLi.appendChild(aiAvatar);
-                aiLi.appendChild(aiNameSpan);
-                participantList.appendChild(aiLi);
-            }
-        }
-    } catch (error) {
-        console.error("Could not check LLM configuration:", error);
-    }
 }
 
 export function connectToLobbySocket() {
