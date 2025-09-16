@@ -188,7 +188,6 @@ async def invoke_llm_for_session(
     answer_content = "" # New variable to hold just the conversational text
 
     try:
-        # (This part for getting settings and creating the chain is unchanged)
         db_conn_for_settings = database.get_db_connection()
         cursor = db_conn_for_settings.cursor()
         cursor.execute(
@@ -322,7 +321,10 @@ async def invoke_llm_for_session(
         print("\n--- LLM RAW STREAM END ---", flush=True)
         
     except Exception as e:
-        # ... (error handling is unchanged) ...
+        print(f"--- LLM ERROR for stream '{stream_id}' ---")
+        traceback.print_exc()
+        error_message = f"<ERROR> AI Error: {str(e)}"
+        await websocket.send_text(error_message)
     finally:
         print(f"--- LLM STREAM: Finalizing stream '{stream_id}' ---")
         
