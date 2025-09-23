@@ -1,0 +1,35 @@
+# Ignore the Python virtual environment
+.venv/
+venv/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore Git directory
+.git/
+
+# Ignore runtime job files
+jobs/
+
+# Ignore environment file (it's injected by docker-compose)
+.env
+```
+
+This file tells Docker, "When you build the image, do not include any of these files or folders." This is a standard and essential practice for creating clean, stable Docker images.
+
+---
+
+#### Step 2: How to See the Logs
+
+From now on, if your application isn't loading, you can see exactly what's happening inside the container by using this command.
+
+1.  Stop the current process by pressing `Ctrl+C`.
+2.  Run the application again with the standard command:
+    ```bash
+    docker-compose up --build
+    ```
+3.  If it seems to be frozen or not working, open a **second terminal**, navigate to your project directory, and run:
+    ```bash
+    docker-compose logs -f app
+    

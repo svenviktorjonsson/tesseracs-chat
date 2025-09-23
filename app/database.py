@@ -17,14 +17,10 @@ def get_db_connection():
     return conn
 
 def init_db():
-    """
-    Initializes the database with the new structured schema for messages and files.
-    """
     print(f"Initializing new structured database schema at {DATABASE_PATH}...")
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # --- User and Auth Tables (Unchanged) ---
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,8 +57,6 @@ def init_db():
         attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
-
-    # --- Sessions and Participants (Unchanged) ---
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -97,8 +91,6 @@ def init_db():
         FOREIGN KEY (bot_user_id) REFERENCES users (id) ON DELETE CASCADE
     );
     """)
-
-    # --- NEW SCHEMA for Messages and Files ---
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,16 +98,17 @@ def init_db():
         user_id INTEGER,
         sender_name TEXT,
         sender_type TEXT NOT NULL CHECK(sender_type IN ('user', 'ai', 'system')),
-        content TEXT, -- Conversational content only, can be NULL if the message just contains files
+        content TEXT,
         turn_id INTEGER,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         reply_to_message_id INTEGER,
+        prompting_user_id INTEGER,
         FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL,
-        FOREIGN KEY (reply_to_message_id) REFERENCES chat_messages (id) ON DELETE SET NULL
+        FOREIGN KEY (reply_to_message_id) REFERENCES chat_messages (id) ON DELETE SET NULL,
+        FOREIGN KEY (prompting_user_id) REFERENCES users (id) ON DELETE SET NULL
     );
     """)
-    
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS message_files (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,9 +119,6 @@ def init_db():
         FOREIGN KEY (message_id) REFERENCES chat_messages (id) ON DELETE CASCADE
     );
     """)
-    print("Ensured 'chat_messages' and 'message_files' tables exist with new schema.")
-
-    # --- Other existing tables ---
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS edited_code_blocks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,23 +156,22 @@ def init_db():
         FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
     );
     """)
-    print("Ensured all auxiliary tables exist.")
+    
+    print("All table structures created.")
+    conn.commit()
+    print("Table structures committed to database.")
 
-    # --- Indexes ---
-    print("Ensuring database indexes exist...")
+    print("Creating indexes...")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_auth_tokens_token_hash ON auth_tokens (token_hash);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_host_user_id ON sessions (host_user_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages (session_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_message_files_message_id ON message_files (message_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_attempts_email_time ON password_reset_attempts (email, attempted_at);")
-    print("Ensured all indexes exist.")
-
+    
     conn.commit()
     conn.close()
     print("Database initialization with new schema complete.")
-
-
 # --- Utility Functions (Keep these as they are) ---
 
 def hash_value(value: str) -> str:

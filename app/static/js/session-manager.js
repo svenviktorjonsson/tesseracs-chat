@@ -289,12 +289,6 @@ export async function updateAndDisplayParticipants(participants) {
             const settings = await settingsResponse.json();
             if (settings.is_llm_ready) {
                 window.isAiConfigured = true;
-                const aiAlreadyExists = participants.some(p => p.name === 'AI Assistant');
-                if (!aiAlreadyExists) {
-                    participants.push({
-                        id: 'AI', name: 'AI Assistant', initials: 'AI', color: '#E0F2FE'
-                    });
-                }
             }
         }
     } catch (error) {
@@ -313,17 +307,44 @@ export async function updateAndDisplayParticipants(participants) {
     const hostId = sessionData ? sessionData.host_user_id : null;
 
     participantList.innerHTML = '';
+
+    const aiColor = '#E0F2FE'; // Use sky-100 as the AI's consistent base color
+    window.participantInfo['AI'] = { initials: 'AI', name: 'AI Assistant', color: aiColor };
+
+    const ai_li = document.createElement('li');
+    ai_li.className = 'flex items-center space-x-2';
+    ai_li.id = `participant-AI`;
+
+    const ai_avatar = document.createElement('div');
+    ai_avatar.className = 'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-gray-700';
+    ai_avatar.style.backgroundColor = aiColor;
+    ai_avatar.textContent = 'AI';
+    
+    const ai_nameSpan = document.createElement('span');
+    ai_nameSpan.className = 'text-sm italic participant-name-span text-gray-600';
+    ai_nameSpan.textContent = 'AI Assistant';
+
+    if (!window.isAiConfigured) {
+        ai_li.classList.add('opacity-50');
+        ai_nameSpan.title = "AI is not configured for your account. Go to User Settings to enable it.";
+    }
+
+    ai_li.appendChild(ai_avatar);
+    ai_li.appendChild(ai_nameSpan);
+    participantList.appendChild(ai_li);
+
     participants.forEach(user => {
         const li = document.createElement('li');
         li.className = 'flex items-center space-x-2';
         li.id = `participant-${user.id}`;
+        
         const avatar = document.createElement('div');
         avatar.className = 'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-gray-700';
         avatar.style.backgroundColor = user.color;
         avatar.textContent = user.initials;
         
         const nameSpan = document.createElement('span');
-        nameSpan.className = 'text-sm text-gray-600';
+        nameSpan.className = 'text-sm text-gray-600 participant-name-span';
         nameSpan.textContent = user.name;
         
         if (user.id === hostId) {
@@ -332,7 +353,6 @@ export async function updateAndDisplayParticipants(participants) {
             hostLabel.textContent = '(Host)';
             nameSpan.appendChild(hostLabel);
         }
-        if (user.id === 'AI') { nameSpan.classList.add('italic'); }
         
         li.appendChild(avatar);
         li.appendChild(nameSpan);

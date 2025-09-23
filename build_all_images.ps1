@@ -31,7 +31,7 @@ function Build-DockerImage {
 # --- Build All Custom Images ---
 
 # The versatile Python image
-Build-DockerImage -TagName "python-runner-with-uv" -DockerfilePath "./dockerfiles/python/Dockerfile"
+Build-DockerImage -TagName "tesseracs-python" -DockerfilePath "./dockerfiles/python/Dockerfile"
 
 # C/C++ image (gcc + python)
 Build-DockerImage -TagName "tesseracs-gcc" -DockerfilePath "./dockerfiles/gcc/Dockerfile"

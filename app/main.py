@@ -1,10 +1,10 @@
+
 import os
 import sys
 import traceback
 from pathlib import Path
 import asyncio
 import uuid
-import tempfile
 import json
 import sqlite3
 import uuid
@@ -44,7 +44,6 @@ from fastapi_csrf_protect.exceptions import CsrfProtectError
 
 from . import config
 from . import state
-from . import llm
 from . import docker_utils
 from . import utils
 from . import database
@@ -53,6 +52,7 @@ from . import email_utils
 from . import models
 from . import encryption_utils
 from . import project_utils
+from . import llm
 
 app = FastAPI(title="Tesseracs Chat CSRF Example")
 
@@ -321,7 +321,6 @@ async def create_new_session_route(
     user: Dict[str, Any] = Depends(auth.get_current_active_user),
     csrf_protect: CsrfProtect = Depends()
 ):
-    print("\n--- LOG: 1. `create_new_session_route` endpoint initiated. ---")
     await csrf_protect.validate_csrf(request)
     host_user_id = user["id"]
     new_session_id = str(uuid.uuid4())
@@ -345,6 +344,14 @@ async def create_new_session_route(
             )
             if cursor.fetchone():
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A public or protected session with this name already exists.")
+        
+        elif session_data.access_level == 'private':
+            cursor.execute(
+                "SELECT id FROM sessions WHERE name = ? AND host_user_id = ? AND access_level = 'private' AND is_active = 1",
+                (session_data.name, host_user_id)
+            )
+            if cursor.fetchone():
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You already have an active private session with this name.")
 
         cursor.execute(
             """INSERT INTO sessions (id, host_user_id, name, access_level, passcode_hash, created_at, last_accessed_at) 
@@ -358,7 +365,6 @@ async def create_new_session_route(
         )
         
         conn.commit()
-        print(f"--- LOG: 2. Session '{new_session_id}' created and saved to database. ---")
 
         cursor.execute("SELECT * FROM sessions WHERE id = ?", (new_session_id,))
         new_session_row = cursor.fetchone()
@@ -366,7 +372,6 @@ async def create_new_session_route(
         session_dict = dict(new_session_row)
 
         if session_dict['access_level'] in ['public', 'protected']:
-            print(f"--- LOG: 3. Session is public/protected. Preparing to broadcast to lobby. ---")
             broadcast_payload = models.SessionResponseModel(
                 id=session_dict['id'],
                 name=session_dict['name'],
@@ -382,7 +387,6 @@ async def create_new_session_route(
             })
         
         session_dict['is_member'] = True
-        print(f"--- LOG: 5. Returning successful response to host client. ---")
         return models.SessionResponseModel(**session_dict)
 
     except HTTPException as http_exc:
@@ -730,28 +734,21 @@ async def list_llm_providers(
         if not provider_runtime_config:
             continue
 
-        api_key_env_var_name = provider_runtime_config.get("api_key_env_var_name")
-        is_system_key_configured = bool(api_key_env_var_name and os.getenv(api_key_env_var_name))
-        
-        provider_type_can_use_key = provider_id in config.PROVIDERS_TYPICALLY_USING_API_KEYS or bool(api_key_env_var_name)
-        needs_api_key_from_user = provider_type_can_use_key and not is_system_key_configured
-        can_accept_user_api_key = provider_id in config.PROVIDERS_ALLOWING_USER_KEYS_EVEN_IF_SYSTEM_CONFIGURED or needs_api_key_from_user
+        provider_can_use_key = provider_id in config.PROVIDERS_TYPICALLY_USING_API_KEYS
         
         response_providers.append(
             models.LLMProviderDetail(
                 id=provider_id,
                 display_name=provider_data.get("display_name", provider_id),
                 type=provider_runtime_config.get("type", "unknown"),
-                is_system_configured=is_system_key_configured or not provider_type_can_use_key,
-                can_accept_user_api_key=can_accept_user_api_key,
-                needs_api_key_from_user=needs_api_key_from_user,
+                is_system_configured=False, # This is now always False
+                can_accept_user_api_key=provider_can_use_key,
+                needs_api_key_from_user=provider_can_use_key, # If a key can be used, it's now always required from the user
                 available_models=[models.LLMAvailableModel(**m) for m in provider_data.get("available_models", [])],
-                can_accept_user_base_url=provider_runtime_config.get("type") == "openai_compatible_server"
+                can_accept_user_base_url=provider_runtime_config.get("type") == "openai_compatible"
             )
         )
     return response_providers
-
-# In app/main.py
 
 @app.get("/api/me/llm-settings", response_model=models.UserLLMSettingsResponse, tags=["User Account Management", "LLM Configuration"])
 async def get_user_llm_settings(
@@ -775,14 +772,11 @@ async def get_user_llm_settings(
         if provider_id and settings["selected_llm_model_id"]:
             provider_config_details = config.get_provider_config(provider_id)
             if provider_config_details:
-                provider_type_needs_key = provider_id in config.PROVIDERS_TYPICALLY_USING_API_KEYS
-                if not provider_type_needs_key:
+                provider_needs_key = provider_id in config.PROVIDERS_TYPICALLY_USING_API_KEYS
+                if not provider_needs_key:
                     is_ready = True
-                else:
-                    api_key_env_var = provider_config_details.get("api_key_env_var_name")
-                    is_system_key_set = bool(api_key_env_var and os.getenv(api_key_env_var))
-                    if has_key or is_system_key_set:
-                        is_ready = True
+                elif has_key: # Provider needs a key, and the user has one.
+                    is_ready = True
 
         return models.UserLLMSettingsResponse(
             selected_llm_provider_id=settings["selected_llm_provider_id"],
@@ -850,32 +844,25 @@ async def get_chat_messages_for_session(
     try:
         conn = database.get_db_connection()
         cursor = conn.cursor()
+        
         cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user_id))
         if not cursor.fetchone():
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
         
         cursor.execute("SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC", (session_id,))
+        messages_rows = cursor.fetchall()
         
         messages_to_return = []
-        rows = cursor.fetchall()
-        for row in rows:
+        for row in messages_rows:
             msg_dict = dict(row)
-            project_data_for_model = None 
-
-            # If the message content might contain file blocks, parse them
-            if msg_dict.get("content"):
-                parsed_files = project_utils.parse_file_blocks(msg_dict["content"])
-                if parsed_files:
-                    # Construct the project_data dictionary that the Pydantic model expects
-                    project_data_for_model = {
-                        "name": f"Project from message {msg_dict['id']}", # A placeholder name
-                        "files": parsed_files
-                    }
             
-            # Add the key for Pydantic validation, even if it's None
-            msg_dict["project_data"] = project_data_for_model
+            cursor.execute("SELECT path, content, language FROM message_files WHERE message_id = ?", (msg_dict['id'],))
+            files_rows = cursor.fetchall()
+            
+            msg_dict["files"] = [dict(file_row) for file_row in files_rows] if files_rows else None
             
             messages_to_return.append(models.MessageItem(**msg_dict))
+            
         return messages_to_return
 
     finally:
@@ -988,34 +975,85 @@ def _get_session_participants_logic(session_id: str, user_id: int) -> Optional[L
     finally:
         if conn: conn.close()
 
-def _get_session_participants_logic(session_id: str, user_id: int) -> Optional[List[models.UserResponseModel]]:
+def _save_user_message_sync(session_id: str, user_id: int, user_name: str, content: str, turn_id: int, reply_to_id: Optional[int]) -> Optional[Dict[str, Any]]:
+    """A synchronous function to save a user message, designed to be run in a thread."""
     conn = None
     try:
         conn = database.get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user_id))
-        if not cursor.fetchone():
-            return None
-        
-        # This query now filters out bots AND any user named "AI Assistant"
         cursor.execute(
-            """SELECT u.id, u.name, u.email 
-               FROM users u JOIN session_participants sp ON u.id = sp.user_id 
-               WHERE sp.session_id = ? AND u.is_bot = FALSE AND u.name != 'AI Assistant'
-               ORDER BY u.name""",
-            (session_id,)
+            """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, user_id, user_name, 'user', content, turn_id, reply_to_id)
         )
-        participants = [dict(row) for row in cursor.fetchall()]
-        
-        participants = _generate_unique_initials(participants)
-        for i, p in enumerate(participants):
-            p['color'] = PARTICIPANT_COLORS[p['id'] % len(PARTICIPANT_COLORS)]
-
-        return [models.UserResponseModel(**p) for p in participants]
-    except sqlite3.Error:
+        message_id = cursor.lastrowid
+        conn.commit()
+        cursor.execute("SELECT * FROM chat_messages WHERE id = ?", (message_id,))
+        new_msg_row = cursor.fetchone()
+        return dict(new_msg_row) if new_msg_row else None
+    except sqlite3.Error as e:
+        traceback.print_exc()
         return None
     finally:
-        if conn: conn.close()
+        if conn:
+            conn.close()
+
+async def handle_chat_message(
+        session_id: str,
+        client_id: str,
+        user: Dict[str, Any],
+        payload: Dict[str, Any],
+        websocket: WebSocket
+    ):
+        print(f"[HANDLER / {client_id}] handle_chat_message started for user '{user.get('name')}'")
+        user_id = user.get('id')
+        user_name = user.get('name')
+        user_input_raw = payload.get("user_input")
+        turn_id = payload.get("turn_id")
+        recipient_ids = payload.get("recipient_ids", [])
+        reply_to_id = payload.get("reply_to_id")
+    
+        new_msg_dict = await asyncio.to_thread(
+            _save_user_message_sync,
+            session_id, user_id, user_name, user_input_raw, turn_id, reply_to_id
+        )
+    
+        if not new_msg_dict:
+            print(f"[HANDLER / {client_id}] ERROR: Failed to save user message to database.")
+            return
+    
+        new_msg_dict["files"] = None
+        current_participants = _get_session_participants_logic(session_id, user_id)
+        sender_info = next((p for p in current_participants if p.id == user_id), None)
+    
+        message_model = models.MessageItem(**new_msg_dict)
+        if sender_info:
+            message_model.sender_color = sender_info.color
+    
+        await state.broadcast(
+            session_id,
+            {"type": "new_message", "payload": message_model.model_dump()},
+            exclude_websocket=websocket
+        )
+        
+        print(f"[HANDLER / {client_id}] Checking recipients: {recipient_ids}")
+    
+        if any(isinstance(recipient, str) and recipient.upper() == 'AI' for recipient in recipient_ids):
+            print(f"[HANDLER / {client_id}] AI is a recipient. Invoking LLM for turn_id {turn_id}.")
+            stream_id = f"{session_id}-{client_id}-{turn_id}"
+            
+            asyncio.create_task(
+                llm.invoke_llm_for_session(
+                    session_id=session_id,
+                    websocket=websocket,
+                    user_id=user_id,
+                    user_name=user_name,
+                    user_input_raw=user_input_raw,
+                    turn_id=turn_id,
+                    stream_id=stream_id,
+                    reply_to_message_id=reply_to_id
+                )
+            )
 
 @app.websocket("/ws/{session_id_ws}/{client_js_id}")
 async def websocket_endpoint(
@@ -1029,154 +1067,138 @@ async def websocket_endpoint(
         return
     
     current_ws_user = await auth.get_user_by_session_token_internal(session_token_from_cookie)
-    if not current_ws_user:
+    if not current_ws_user or not current_ws_user.get('id'):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     
-    user_id = current_ws_user.get('id')
-    user_name = current_ws_user.get('name')
-    if not user_id:
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+    user_id = current_ws_user['id']
+    if not _get_session_participants_logic(session_id_ws, user_id):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    participants = _get_session_participants_logic(session_id_ws, user_id)
-    if participants is None:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-    
     await websocket.accept()
-    await state.connect(session_id_ws, websocket)
+    
+    # Create a queue and connection object for this client
+    queue = asyncio.Queue()
+    connection = state.Connection(websocket=websocket, queue=queue)
+    await state.connect(session_id_ws, connection)
 
-    async def broadcast_participants():
-        live_participants = _get_session_participants_logic(session_id_ws, user_id)
-        if live_participants is not None:
-            await state.broadcast(session_id_ws, {
-                "type": "participants_update",
-                "payload": [p.model_dump() for p in live_participants]
-            }, exclude_websocket=websocket)
+    async def reader(ws: WebSocket, q: asyncio.Queue):
+        """Handles receiving messages from the client."""
+        try:
+            while True:
+                received_data = await ws.receive_text()
+                print(f"[WS-READER / {client_js_id}] Received raw data: {received_data}")
+                
+                message_data = json.loads(received_data)
+                message_type = message_data.get("type")
+                payload = message_data.get("payload")
 
-    await broadcast_participants()
+                print(f"[WS-READER / {client_js_id}] Parsed message type: '{message_type}'")
+
+                if message_type == "chat_message" and payload:
+                    print(f"[WS-READER / {client_js_id}] Identified 'chat_message', creating task...")
+                    asyncio.create_task(handle_chat_message(
+                        session_id_ws, client_js_id, current_ws_user, payload, websocket
+                    ))
+                
+                elif message_type == "user_typing" and payload is not None:
+                    current_participants = _get_session_participants_logic(session_id_ws, user_id)
+                    sender_info = next((p for p in current_participants if p.id == user_id), None)
+                    sender_color = sender_info.color if sender_info else "#E5E7EB"
+                    await state.broadcast(
+                        session_id_ws,
+                        {"type": "participant_typing", "payload": {"user_id": user_id, "user_name": current_ws_user.get('name'), "is_typing": payload.get("is_typing", False), "color": sender_color}},
+                        exclude_websocket=websocket
+                    )
+
+                elif message_type in ["run_code", "stop_code", "code_input", "save_code_content", "save_code_result"]:
+                    asyncio.create_task(handle_code_related_message(
+                        message_type, payload, websocket, client_js_id, session_id_ws
+                    ))
+                else:
+                    print(f"[WS-READER / {client_js_id}] Received unhandled message type: '{message_type}'")
+
+        except WebSocketDisconnect:
+            print(f"Reader task for client {client_js_id} disconnected.")
+        except Exception as e:
+            print(f"Error in reader task for client {client_js_id}: {e}")
+            traceback.print_exc()
+
+    async def writer(ws: WebSocket, q: asyncio.Queue):
+        """Handles sending messages from the queue to the client."""
+        try:
+            while True:
+                message = await q.get()
+                await ws.send_json(message)
+                q.task_done()
+        except WebSocketDisconnect:
+            print(f"Writer task for client {client_js_id} disconnected.")
+        except Exception as e:
+            print(f"Error in writer task for client {client_js_id}: {e}")
+            traceback.print_exc()
+
+    # Run reader and writer tasks concurrently
+    reader_task = asyncio.create_task(reader(websocket, queue))
+    writer_task = asyncio.create_task(writer(websocket, queue))
     
     try:
-        while True:
-            received_data = await websocket.receive_text()
-            message_data = json.loads(received_data)
-            message_type = message_data.get("type")
-            payload = message_data.get("payload")
-
-            if message_type == "chat_message" and payload:
-                user_input_raw = payload.get("user_input")
-                turn_id = payload.get("turn_id")
-                recipient_ids = payload.get("recipient_ids", [])
-                reply_to_id = payload.get("reply_to_id")
-                
-                db_conn = database.get_db_connection()
-                cursor = db_conn.cursor()
-                cursor.execute(
-                    """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, client_id_temp, turn_id, reply_to_message_id, timestamp) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'utc'))""",
-                    (session_id_ws, user_id, user_name, 'user', user_input_raw, client_js_id, turn_id, reply_to_id)
-                )
-                message_id = cursor.lastrowid
-                db_conn.commit()
-                cursor.execute("SELECT * FROM chat_messages WHERE id = ?", (message_id,))
-                new_msg_row = cursor.fetchone()
-                db_conn.close()
-
-                msg_dict = dict(new_msg_row)
-                msg_dict["project_data"] = None
-
-                current_participants = _get_session_participants_logic(session_id_ws, user_id)
-                sender_info = next((p for p in current_participants if p.id == user_id), None)
-
-                message_model = models.MessageItem(**msg_dict)
-                if sender_info:
-                    message_model.sender_color = sender_info.color
-
-                await state.broadcast(
-                    session_id_ws,
-                    {"type": "new_message", "payload": message_model.model_dump()},
-                    exclude_websocket=websocket
-                )
-
-                if any(recipient.upper() in ['AI', 'A'] for recipient in recipient_ids):
-                    stream_id = f"{session_id_ws}-{client_js_id}-{turn_id}"
-                    asyncio.create_task(
-                        llm.invoke_llm_for_session(
-                            session_id=session_id_ws,
-                            websocket=websocket,
-                            user_id=user_id,
-                            user_input_raw=user_input_raw,
-                            turn_id=turn_id,
-                            stream_id=stream_id,
-                            reply_to_message_id=reply_to_id
-                        )
-                    )
-            
-            elif message_type == "user_typing" and payload is not None:
-                await state.broadcast(
-                    session_id_ws,
-                    {"type": "participant_typing", "payload": {"user_id": user_id, "user_name": user_name, "is_typing": payload.get("is_typing", False)}},
-                    exclude_websocket=websocket
-                )
-
-            elif message_type == "run_code" and payload:
-                project_data = payload.get("project_data")
-                project_id = payload.get("project_id")
-                language = payload.get("language")
-
-                if not all([project_data, project_id, language]):
-                    continue
-
-                project_path = project_utils.create_project_directory_and_files(project_data)
-                if not project_path:
-                    await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Failed to create project files."})
-                    continue
-
-                lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
-                if not lang_config:
-                    await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Language '{language}' is not configured."})
-                    continue
-                
-                run_script = next((f for f in project_data.get("files", []) if f["path"].endswith('run.sh')), None)
-                if not run_script:
-                        await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Could not find run.sh in project."})
-                        continue
-
-                asyncio.create_task(docker_utils.run_code_in_docker(
-                    websocket=websocket,
-                    client_id=client_js_id,
-                    project_id=project_id,
-                    project_path=project_path,
-                    run_command="sh run.sh",
-                    lang_config=lang_config
-                ))
-            
-            elif message_type == "stop_code" and payload:
-                project_id = payload.get("project_id")
-                if project_id:
-                    await docker_utils.stop_container(project_id)
-
-            elif message_type == "code_input" and payload:
-                await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
-            
-            elif message_type == "save_code_content" and payload:
-                database.save_edited_code_content(
-                    payload['session_id'], payload['code_block_id'], payload['language'], payload['code_content']
-                )
-                state.remove_memory_for_client(payload['session_id'])
-            
-            elif message_type == "save_code_result" and payload:
-                payload['session_id'] = session_id_ws
-                database.save_code_execution_result(**payload)
-                state.remove_memory_for_client(session_id_ws)
-
-    except WebSocketDisconnect:
-        print(f"Client {client_js_id} (User {user_id}) disconnected.")
+        await asyncio.gather(reader_task, writer_task)
+    except Exception as e:
+        print(f"WebSocket endpoint error for client {client_js_id}: {e}")
     finally:
-        await state.disconnect(session_id_ws, websocket)
-        await broadcast_participants()
+        print(f"Client {client_js_id} (User {user_id}) connection closing.")
+        reader_task.cancel()
+        writer_task.cancel()
+        await state.disconnect(session_id_ws, connection)
         await docker_utils.cleanup_client_containers(client_js_id)
+
+async def handle_code_related_message(message_type: str, payload: dict, websocket: WebSocket, client_id: str, session_id: str):
+    """Helper to process code-related messages to avoid cluttering the reader."""
+    if message_type == "run_code" and payload:
+        project_data = payload.get("project_data")
+        project_id = payload.get("project_id")
+        language = payload.get("language")
+        if not all([project_data, project_id, language]): return
+
+        project_path = await asyncio.to_thread(project_utils.create_project_directory_and_files, project_data)
+        if not project_path:
+            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Failed to create project files."})
+            return
+        
+        lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
+        if not lang_config:
+            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Language '{language}' is not configured."})
+            return
+        
+        run_script = next((f for f in project_data.get("files", []) if f["path"].endswith('run.sh')), None)
+        if not run_script:
+            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Could not find run.sh in project."})
+            return
+
+        await docker_utils.run_code_in_docker(
+            websocket=websocket, client_id=client_id, project_id=project_id,
+            project_path=project_path, run_command="sh run.sh", lang_config=lang_config
+        )
+    
+    elif message_type == "stop_code" and payload:
+        if project_id := payload.get("project_id"):
+            await docker_utils.stop_container(project_id)
+
+    elif message_type == "code_input" and payload:
+        await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
+    
+    elif message_type == "save_code_content" and payload:
+        await asyncio.to_thread(
+            database.save_edited_code_content,
+            payload['session_id'], payload['code_block_id'], payload['language'], payload['code_content']
+        )
+        state.remove_memory_for_client(payload['session_id'])
+    
+    elif message_type == "save_code_result" and payload:
+        payload['session_id'] = session_id
+        await asyncio.to_thread(database.save_code_execution_result, **payload)
+        state.remove_memory_for_client(session_id)
 
 @app.get("/api/sessions", response_model=List[models.SessionResponseModel], tags=["Sessions"])
 async def get_user_sessions(
@@ -1334,57 +1356,6 @@ async def delete_session_by_host(
     finally:
         if conn: conn.close()
 
-@app.delete("/api/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Sessions"])
-async def delete_session_route(
-    request: Request,
-    session_id: str = FastApiPath(..., description="The ID of the session to leave or delete."),
-    user: Dict[str, Any] = Depends(auth.get_current_active_user),
-    csrf_protect: CsrfProtect = Depends()
-):
-    await csrf_protect.validate_csrf(request)
-    user_id = user.get('id')
-    conn = None
-    try:
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT host_user_id, access_level FROM sessions WHERE id = ? AND is_active = 1", (session_id,))
-        session = cursor.fetchone()
-
-        if not session:
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-        is_host = (session["host_user_id"] == user_id)
-
-        if is_host:
-            # A host cannot leave their own session via this method. 
-            # This endpoint is now only for "leaving" as a participant or deleting a private session.
-            # Deleting public/protected sessions will be a separate action.
-            if session["access_level"] == 'private':
-                cursor.execute("UPDATE sessions SET is_active = 0 WHERE id = ?", (session_id,))
-                print(f"---- SERVER LOG: Private session '{session_id}' deleted by host '{user_id}'.")
-            else:
-                # A host trying to "leave" a public session does nothing here.
-                # This action will be handled on the client-side as "hide".
-                print(f"---- SERVER LOG: Host '{user_id}' attempted to leave public/protected session '{session_id}'. Action ignored on backend.")
-                pass
-        else:
-            # If the user is not the host, they are "leaving" the session.
-            cursor.execute(
-                "DELETE FROM session_participants WHERE session_id = ? AND user_id = ?",
-                (session_id, user_id)
-            )
-            print(f"---- SERVER LOG: User '{user_id}' left session '{session_id}'.")
-
-        conn.commit()
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    except sqlite3.Error as e:
-        if conn: conn.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error while processing your request.")
-    finally:
-        if conn: conn.close()
-
 @app.on_event("startup")
 async def startup_event():
     print("Application startup: Initializing database...")
@@ -1393,6 +1364,20 @@ async def startup_event():
         db_parent_dir.mkdir(parents=True, exist_ok=True)
     database.init_db()
     print("Database initialization check complete.")
+
+    # ADD THIS LINE
+    llm.start_llm_worker()
+
+    try:
+        encryption_utils._get_fernet()
+    except ValueError as e:
+        print(f"STARTUP WARNING: Could not pre-initialize Fernet. {e}")
+        pass
+
+@app.on_event("shutdown")
+def shutdown_event():
+    print("Application shutdown: Stopping LLM worker...")
+    llm.shutdown_llm_worker()
 
 if config.STATIC_DIR and config.STATIC_DIR.is_dir():
     dist_dir = config.STATIC_DIR / "dist"

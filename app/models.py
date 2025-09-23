@@ -122,6 +122,7 @@ class MessageItem(BaseModel):
     sender_initials: Optional[str] = None
     sender_color: Optional[str] = None
     files: Optional[List[FileItem]] = None # This replaces the old project_data
+    prompting_user_id: Optional[int] = None
 
 class MessageListContainerResponse(BaseModel):
     messages: List[MessageItem]

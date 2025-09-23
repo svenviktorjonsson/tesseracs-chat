@@ -365,11 +365,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    /**
-     * Updates provider-specific fields (API key, base URL) based on the selected provider.
-     * @param {string} providerId The ID of the selected provider.
-     * @param {object} userSettings The current user's LLM settings.
-     */
     function updateProviderSpecificFields(providerId, userSettings = {}) {
         const selectedProvider = availableProvidersData.find(p => p.id === providerId);
 
@@ -380,7 +375,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         llmBaseUrlGroup.setAttribute('aria-hidden', 'true');
 
         // Reset fields and status messages
-        llmProviderStatus.textContent = providerId ? "Loading provider details..." : "Select a provider to see more options.";
+        llmProviderStatus.textContent = providerId ? "" : "Select a provider to see options.";
         llmApiKeyInput.value = '';
         llmApiKeyInput.placeholder = '';
         llmApiKeyStatus.textContent = '';
@@ -388,56 +383,39 @@ document.addEventListener('DOMContentLoaded', async () => {
         llmBaseUrlInput.placeholder = '';
 
         if (selectedProvider) {
-            // API Key field visibility and status
-            if (selectedProvider.can_accept_user_api_key) { // Check if provider *can* accept a user key
+            // --- API Key Field Logic ---
+            if (selectedProvider.can_accept_user_api_key) {
                 llmApiKeyGroup.style.display = 'block';
                 llmApiKeyGroup.setAttribute('aria-hidden', 'false');
-                if (userSettings.has_user_api_key && selectedProvider.id === userSettings.selected_llm_provider_id) {
+                
+                const hasKeyForThisProvider = userSettings.has_user_api_key && (providerId === userSettings.selected_llm_provider_id);
+
+                if (hasKeyForThisProvider) {
                     llmApiKeyInput.placeholder = "•••••••• (A key is currently saved)";
-                    llmApiKeyStatus.textContent = "A key is saved. Edit to change, or clear field and save to remove your key.";
-                } else if (selectedProvider.is_system_configured && selectedProvider.needs_api_key_from_user === false) {
-                    // System has a key, and user doesn't strictly need to provide one, but can.
-                    llmApiKeyInput.placeholder = "API Key (Optional - System key available)";
-                    llmApiKeyStatus.textContent = "A system key is configured. You can provide your own to override it for your account.";
-                } else if (selectedProvider.needs_api_key_from_user === true) {
+                    llmApiKeyStatus.textContent = "Enter a new key to change it, or clear this field and save to remove your key.";
+                } else {
                     llmApiKeyInput.placeholder = "API Key (Required)";
-                    llmApiKeyStatus.textContent = "Please enter your API key for this provider.";
-                } else { // Can accept, but not strictly required and no system key (e.g. some local models)
-                    llmApiKeyInput.placeholder = "API Key (Optional)";
-                    llmApiKeyStatus.textContent = "You can optionally provide an API key.";
+                    llmApiKeyStatus.textContent = "Please enter your personal API key for this provider.";
                 }
             }
 
-            // Base URL field visibility and status
-            if (selectedProvider.can_accept_user_base_url) { // Check if provider *can* accept a user base URL
+            // --- Base URL Field Logic ---
+            if (selectedProvider.can_accept_user_base_url) {
                 llmBaseUrlGroup.style.display = 'block';
                 llmBaseUrlGroup.setAttribute('aria-hidden', 'false');
-                if (selectedProvider.id === userSettings.selected_llm_provider_id && userSettings.selected_llm_base_url) {
+                if (providerId === userSettings.selected_llm_provider_id && userSettings.selected_llm_base_url) {
                     llmBaseUrlInput.value = userSettings.selected_llm_base_url;
                 }
-                // Provide more specific placeholders based on provider type if available
-                if (selectedProvider.type === 'ollama') {
-                    llmBaseUrlInput.placeholder = "e.g., http://localhost:11434 (uses system default if empty)";
-                } else if (selectedProvider.type === 'openai_compatible_server') {
-                    llmBaseUrlInput.placeholder = "e.g., https://api.example.com/v1 (Required if no system default)";
-                } else {
-                    llmBaseUrlInput.placeholder = "Custom Base URL (Optional)";
-                }
+                llmBaseUrlInput.placeholder = "e.g., https://api.example.com/v1";
             }
-
-            // General provider status message
-            if (!selectedProvider.is_system_configured && selectedProvider.needs_api_key_from_user === true) {
-                llmProviderStatus.textContent = "This provider requires configuration (e.g., an API key).";
-            } else if (selectedProvider.is_system_configured && selectedProvider.needs_api_key_from_user === false) {
-                llmProviderStatus.textContent = "This provider is system-configured and ready to use.";
-            } else if (selectedProvider.can_accept_user_api_key || selectedProvider.can_accept_user_base_url) {
-                llmProviderStatus.textContent = "This provider can be customized with your own API key or base URL.";
+            
+            // --- Provider Status Text ---
+            if (selectedProvider.needs_api_key_from_user) {
+                llmProviderStatus.textContent = "This provider requires a personal API key.";
             } else {
                 llmProviderStatus.textContent = "This provider does not require additional configuration.";
             }
 
-        } else if (providerId === "") { // "-- Select Provider --" is chosen
-             llmProviderStatus.textContent = "Select a provider to see configuration options.";
         }
     }
 

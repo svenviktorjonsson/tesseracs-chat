@@ -68,18 +68,16 @@ let websocket;
 const clientId = `web-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 let currentTurnId = 0;
 let projectDataCache = {};
-
-// --- State Variables ---
-let supportedLanguagesConfig = {};
-
-// Turn-specific state, reset by resetStreamingState()
-let streamingState = {};
 let currentAiTurnContainer = null;
 let currentAnswerElement = null;
 let currentCodeBlocksArea = null;
-let firstAnswerTokenReceived = false;
-let activeStreamingCodeBlocks = new Map();
 let streamingCodeBlockCounter = 0;
+let currentStreamingAnswerElement = null;
+let currentStreamingFile = {
+    container: null,
+    codeElement: null,
+    path: null
+};
 
 
 function escapeHTML(str) {
@@ -171,21 +169,6 @@ function initializeCodeBlockHistory(blockId, initialContent) {
     }
 }
 
-// --- Configuration Loading ---
-async function loadLanguagesConfig() {
-    try {
-        const response = await fetch('/static/languages.json');
-        if (!response.ok) {
-            console.error('Failed to fetch languages.json');
-            return;
-        }
-        supportedLanguagesConfig = await response.json();
-    } catch (error) {
-        console.error('Error loading languages.json:', error);
-    }
-}
-
-
 async function initializeCurrentUser() {
     try {
         const response = await fetch('/api/me');
@@ -208,7 +191,6 @@ async function initializeCurrentUser() {
     }
 }
 
-// --- Session Management ---
 function getSessionIdFromPath() {
     const pathName = window.location.pathname;
     const pathParts = pathName.split('/');
@@ -226,7 +208,6 @@ function getSessionIdFromPath() {
     return null;
 }
 
-// --- UI Helper Functions ---
 function scrollToBottom(behavior = 'auto') {
     const isNearBottom = chatHistory.scrollHeight - chatHistory.scrollTop - chatHistory.clientHeight < 100;
     if (isNearBottom) {
@@ -259,7 +240,6 @@ function setInputDisabledState(inputsDisabled, aiResponding) {
         }
     }
 }
-
 
 function handleTypingIndicators(payload) {
     const { user_id, user_name, is_typing, color } = payload;
@@ -317,122 +297,61 @@ function addUserMessage(text) {
     setTimeout(() => scrollToBottom('smooth'), 50);
 }
 
-function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
-    if (!parentElement || !msg) return;
+function updateParticipantListUI(active_user_id = null) {
+    const participants = document.querySelectorAll('#participant-list li[id^="participant-"]');
+    participants.forEach(p => {
+        const nameSpan = p.querySelector('.participant-name-span');
+        if (nameSpan) {
+            const oldIndicator = nameSpan.querySelector('.ai-indicator');
+            if(oldIndicator) oldIndicator.remove();
 
-    const senderType = msg.sender_type;
-    const senderName = msg.sender_name || (senderType === 'ai' ? 'AI Assistant' : 'User');
-    const currentUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
-    const isCurrentUser = msg.user_id === currentUserId;
-
-    if (senderType === 'ai') {
-        const aiTurnContainer = document.createElement('div');
-        aiTurnContainer.className = 'ai-turn-container';
-        if (msg.turn_id) aiTurnContainer.dataset.turnId = msg.turn_id;
-        
-        // 1. Render the conversational part, if it exists
-        if (msg.content && msg.content.trim().length > 0) {
-            const messageBubble = document.createElement('div');
-            messageBubble.className = 'message ai-message';
-            messageBubble.style.backgroundColor = window.participantInfo?.['AI']?.color || '#dbeafe';
-
-            const senderElem = document.createElement('p');
-            senderElem.className = 'font-semibold text-sm mb-1 text-gray-800 italic';
-            senderElem.textContent = 'AI Assistant';
-            messageBubble.appendChild(senderElem);
-
-            const contentElem = document.createElement('div');
-            contentElem.className = 'text-gray-800 text-sm message-content';
-            
-            // Use our simplified helper to render Markdown and KaTeX
-            parseAndRenderAiContent(msg.content, contentElem);
-            
-            messageBubble.appendChild(contentElem);
-            aiTurnContainer.appendChild(messageBubble);
-        }
-
-        // 2. Render the file blocks from the structured `files` list, if they exist
-        if (msg.files && msg.files.length > 0) {
-            const codeBlocksArea = document.createElement('div');
-            codeBlocksArea.className = 'code-blocks-area';
-
-            msg.files.forEach((file, index) => {
-                const codeBlockIndex = index + 1;
-                const isRunnable = file.path.endsWith('run.sh');
-                const blockId = `code-block-turn${msg.turn_id}-${codeBlockIndex}`;
-                const finalCodeContent = editedCodeBlocks[blockId] || file.content;
-
-                const block = createCodeBlock(
-                    file.language,
-                    finalCodeContent,
-                    file.content, // original content for dataset
-                    msg.turn_id,
-                    codeBlockIndex,
-                    codeBlocksArea,
-                    isRunnable
-                );
-                block.querySelector('.block-title .title-text').textContent = file.path;
-                initializeCodeBlockHistory(blockId, finalCodeContent);
-            });
-            aiTurnContainer.appendChild(codeBlocksArea);
-        }
-
-        parentElement.appendChild(aiTurnContainer);
-
-    } else if (senderType === 'user' || senderType === 'system') {
-        // This logic for user messages remains the same
-        const messageDiv = document.createElement('div');
-        messageDiv.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
-        messageDiv.setAttribute('data-sender', senderType);
-        if (msg.id) messageDiv.setAttribute('data-message-id', String(msg.id));
-
-        if (senderType === 'user') {
-            if (isCurrentUser) {
-                messageDiv.classList.add('self-end', 'ml-auto');
-            } else {
-                messageDiv.classList.add('self-start', 'mr-auto');
+            if (p.id === `participant-${active_user_id}`) {
+                const indicator = document.createElement('span');
+                indicator.className = 'ai-indicator text-xs text-gray-500 font-semibold ml-1';
+                indicator.textContent = '(+AI)';
+                nameSpan.appendChild(indicator);
             }
-            let bubbleColor = msg.sender_color;
-            if (!bubbleColor && window.participantInfo && msg.user_id) {
-                const participant = window.participantInfo[msg.user_id];
-                if (participant) bubbleColor = participant.color;
-            }
-            if (bubbleColor) {
-                messageDiv.style.backgroundColor = bubbleColor;
-            } else {
-                messageDiv.classList.add('bg-gray-200');
-            }
-        } else {
-             messageDiv.classList.add('bg-slate-200', 'self-center', 'mx-auto', 'text-xs', 'italic');
         }
+    });
+}
 
-        const senderElem = document.createElement('p');
-        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800');
-        senderElem.textContent = senderName;
-        messageDiv.appendChild(senderElem);
 
-        const contentElem = document.createElement('div');
-        contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
-        const cleanContent = (msg.content || '').replace(/@\w+/g, '').trim();
-        contentElem.innerHTML = marked.parse(cleanContent);
-        messageDiv.appendChild(contentElem);
-        parentElement.appendChild(messageDiv);
+
+function handleEndAnswerStream(payload) {
+    if (currentStreamingAnswerElement && currentStreamingAnswerElement.dataset.rawContent) {
+        renderMarkdownAndKatex(currentStreamingAnswerElement.dataset.rawContent, currentStreamingAnswerElement);
+    }
+    currentStreamingAnswerElement = null;
+    updateParticipantListUI(null);
+}
+
+function handleEndFileStream(payload) {
+    if (currentStreamingFile && currentStreamingFile.codeElement) {
+        Prism.highlightElement(currentStreamingFile.codeElement);
+    }
+    currentStreamingFile = { container: null, codeElement: null, path: null, fileData: null };
+    
+    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${payload.turn_id}']`);
+    const fileBlocks = turnContainer ? turnContainer.querySelectorAll('.block-container') : [];
+    const projectData = projectDataCache[payload.turn_id];
+
+    if (projectData && fileBlocks.length === projectData.files.length) {
+         updateParticipantListUI(null);
     }
 }
 
-// REPLACE the old function with this one
 function finalizeTurnOnErrorOrClose() {
     console.log("[STREAM] Finalizing turn.");
     setInputDisabledState(false, false);
     if (messageInput) messageInput.focus();
 
-    // Reset the new streaming state variables to their initial state
     currentStreamingAnswerElement = null;
     currentStreamingFile = {
         container: null,
         codeElement: null,
         path: null
     };
+    updateParticipantListUI(null);
 }
 
 function addSystemMessage(text) {
@@ -457,17 +376,24 @@ function addErrorMessage(text) {
     setTimeout(() => scrollToBottom('smooth'), 50);
 }
 
-
-function parseAndRenderAiContent(contentString, targetElement) {
-    if (!contentString || !targetElement) return;
+function renderMarkdownAndKatex(contentString, targetElement) {
+    if (typeof contentString !== 'string' || !targetElement) {
+        if (targetElement) targetElement.innerHTML = "";
+        return;
+    }
 
     const storedKatex = {};
     let katexPlaceholderIndex = 0;
-    const katexRegexGlobal = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$((?:\\\$|[^$])+?)(?<!\\)\$/g;
+    
+    // --- CHANGE START: Updated Regex to include \[...\] and \(...\) ---
+    const katexRegexGlobal = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\\\[([\s\S]+?)(?<!\\)\\\]|(?<!\\)\$((?:\\\$|[^$])+?)(?<!\\)\$|(?<!\\)\\\(([\s\S]+?)(?<!\\)\\\)/g;
 
-    let textForMarkdownParsing = contentString.replace(katexRegexGlobal, (match, displayContent, inlineContent) => {
-        const isDisplayMode = !!displayContent;
-        const katexString = displayContent || inlineContent;
+    let textForMarkdownParsing = contentString.replace(katexRegexGlobal, (match, displayDollars, displayBrackets, inlineDollars, inlineParens) => {
+        // --- CHANGE START: Updated logic to handle new capture groups ---
+        const isDisplayMode = !!(displayDollars || displayBrackets);
+        const katexString = (displayDollars || displayBrackets || inlineDollars || inlineParens).trim();
+        // --- CHANGE END ---
+
         const cleanedKatexString = katexString.replace(/\\([$])/g, '$1');
         let katexHtml = '';
         try {
@@ -477,131 +403,79 @@ function parseAndRenderAiContent(contentString, targetElement) {
         } catch (e) {
             katexHtml = `<span class="katex-error" title="${escapeHTML(e.toString())}">${escapeHTML(match)}</span>`;
         }
-        const placeholderId = `%%__KATEX_PLACEHOLDER_${katexPlaceholderIndex++}__%%`;
+        
+        const placeholderId = `MPLD3KATEXPLACEHOLDER${katexPlaceholderIndex++}`;
+
         storedKatex[placeholderId] = katexHtml;
         return placeholderId;
     });
 
-    targetElement.innerHTML = marked.parse(textForMarkdownParsing);
+    let html = marked.parse(textForMarkdownParsing);
 
-    if (Object.keys(storedKatex).length > 0) {
-        const walker = document.createTreeWalker(targetElement, NodeFilter.SHOW_TEXT, null, false);
-        let node;
-        const textNodesToModify = [];
-        while (node = walker.nextNode()) {
-            if (node.nodeValue && node.nodeValue.includes('%%__KATEX_PLACEHOLDER_')) {
-                textNodesToModify.push(node);
-            }
-        }
-        textNodesToModify.forEach(textNode => {
-            let currentTextValue = textNode.nodeValue;
-            const parent = textNode.parentNode;
-            if (!parent) return;
-            const fragment = document.createDocumentFragment();
-            let lastSplitEnd = 0;
-            const placeholderScanRegex = /(%%__KATEX_PLACEHOLDER_\d+__%%)/g;
-            let placeholderMatch;
-            while((placeholderMatch = placeholderScanRegex.exec(currentTextValue)) !== null) {
-                const placeholderId = placeholderMatch[1];
-                const matchStartIndex = placeholderMatch.index;
-                if (matchStartIndex > lastSplitEnd) {
-                    fragment.appendChild(document.createTextNode(currentTextValue.substring(lastSplitEnd, matchStartIndex)));
-                }
-                if (storedKatex[placeholderId]) {
-                    const katexWrapperSpan = document.createElement('span');
-                    katexWrapperSpan.innerHTML = storedKatex[placeholderId];
-                    fragment.appendChild(katexWrapperSpan.firstChild || katexWrapperSpan);
-                } else {
-                    fragment.appendChild(document.createTextNode(placeholderId));
-                }
-                lastSplitEnd = placeholderScanRegex.lastIndex;
-            }
-            if (lastSplitEnd < currentTextValue.length) {
-                fragment.appendChild(document.createTextNode(currentTextValue.substring(lastSplitEnd)));
-            }
-            parent.replaceChild(fragment, textNode);
-        });
+    for (const placeholderId in storedKatex) {
+        const regex = new RegExp(placeholderId, "g");
+        html = html.replace(regex, storedKatex[placeholderId]);
     }
+
+    targetElement.innerHTML = html;
 }
 
-function updateAllRunButtonStates() {
-    document.querySelectorAll('.run-code-btn').forEach(btn => {
-        const container = btn.closest('.block-container');
-        const lang = container ? container.dataset.language : null;
-        const isExecutable = lang ? supportedLanguagesConfig[lang]?.executable : false;
-
-        if (isExecutable && !btn.disabled) {
-            btn.disabled = false;
-            btn.title = 'Run Code';
-        }
-    });
-}
-
-
-function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isRunnable = false) {
+function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isRunnable = false, promptingUserId = null) {
     if (!codeBlocksAreaElement) {
         console.error("createCodeBlock: Code blocks area element is null!");
         return;
     }
-
     const rawLang = (language || 'plaintext').trim().toLowerCase();
     const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
     const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
     const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
-
     const container = document.createElement('div');
     container.classList.add('block-container');
     container.id = blockId;
     container.dataset.language = canonicalLang;
     container.dataset.originalContent = originalCodeForDataset;
-
     const codeHeader = document.createElement('div');
     codeHeader.classList.add('block-header');
-
+    if (promptingUserId !== null) {
+        const prompterColor = window.participantInfo?.[promptingUserId]?.color || '#dbeafe';
+        const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
+        codeHeader.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
+    }
     const codeButtonsDiv = document.createElement('div');
     codeButtonsDiv.classList.add('block-buttons');
-
     const runStopBtn = document.createElement('button');
     runStopBtn.classList.add('run-code-btn', 'block-action-btn');
     runStopBtn.dataset.status = 'idle';
     runStopBtn.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
     runStopBtn.title = 'Run Project';
     runStopBtn.addEventListener('click', handleRunStopCodeClick);
-    
     if (!isRunnable) {
         runStopBtn.style.display = 'none';
     }
     codeButtonsDiv.appendChild(runStopBtn);
-
     const restoreBtn = document.createElement('button');
     restoreBtn.classList.add('restore-code-btn', 'block-action-btn');
     restoreBtn.textContent = 'Restore';
     restoreBtn.title = 'Restore Original Code';
-
     const toggleCodeBtn = document.createElement('button');
     toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
     toggleCodeBtn.textContent = 'Hide';
     toggleCodeBtn.title = 'Show/Hide Code';
-
     const copyCodeBtn = document.createElement('button');
     copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
     copyCodeBtn.textContent = 'Copy';
     copyCodeBtn.title = 'Copy Code';
-
     codeButtonsDiv.appendChild(restoreBtn);
     codeButtonsDiv.appendChild(toggleCodeBtn);
     codeButtonsDiv.appendChild(copyCodeBtn);
-
     const codeTitle = document.createElement('span');
     codeTitle.classList.add('block-title');
     const titleTextSpan = document.createElement('span');
     titleTextSpan.classList.add('title-text');
     titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${canonicalLang})`;
     codeTitle.appendChild(titleTextSpan);
-
     codeHeader.appendChild(codeButtonsDiv);
     codeHeader.appendChild(codeTitle);
-
     const preElement = document.createElement('pre');
     preElement.classList.add('manual');
     const codeElement = document.createElement('code');
@@ -609,94 +483,19 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
     codeElement.setAttribute('contenteditable', 'true');
     codeElement.setAttribute('spellcheck', 'false');
     codeElement.textContent = codeContent;
-
     preElement.appendChild(codeElement);
     container.appendChild(codeHeader);
     container.appendChild(preElement);
     codeBlocksAreaElement.appendChild(container);
-
     if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-        try {
-            Prism.highlightElement(codeElement);
-        } catch (e) {
-            console.error(`Prism highlight error:`, e);
-        }
+        try { Prism.highlightElement(codeElement); } catch (e) { console.error(`Prism highlight error:`, e); }
     }
-
-    toggleCodeBtn.addEventListener('click', () => {
-        const isHidden = preElement.classList.toggle('hidden');
-        toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide';
-    });
-
-    copyCodeBtn.addEventListener('click', async () => {
-        try {
-            await navigator.clipboard.writeText(codeElement.textContent || '');
-            copyCodeBtn.textContent = 'Copied!';
-            setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500);
-        } catch (err) {
-            console.error('Failed to copy code: ', err);
-        }
-    });
-
-    restoreBtn.addEventListener('click', async () => {
-        const originalContent = container.dataset.originalContent;
-        const sessionId = getSessionIdFromPath();
-        if (!sessionId || !window.csrfTokenRaw) return;
-
-        try {
-            const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${blockId}`, {
-                method: 'DELETE',
-                headers: { 'X-CSRF-Token': window.csrfTokenRaw }
-            });
-
-            if (response.ok) {
-                const cursorPos = getCursorPosition(codeElement);
-                codeElement.textContent = originalContent;
-
-                if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-                    try {
-                        Prism.highlightElement(codeElement);
-                        setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length));
-                    } catch (e) { console.error(`Prism highlight error:`, e); }
-                }
-                saveCodeBlockState(blockId, originalContent);
-            } else {
-                const error = await response.json();
-                alert(`Failed to restore code block: ${error.detail || 'Server error'}`);
-            }
-        } catch (error) {
-            console.error("Error restoring code block:", error);
-            alert("An error occurred while restoring the code block.");
-        }
-    });
-
-    codeElement.addEventListener('keydown', (event) => {
-        handleCodeBlockKeydown(event, blockId);
-    });
-
-    codeElement.addEventListener('blur', () => {
-        const content = codeElement.textContent || '';
-        saveCodeBlockContent(blockId, content);
-    });
-
-    codeElement.addEventListener('input', () => {
-        const cursorPos = getCursorPosition(codeElement);
-        const content = codeElement.textContent || '';
-
-        setTimeout(() => {
-            if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
-                try {
-                    Prism.highlightElement(codeElement);
-                    setCursorPosition(codeElement, cursorPos);
-                } catch (e) {
-                    console.error(`Prism highlight error:`, e);
-                }
-            }
-        }, 10);
-
-        saveCodeBlockState(blockId, content);
-    });
-
+    toggleCodeBtn.addEventListener('click', () => { const isHidden = preElement.classList.toggle('hidden'); toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide'; });
+    copyCodeBtn.addEventListener('click', async () => { try { await navigator.clipboard.writeText(codeElement.textContent || ''); copyCodeBtn.textContent = 'Copied!'; setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500); } catch (err) { console.error('Failed to copy code: ', err); } });
+    restoreBtn.addEventListener('click', async () => { const originalContent = container.dataset.originalContent; const sessionId = getSessionIdFromPath(); if (!sessionId || !window.csrfTokenRaw) return; try { const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${blockId}`, { method: 'DELETE', headers: { 'X-CSRF-Token': window.csrfTokenRaw } }); if (response.ok) { const cursorPos = getCursorPosition(codeElement); codeElement.textContent = originalContent; if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length)); } catch (e) { console.error(`Prism highlight error:`, e); } } saveCodeBlockState(blockId, originalContent); } else { const error = await response.json(); alert(`Failed to restore code block: ${error.detail || 'Server error'}`); } } catch (error) { console.error("Error restoring code block:", error); alert("An error occurred while restoring the code block."); } });
+    codeElement.addEventListener('keydown', (event) => { handleCodeBlockKeydown(event, blockId); });
+    codeElement.addEventListener('blur', () => { const content = codeElement.textContent || ''; saveCodeBlockContent(blockId, content); });
+    codeElement.addEventListener('input', () => { const cursorPos = getCursorPosition(codeElement); const content = codeElement.textContent || ''; setTimeout(() => { if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, cursorPos); } catch (e) { console.error(`Prism highlight error:`, e); } } }, 10); saveCodeBlockState(blockId, content); });
     return container;
 }
 
@@ -802,53 +601,38 @@ function handleStructuredMessage(messageData) {
     }
 }
 
-// Add these two new functions to app/static/script.js
-
-function createOrClearOutputContainer(projectId) {
+function createOrClearOutputContainer(projectId, title, promptingUserId) {
     const outputBlockId = `output-for-${projectId}`;
     let outputContainer = document.getElementById(outputBlockId);
     const codeContainer = document.getElementById(projectId);
-
     if (outputContainer) {
-        // Clear previous output content
         const outputPre = outputContainer.querySelector('.block-output-console pre');
         if (outputPre) outputPre.innerHTML = '';
     } else {
-        // Create the container if it doesn't exist
         outputContainer = document.createElement('div');
         outputContainer.id = outputBlockId;
         outputContainer.className = 'block-container';
-        const blockNumber = projectId.split('-').pop();
-
         const outputHeader = document.createElement('div');
         outputHeader.className = 'block-header';
-        outputHeader.innerHTML = createOutputHeaderHTML(blockNumber);
-        
+        outputHeader.innerHTML = createOutputHeaderHTML(title, promptingUserId);
+        const prompterColor = window.participantInfo?.[promptingUserId]?.color || '#dbeafe';
+        const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
+        outputHeader.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
         const outputConsoleDiv = document.createElement('div');
         outputConsoleDiv.className = 'block-output-console';
         const outputPre = document.createElement('pre');
         outputConsoleDiv.appendChild(outputPre);
-        
         outputContainer.appendChild(outputHeader);
         outputContainer.appendChild(outputConsoleDiv);
-
         if (codeContainer) {
             codeContainer.insertAdjacentElement('afterend', outputContainer);
         } else {
             chatHistory.appendChild(outputContainer);
         }
-
-        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
-            const isHidden = outputConsoleDiv.classList.toggle('hidden');
-            e.target.textContent = isHidden ? 'Show' : 'Hide';
-        });
-        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
-            await navigator.clipboard.writeText(outputPre.textContent || '');
-            e.target.textContent = 'Copied!';
-            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
-        });
+        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = outputConsoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
+        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { await navigator.clipboard.writeText(outputPre.textContent || ''); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
     }
-    outputContainer.style.display = ''; // Make sure it's visible
+    outputContainer.style.display = '';
     return outputContainer;
 }
 
@@ -915,70 +699,56 @@ function saveCodeBlockContent(blockId, content) {
     }));
 }
 
-function createOutputHeaderHTML(blockNumber, statusText = 'Running...', statusClass = 'running') {
+function createOutputHeaderHTML(title, promptingUserId, statusText = 'Running...', statusClass = 'running') {
+    const prompterColor = window.participantInfo?.[promptingUserId]?.color || '#dbeafe';
+    const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
+    const gradient = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
     return `
         <div class="block-buttons">
-            <button class="run-code-btn block-action-btn" style="display: none;">Run</button>
             <button class="toggle-output-btn block-action-btn">Hide</button>
             <button class="copy-output-btn block-action-btn">Copy</button>
         </div>
-        <span class="block-title">Output Block ${blockNumber}</span>
+        <span class="block-title" style="color: #374151;">Output of ${escapeHTML(title)}</span>
         <span class="block-status ${statusClass}">${statusText}</span>
     `;
 }
-
-
 
 async function handleRunStopCodeClick(event) {
     const button = event.currentTarget;
     const container = button.closest('.block-container');
     if (!container) return;
-
     const codeBlockId = container.id;
     const status = button.dataset.status;
-
     if (status === 'running' || status === 'previewing') {
         if (websocket && websocket.readyState === WebSocket.OPEN) {
-            websocket.send(JSON.stringify({
-                type: 'stop_code',
-                payload: { project_id: codeBlockId }
-            }));
+            websocket.send(JSON.stringify({ type: 'stop_code', payload: { project_id: codeBlockId } }));
         }
         return;
     }
-
     const turnIdMatch = codeBlockId.match(/turn(\d+)/);
     const turnId = turnIdMatch ? parseInt(turnIdMatch[1], 10) : null;
     const projectData = turnId ? projectDataCache[turnId] : null;
-
     if (!projectData) {
         alert("Error: Could not find project data for this execution.");
         return;
     }
-    
-    // --- START: NEW LOGIC TO CAPTURE EDITS ---
-    // Create a deep copy of the project data to avoid modifying the cache directly
     const updatedProjectData = JSON.parse(JSON.stringify(projectData));
-
-    // Find all code blocks for the current turn
     const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turnId}']`);
     if (turnContainer) {
         updatedProjectData.files.forEach(file => {
-            // Find the corresponding code block UI element by its title (file path)
-            const codeBlock = Array.from(turnContainer.querySelectorAll('.block-container .block-title .title-text'))
-                                 .find(span => span.textContent === file.path);
-            if (codeBlock) {
-                const codeElement = codeBlock.closest('.block-container').querySelector('code');
+            const allTitleElements = turnContainer.querySelectorAll('.block-title .title-text');
+            const codeBlockTitle = Array.from(allTitleElements).find(span => span.textContent === file.path);
+            if (codeBlockTitle) {
+                const codeElement = codeBlockTitle.closest('.block-container').querySelector('code');
                 if (codeElement) {
-                    file.content = codeElement.textContent; // Update the content with the user's edits
+                    file.content = codeElement.textContent;
                 }
             }
         });
     }
-    // --- END: NEW LOGIC TO CAPTURE EDITS ---
 
-
-    let mainLanguage = 'bash';
+    // --- FIX START: Correct language detection ---
+    let mainLanguage = null;
     const languagePriority = ['html', 'python', 'javascript', 'cpp', 'c', 'rust', 'go', 'java', 'csharp', 'typescript'];
     for (const lang of languagePriority) {
         if (updatedProjectData.files.some(file => file.language === lang)) {
@@ -986,18 +756,25 @@ async function handleRunStopCodeClick(event) {
             break;
         }
     }
-    
+    // If no primary language is found, default to bash.
+    if (!mainLanguage) {
+        mainLanguage = 'bash';
+    }
+    // --- FIX END ---
+
     if (websocket && websocket.readyState === WebSocket.OPEN) {
-        const outputContainer = createOrClearOutputContainer(codeBlockId);
+        const titleElement = container.querySelector('.block-title .title-text');
+        const title = titleElement ? titleElement.textContent : 'run.sh';
+        const promptingUserId = projectData.prompting_user_id || null;
+        const outputContainer = createOrClearOutputContainer(codeBlockId, title, promptingUserId);
         updateHeaderStatus(outputContainer, 'Starting...', 'running');
         button.dataset.status = 'running';
         button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><rect width="100" height="100" rx="15"/></svg>`;
         button.title = 'Stop Execution';
-
         websocket.send(JSON.stringify({
             type: 'run_code',
             payload: {
-                project_data: updatedProjectData, // Send the updated data with edits
+                project_data: updatedProjectData,
                 project_id: codeBlockId,
                 language: mainLanguage
             }
@@ -1029,7 +806,6 @@ function updateHeaderStatus(outputContainer, statusText, statusClass) {
         }
     }
 }
-
 
 function addCodeOutput(outputPreElement, streamType, text, language) {
     if (!outputPreElement || !text) return;
@@ -1239,43 +1015,115 @@ async function loadAndDisplayChatHistory(sessionId) {
         chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An unexpected error occurred while loading history: ${escapeHTML(error.message)}</p>`;
     }
 }
-// --- WebSocket Connection ---
-function resetAllCodeButtonsOnErrorOrClose() {
-    const playIconSvg = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><polygon points="0,0 100,50 0,100"/></svg>`;
 
-    document.querySelectorAll('.block-container').forEach(container => {
-        const button = container.querySelector('.run-code-btn');
-        const outputHeader = container.querySelector('.block-header');
-        const statusSpan = outputHeader ? outputHeader.querySelector('.block-status') : null;
-
-        if (button && button.dataset.status !== 'idle') {
-            button.dataset.status = 'idle';
-            button.innerHTML = playIconSvg;
-            button.title = 'Run Code';
-            button.disabled = false;
+function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
+    if (!parentElement || !msg) return;
+    const senderType = msg.sender_type;
+    const senderName = msg.sender_name || (senderType === 'ai' ? 'AI Assistant' : 'User');
+    const currentUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
+    const isCurrentUser = msg.user_id === currentUserId;
+    if (senderType === 'ai') {
+        const aiTurnContainer = document.createElement('div');
+        aiTurnContainer.className = 'ai-turn-container';
+        if (msg.turn_id) aiTurnContainer.dataset.turnId = msg.turn_id;
+        const hasContent = msg.content && msg.content.trim().length > 0;
+        const hasFiles = msg.files && msg.files.length > 0;
+        if (hasContent) {
+            const messageBubble = document.createElement('div');
+            messageBubble.className = 'message ai-message';
+            const prompterId = msg.prompting_user_id;
+            const prompterInfo = prompterId ? window.participantInfo?.[prompterId] : null;
+            const prompterColor = prompterInfo?.color || '#dbeafe';
+            const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
+            messageBubble.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
+            const senderElem = document.createElement('p');
+            senderElem.className = 'font-semibold text-sm mb-1 text-gray-800 italic';
+            senderElem.textContent = prompterInfo ? `AI Assistant - Prompted by ${prompterInfo.name}` : 'AI Assistant';
+            messageBubble.appendChild(senderElem);
+            const contentElem = document.createElement('div');
+            contentElem.className = 'text-gray-800 text-sm message-content';
+            renderMarkdownAndKatex(msg.content, contentElem);
+            messageBubble.appendChild(contentElem);
+            aiTurnContainer.appendChild(messageBubble);
         }
-        if (statusSpan) {
-            if (!statusSpan.classList.contains('idle') && !statusSpan.classList.contains('success')) {
-                if (outputHeader) outputHeader.style.display = 'flex';
-                statusSpan.textContent = 'Error: Disconnected';
-                statusSpan.className = 'code-status-span error';
+        if (hasFiles) {
+            const codeBlocksArea = document.createElement('div');
+            codeBlocksArea.className = 'code-blocks-area';
+
+            // --- FIX START: Determine the correct project_id from the runnable file's index ---
+            const runFileIndex = msg.files.findIndex(f => f.path.endsWith('run.sh'));
+            const runnableBlockIndex = runFileIndex !== -1 ? runFileIndex + 1 : msg.files.length;
+
+            projectDataCache[msg.turn_id] = {
+                name: `Project from turn ${msg.turn_id}`,
+                files: msg.files,
+                project_id: `code-block-turn${msg.turn_id}-${runnableBlockIndex}`,
+                prompting_user_id: msg.prompting_user_id
+            };
+            // --- FIX END ---
+
+            msg.files.forEach((file, index) => {
+                const codeBlockIndex = index + 1;
+                const isRunnable = file.path.endsWith('run.sh');
+                const blockId = `code-block-turn${msg.turn_id}-${codeBlockIndex}`;
+                const finalCodeContent = editedCodeBlocks[blockId] || file.content;
+                
+                // createCodeBlock now correctly assigns a unique ID to each block.
+                // We no longer need to manually override the run.sh block's ID.
+                const block = createCodeBlock(
+                    file.language,
+                    finalCodeContent,
+                    file.content,
+                    msg.turn_id,
+                    codeBlockIndex,
+                    codeBlocksArea,
+                    isRunnable,
+                    msg.prompting_user_id
+                );
+                
+                block.querySelector('.block-title .title-text').textContent = file.path;
+                initializeCodeBlockHistory(blockId, finalCodeContent);
+            });
+            aiTurnContainer.appendChild(codeBlocksArea);
+        }
+        if (aiTurnContainer.hasChildNodes()) {
+             parentElement.appendChild(aiTurnContainer);
+        }
+    } else if (senderType === 'user' || senderType === 'system') {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
+        messageDiv.setAttribute('data-sender', senderType);
+        if (msg.id) messageDiv.setAttribute('data-message-id', String(msg.id));
+        if (senderType === 'user') {
+            if (isCurrentUser) {
+                messageDiv.classList.add('self-end', 'ml-auto');
+            } else {
+                messageDiv.classList.add('self-start', 'mr-auto');
             }
+            let bubbleColor = msg.sender_color;
+            if (!bubbleColor && window.participantInfo && msg.user_id) {
+                const participant = window.participantInfo[msg.user_id];
+                if (participant) bubbleColor = participant.color;
+            }
+            if (bubbleColor) {
+                messageDiv.style.backgroundColor = bubbleColor;
+            } else {
+                messageDiv.classList.add('bg-gray-200');
+            }
+        } else {
+             messageDiv.classList.add('bg-slate-200', 'self-center', 'mx-auto', 'text-xs', 'italic');
         }
-    });
-}
-
-// ADD THIS ENTIRE BLOCK OF HELPER FUNCTIONS
-
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-    };
+        const senderElem = document.createElement('p');
+        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800');
+        senderElem.textContent = senderName;
+        messageDiv.appendChild(senderElem);
+        const contentElem = document.createElement('div');
+        contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
+        const cleanContent = (msg.content || '').replace(/@\w+/g, '').trim();
+        contentElem.innerHTML = marked.parse(cleanContent);
+        messageDiv.appendChild(contentElem);
+        parentElement.appendChild(messageDiv);
+    }
 }
 
 function stickHeader(header, scrollerRect) {
@@ -1340,6 +1188,43 @@ function stickHeader(header, scrollerRect) {
     header.dataset.stickyId = stickyId;
 }
 
+function handleAiThinking(payload) {
+    const { turn_id, prompting_user_id, prompting_user_name } = payload;
+    let turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turn_id}']`);
+    if (turnContainer) return; // Already exists
+
+    turnContainer = document.createElement('div');
+    turnContainer.className = 'ai-turn-container';
+    turnContainer.dataset.turnId = turn_id;
+
+    const messageBubble = document.createElement('div');
+    messageBubble.className = 'message ai-message';
+
+    // Look up prompter info safely, with a fallback to the name from the payload
+    const prompterInfo = window.participantInfo ? window.participantInfo[prompting_user_id] : null;
+    const finalPrompterName = prompterInfo ? prompterInfo.name : prompting_user_name;
+    const prompterColor = prompterInfo ? prompterInfo.color : '#dbeafe';
+    const aiColor = window.participantInfo && window.participantInfo['AI'] ? window.participantInfo['AI'].color : '#E0F2FE';
+
+    messageBubble.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
+
+    const senderElem = document.createElement('p');
+    senderElem.className = 'font-semibold text-sm mb-1 text-gray-800 italic';
+    senderElem.textContent = `AI Assistant - Prompted by ${finalPrompterName}`;
+
+    const contentArea = document.createElement('div');
+    contentArea.className = 'text-gray-800 text-sm message-content live-ai-content-area';
+    contentArea.innerHTML = '<span class="loading-dots"></span>';
+
+    messageBubble.appendChild(senderElem);
+    messageBubble.appendChild(contentArea);
+    turnContainer.appendChild(messageBubble);
+    chatHistory.appendChild(turnContainer);
+
+    currentStreamingAnswerElement = contentArea;
+    scrollToBottom('smooth');
+}
+
 function unstickHeader(header) {
     if (!header || !header.classList.contains('header-is-sticky-js')) return;
 
@@ -1371,15 +1256,6 @@ function unstickHeader(header) {
     delete header.dataset.stickyId;
 }
 
-
-let currentStreamingAnswerElement = null;
-let currentStreamingFile = {
-    container: null,
-    codeElement: null,
-    path: null
-};
-
-// --- New WebSocket Connection Logic (REPLACE the old function) ---
 function connectWebSocket() {
     let sessionId = getSessionIdFromPath();
     if (!sessionId) {
@@ -1387,262 +1263,172 @@ function connectWebSocket() {
         setInputDisabledState(true, false);
         return;
     }
-
-    const wsProtocol = window.location.protocol === 'https' ? 'wss:' : 'ws:';
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/${sessionId}/${clientId}`;
-
     try {
         const ws = new WebSocket(wsUrl);
         websocket = ws;
-
-        ws.onopen = () => {
-            console.log("[WS_CLIENT] WebSocket connection opened.");
-            setInputDisabledState(false, false);
-            addSystemMessage("Connected to the chat server.");
-        };
-
-        ws.onclose = (event) => {
-            console.error(`[WS_CLIENT] WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
-            if (window.isNavigatingAway) return;
-            addSystemMessage(`Connection closed: ${event.reason || 'Normal closure'} (Code: ${event.code})`);
-            finalizeTurnOnErrorOrClose();
-            resetAllCodeButtonsOnErrorOrClose();
-            updateAllRunButtonStates();
-            const noReconnectCodes = [1000, 1005, 1008, 1011];
-            if (!noReconnectCodes.includes(event.code)) {
-                addSystemMessage("Attempting to reconnect...");
-                setInputDisabledState(true, false);
-                setTimeout(connectWebSocket, 3000);
-            } else {
-                setInputDisabledState(true, false);
-            }
-        };
-
-        ws.onerror = (event) => {
-            console.error("[WS_CLIENT] WebSocket error:", event);
-            addErrorMessage("WebSocket connection error. Please try refreshing.");
-            finalizeTurnOnErrorOrClose();
-            resetAllCodeButtonsOnErrorOrClose();
-            updateAllRunButtonStates();
-            setInputDisabledState(true, false);
-        };
-
+        ws.onopen = () => { console.log("[WS_CLIENT] WebSocket connection opened."); setInputDisabledState(false, false); addSystemMessage("Connected to the chat server."); };
         ws.onmessage = (event) => {
             if (typeof event.data !== 'string') return;
-            
-            // Handle simple error string for backward compatibility
-            if (event.data.startsWith("<ERROR>")) {
-                addErrorMessage(event.data.substring(7));
-                finalizeTurnOnErrorOrClose();
-                return;
-            }
-
             const messageData = JSON.parse(event.data);
+            
+            // --- LOGGING ---
+            console.log("[WebSocket Client] Received message:", messageData);
+            // --- END LOGGING ---
+
+            if (event.data.startsWith("<ERROR>")) { addErrorMessage(event.data.substring(7)); finalizeTurnOnErrorOrClose(); return; }
+            
             switch (messageData.type) {
-                case 'start_answer_stream':
-                    handleStartAnswerStream();
-                    break;
-                case 'ai_chunk':
-                    handleAnswerChunk(messageData.payload);
-                    break;
-                case 'end_answer_stream':
-                    handleEndAnswerStream();
-                    break;
-                case 'start_file_stream':
-                    handleStartFileStream(messageData.payload);
-                    break;
-                case 'file_chunk':
-                    handleFileChunk(messageData.payload);
-                    break;
-                case 'end_file_stream':
-                    handleEndFileStream();
-                    break;
-                case 'ai_project_created_complete':
-                    handleProjectCreatedComplete(messageData.payload);
-                    break;
-                case 'ai_stream_end':
-                    finalizeTurnOnErrorOrClose();
-                    break;
-                // --- Keep other handlers like new_message, participant_typing, etc. ---
-                case 'new_message':
-                    if (messageData.payload && messageData.payload.client_id_temp !== clientId) {
-                        renderSingleMessage(messageData.payload, chatHistory, true, {});
-                    }
-                    scrollToBottom('smooth');
-                    break;
-                case 'participant_typing':
-                    handleTypingIndicators(messageData.payload);
-                    break;
-                case 'participants_update':
-                    updateAndDisplayParticipants(messageData.payload);
-                    break;
-                case 'session_deleted':
-                    const chatTitle = document.getElementById('chat-session-title');
-                    if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`;
-                    const banner = document.createElement('div');
-                    banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold';
-                    banner.textContent = 'The host has deleted this session. The chat is now read-only.';
-                    chatHistory.prepend(banner);
-                    setInputDisabledState(true, false);
-                    break;
-                default:
-                    handleStructuredMessage(messageData); // For legacy code execution output
-                    break;
+                case 'ai_thinking': handleAiThinking(messageData.payload); break;
+                case 'project_header': handleProjectHeader(messageData.payload); break;
+                case 'ai_chunk': handleAnswerChunk(messageData.payload); break;
+                case 'end_answer_stream': handleEndAnswerStream(); break;
+                case 'start_file_stream': handleStartFileStream(messageData.payload); break;
+                case 'file_chunk': handleFileChunk(messageData.payload); break;
+                case 'end_file_stream': handleEndFileStream(messageData.payload); break;
+                case 'ai_stream_end': finalizeTurnOnErrorOrClose(); break;
+                case 'new_message': if (messageData.payload && messageData.payload.client_id_temp !== clientId) { renderSingleMessage(messageData.payload, chatHistory, true, {}); } scrollToBottom('smooth'); break;
+                case 'participant_typing': handleTypingIndicators(messageData.payload); break;
+                case 'participants_update': updateAndDisplayParticipants(messageData.payload); break;
+                case 'session_deleted': const chatTitle = document.getElementById('chat-session-title'); if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`; const banner = document.createElement('div'); banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold'; banner.textContent = 'The host has deleted this session. The chat is now read-only.'; chatHistory.prepend(banner); setInputDisabledState(true, false); break;
+                default: handleStructuredMessage(messageData); break;
             }
         };
+        ws.onclose = (event) => { console.error(`[WS_CLIENT] WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`); };
+        ws.onerror = (event) => { console.error("[WS_CLIENT] WebSocket error:", event); };
     } catch (error) {
         console.error("WebSocket creation error:", error);
     }
 }
 
-function handleStartAnswerStream() {
-    // The bubble with the loading dots already exists.
-    // We just need to remove the dots to prepare for the real content.
-    if (currentStreamingAnswerElement) {
-        const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
-        if (loadingDots) loadingDots.remove();
+
+
+function handleAnswerChunk(payload) {
+    if (!currentStreamingAnswerElement) {
+        console.warn("handleAnswerChunk called without a streaming element.");
+        return; 
     }
-}
 
-function handleAnswerChunk(chunk) {
-    if (!currentStreamingAnswerElement) return;
-
-    // Remove loading dots on first chunk
     const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
-    if (loadingDots) loadingDots.remove();
+    if (loadingDots) {
+        currentStreamingAnswerElement.innerHTML = ''; // Clear the dots
+    }
     
-    // Append and re-render markdown
-    const currentContent = (currentStreamingAnswerElement.dataset.rawContent || '') + chunk;
+    // This is the fix for the [object Object] bug.
+    // We now directly use the payload, which the server has corrected to be a simple string.
+    const currentContent = (currentStreamingAnswerElement.dataset.rawContent || '') + payload;
     currentStreamingAnswerElement.dataset.rawContent = currentContent;
-    currentStreamingAnswerElement.innerHTML = marked.parse(currentContent);
+    renderMarkdownAndKatex(currentContent, currentStreamingAnswerElement);
+    
     scrollToBottom('auto');
 }
 
-function handleEndAnswerStream() {
-    if (currentStreamingAnswerElement && currentStreamingAnswerElement.dataset.rawContent) {
-        // Final render with KaTeX and Prism
-        parseAndRenderAiContent(
-            currentStreamingAnswerElement.dataset.rawContent,
-            currentStreamingAnswerElement,
-            document.createElement('div'), // Dummy element for code blocks
-            currentTurnId
-        );
+function handleProjectHeader(payload) {
+    const { turn_id, name, prompting_user_id, prompting_user_name } = payload;
+    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turn_id}']`);
+    if (!turnContainer) {
+        console.error("Project header received but no thinking container exists for turn " + turn_id);
+        return;
     }
-    currentStreamingAnswerElement = null;
-}
 
-function createThinkingBubble(turnId) {
-    const turnContainer = document.createElement('div');
-    turnContainer.className = 'ai-turn-container';
-    turnContainer.dataset.turnId = turnId;
-
-    const messageBubble = document.createElement('div');
-    // Remove the hardcoded color class from here
-    messageBubble.className = 'message ai-message';
-
-    // --- NEW: Look up the AI's color from the participant list ---
-    const aiParticipantData = window.participantInfo ? window.participantInfo['AI'] : null;
-    if (aiParticipantData && aiParticipantData.color) {
-        messageBubble.style.backgroundColor = aiParticipantData.color;
-    } else {
-        // Fallback color if the AI isn't in the list for some reason
-        messageBubble.classList.add('bg-gray-200');
+    // Initialize the project data cache for this turn
+    if (!projectDataCache[turn_id]) {
+        projectDataCache[turn_id] = { 
+            name: name,
+            files: [],
+            project_id: null, // Will be set when we find run.sh
+            prompting_user_id: prompting_user_id
+        };
     }
-    // --- END NEW ---
 
-    const senderElem = document.createElement('p');
-    senderElem.className = 'font-semibold text-sm mb-1 text-gray-800 italic';
-    senderElem.textContent = 'AI Assistant';
+    const messageBubble = turnContainer.querySelector('.ai-message');
+    const contentArea = turnContainer.querySelector('.live-ai-content-area');
 
-    const contentArea = document.createElement('div');
-    contentArea.className = 'text-gray-800 text-sm message-content live-ai-content-area';
-    contentArea.innerHTML = '<span class="loading-dots"></span>';
-    
-    messageBubble.appendChild(senderElem);
-    messageBubble.appendChild(contentArea);
-    turnContainer.appendChild(messageBubble);
-    chatHistory.appendChild(turnContainer);
-    
-    scrollToBottom('smooth');
-    
-    // Return the content area so we can stream into it later
-    return contentArea;
+    if (messageBubble && contentArea) {
+        // The sender name should NOT be changed. It's already correct.
+        // const senderElem = turnContainer.querySelector('.ai-message .font-semibold');
+
+        // Create a new, separate header element for the project title
+        const headerElement = document.createElement('div');
+        headerElement.className = 'text-lg font-semibold text-gray-800 mt-2 mb-1 pb-1 border-b';
+        headerElement.textContent = name;
+        
+        // Insert the header before the content area (where the dots are)
+        messageBubble.insertBefore(headerElement, contentArea);
+
+        // Clear the dots and prepare for the streaming description
+        contentArea.innerHTML = '';
+        currentStreamingAnswerElement = contentArea;
+    }
 }
 
 function handleStartFileStream(payload) {
-    // If this is the first file for a turn, initialize the project cache
-    if (!projectDataCache[currentTurnId]) {
-        projectDataCache[currentTurnId] = { files: [] };
-    }
-
-    // Find or create the turn container
-    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${currentTurnId}']`) || document.createElement('div');
-    if (!turnContainer.parentElement) {
+    const { turn_id, prompting_user_id, path, language } = payload;
+    let turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turn_id}']`);
+    if (!turnContainer) {
+        turnContainer = document.createElement('div');
         turnContainer.className = 'ai-turn-container';
-        turnContainer.dataset.turnId = currentTurnId;
+        turnContainer.dataset.turnId = turn_id;
         chatHistory.appendChild(turnContainer);
     }
-
     const codeBlocksArea = turnContainer.querySelector('.code-blocks-area') || document.createElement('div');
     if (!codeBlocksArea.parentElement) {
         codeBlocksArea.className = 'code-blocks-area';
         turnContainer.appendChild(codeBlocksArea);
     }
-
     streamingCodeBlockCounter++;
-    const isRunnable = payload.path.endsWith('run.sh');
-    
-    // --- THIS IS THE FIX ---
-    // Use payload.language instead of 'plaintext'
-    const newBlock = createCodeBlock(
-        payload.language || 'plaintext', // Use the language from the backend
-        '', '', currentTurnId, 
-        streamingCodeBlockCounter, codeBlocksArea, isRunnable
-    );
-    // --- END FIX ---
+    const isRunnable = path.endsWith('run.sh');
+    const blockId = `code-block-turn${turn_id}-${streamingCodeBlockCounter}`;
 
-    newBlock.querySelector('.block-title .title-text').textContent = payload.path;
+    if (isRunnable && projectDataCache[turn_id]) {
+        projectDataCache[turn_id].project_id = blockId;
+    }
     
-    // Store references for the streaming process
-    currentStreamingFile = {
-        container: newBlock,
-        codeElement: newBlock.querySelector('code'),
-        path: payload.path,
-        // Add the new file to the cache immediately
-        fileData: { path: payload.path, content: "" }
+    const newBlock = createCodeBlock(
+        language || 'plaintext', '', '', turn_id, 
+        streamingCodeBlockCounter, codeBlocksArea, isRunnable,
+        prompting_user_id
+    );
+    newBlock.querySelector('.block-title .title-text').textContent = path;
+    
+    const newFileData = { path: path, content: "", language: language };
+    if (projectDataCache[turn_id]) {
+        projectDataCache[turn_id].files.push(newFileData);
+    }
+
+    currentStreamingFile = { 
+        container: newBlock, 
+        codeElement: newBlock.querySelector('code'), 
+        path: path, 
+        fileData: newFileData,
+        highlightTimeout: null // For debouncing the highlighter
     };
-    projectDataCache[currentTurnId].files.push(currentStreamingFile.fileData);
 }
 
 function handleFileChunk(payload) {
     if (!currentStreamingFile || !currentStreamingFile.codeElement) return;
-    currentStreamingFile.codeElement.textContent += payload.content;
-}
-
-function handleEndFileStream() {
-    if (currentStreamingFile && currentStreamingFile.codeElement) {
-        Prism.highlightElement(currentStreamingFile.codeElement);
-    }
-    currentStreamingFile = { container: null, codeElement: null, path: null };
-}
-
-function handleProjectCreatedComplete(payload) {
-    // Cache the final project data for the "Run" button
-    projectDataCache[payload.turn_id] = payload;
     
-    // Find the run.sh button for this turn and set its project_id
-    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${payload.turn_id}']`);
-    if (turnContainer) {
-        const runButton = turnContainer.querySelector('.run-code-btn');
-        const runBlock = runButton ? runButton.closest('.block-container') : null;
-        if (runBlock) {
-            runBlock.id = payload.project_id;
-        }
+    const codeElement = currentStreamingFile.codeElement;
+    codeElement.textContent += payload.content;
+
+    if (currentStreamingFile.fileData) {
+        currentStreamingFile.fileData.content += payload.content;
     }
+
+    // Debounce the syntax highlighting for better performance
+    clearTimeout(currentStreamingFile.highlightTimeout);
+    currentStreamingFile.highlightTimeout = setTimeout(() => {
+        const cursorPos = getCursorPosition(codeElement);
+        Prism.highlightElement(codeElement);
+        if (document.activeElement === codeElement) {
+            setCursorPosition(codeElement, cursorPos);
+        }
+    }, 50); // Highlight after a 50ms pause in streaming
 }
+
 
 document.addEventListener('DOMContentLoaded', async () => {
-    await loadLanguagesConfig();
     await initializeCurrentUser();
     setInputDisabledState(true, false);
 
@@ -1680,6 +1466,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         chatForm.addEventListener('submit', (event) => {
         event.preventDefault();
         
+        // --- ADDED LOGGING ---
+        console.log("Submit event fired.");
+
         if(typingTimeout) {
             clearTimeout(typingTimeout);
             typingTimeout = null;
@@ -1687,9 +1476,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         
         const userMessage = messageInput.value.trim();
-        if (!userMessage) return;
+        // --- ADDED LOGGING ---
+        console.log("User message:", userMessage);
+
+        if (!userMessage) {
+            console.log("Message is empty. Aborting send.");
+            return;
+        }
+
+        // --- ADDED LOGGING ---
+        // Check WebSocket state. 1 means OPEN.
+        console.log("WebSocket object:", websocket);
+        console.log("WebSocket readyState:", websocket ? websocket.readyState : "Not defined");
+
         if (!websocket || websocket.readyState !== WebSocket.OPEN) {
             console.error("[FORM] WebSocket not open, cannot send message.");
+            addErrorMessage("Cannot send message: Not connected to the server. Please refresh the page."); // Show error in UI
             return;
         }
         
@@ -1700,17 +1502,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             const mentionRegex = /@(\w+)/gi;
             const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
             
-            currentTurnId++; // A new user message always creates a new turn
+            currentTurnId++;
             
             if (recipients.includes("AI")) {
                 if (!window.isAiConfigured) {
                     alert("AI provider has not been configured. Please go to User Settings to select a provider and add your API key.");
-                    currentTurnId--; // Roll back turn increment if we abort
+                    currentTurnId--;
                     return;
                 }
                 setInputDisabledState(true, true);
-                // Immediately create the thinking bubble and store its content area
-                currentStreamingAnswerElement = createThinkingBubble(currentTurnId);
             }
             
             const messagePayload = {
@@ -1722,9 +1522,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                     reply_to_id: null
                 }
             };
+
+            // --- ADDED LOGGING ---
+            console.log("Sending payload:", JSON.stringify(messagePayload));
             websocket.send(JSON.stringify(messagePayload));
+            console.log("Payload sent.");
 
         } catch (sendError) {
+            // --- ADDED LOGGING ---
+            console.error("Error during message send:", sendError);
             addErrorMessage(`Failed to send message: ${sendError.message}`);
         }
     });

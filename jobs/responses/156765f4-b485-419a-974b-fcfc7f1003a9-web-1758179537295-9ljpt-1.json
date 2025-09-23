@@ -1,0 +1,3 @@
+{"type": "chunk", "content": "_ANSWER_START_\n{}\n_JSON_END_\n3 + 4 = 7\n_ANSWER_"}
+{"type": "chunk", "content": "END_"}
+{"type": "end_stream", "payload": {"message_id": 25, "turn_id": 1}}

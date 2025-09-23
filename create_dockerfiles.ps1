@@ -1,7 +1,6 @@
-# update_dockerfiles.ps1
 # This script creates or overwrites all Dockerfiles with their final, correct versions.
 
-Write-Host "--- Updating all Dockerfiles with correct package names ---" -ForegroundColor Green
+Write-Host "--- Updating all Dockerfiles to include git ---" -ForegroundColor Green
 Write-Host ""
 
 # Helper function to create/overwrite a Dockerfile
@@ -28,91 +27,95 @@ function Set-DockerfileContent {
 
 # --- Define Content for Each Dockerfile ---
 
-# Base Python image (already includes Python and uv)
+# Base Python image
 $pythonDockerfile = @"
 # dockerfiles/python/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 CMD ["/bin/sh"]
 "@
 
-# C/C++ Image (built from the Python base)
+# C/C++ Image
 $gccDockerfile = @"
 # dockerfiles/gcc/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc g++ make && \
+    apt-get install -y --no-install-recommends gcc g++ make git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# Node.js/Web Image (built from the Python base)
+# Node.js/Web Image
 $nodeDockerfile = @"
 # dockerfiles/node/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends nodejs npm curl && \
+    apt-get install -y --no-install-recommends nodejs npm curl git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# Java Image (built from the Python base)
+# Java Image
 $javaDockerfile = @"
 # dockerfiles/java/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
-# Use the 'default-jdk' package which is the standard for Debian
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends default-jdk && \
+    apt-get install -y --no-install-recommends default-jdk git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# Rust Image (built from the Python base)
+# Rust Image
 $rustDockerfile = @"
 # dockerfiles/rust/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends rustc cargo curl && \
+    apt-get install -y --no-install-recommends rustc cargo curl git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# Go Image (built from the Python base)
+# Go Image
 $goDockerfile = @"
 # dockerfiles/go/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends golang && \
+    apt-get install -y --no-install-recommends golang git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# .NET/C# Image (built from the Python base)
+# .NET/C# Image
 $dotnetDockerfile = @"
 # dockerfiles/dotnet/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies needed for the .NET install script
+# Install dependencies needed for git and the .NET install script
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl python3-venv && \
+    apt-get install -y --no-install-recommends curl python3-venv git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

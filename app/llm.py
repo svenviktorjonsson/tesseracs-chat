@@ -1,366 +1,280 @@
-import sys
 import os
 import traceback
-from typing import List, Callable, Optional, Any
+import json
+import re
 import asyncio
 import sqlite3
-from pathlib import Path
-import re
-import json
-import uuid
+from multiprocessing import Process, Pipe
+from multiprocessing.connection import Connection
+from typing import List, Optional, Any, Dict
 
 from fastapi import WebSocket
+from langchain_core.messages import messages_to_dict
 
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough, Runnable, RunnableLambda
-from langchain_core.messages import BaseMessage, SystemMessage
-from langchain_ollama.llms import OllamaLLM
-from langchain_openai import ChatOpenAI
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_anthropic import ChatAnthropic
+from . import state, database, encryption_utils, project_utils, config
+from .llm_worker import start_worker, STREAM_END_SIGNAL, ERROR_PREFIX
 
-from . import config
-from . import state
-from . import database
-from . import utils
-from . import encryption_utils
-from . import project_utils
+# --- Global variables for the worker process and communication pipe ---
+worker_process: Optional[Process] = None
+parent_conn: Optional[Connection] = None
 
-SYSTEM_PROMPT = (
-    "You are a helpful AI assistant. Follow the user's instructions carefully.\n\n"
-    "RESPONSE FORMATTING RULES:\n"
-    "Your entire output must be a sequence of one or more structured blocks. Each block follows the same simple format: a START tag, a JSON payload terminated by _JSON_END_, content, and an END tag.\n\n"
-    "--- BLOCK TYPES ---\n\n"
-    "1.  **Answer Block:** For conversational text, Markdown, and math.\n"
-    "    - Use `_ANSWER_START_` and `_ANSWER_END_`.\n"
-    "    - The JSON payload must be empty: `{}`.\n"
-    "    - All text must be formatted with Markdown. All math must use KaTeX syntax (`$$...$$` or `$...$`).\n\n"
-    "2.  **File Block:** For all code or file content.\n"
-    "    - A 'project' is simply a sequence of one or more file blocks.\n"
-    "    - Use `_FILE_START_` and `_FILE_END_`.\n"
-    "    - The JSON payload must contain the file path: `{ \"path\": \"./path/to/file.ext\" }`.\n"
-    "    - The **last file block** in a code project MUST be the `run.sh` script.\n"
-    "    - For Python projects, `run.sh` must use `uv pip install` for dependencies.\n\n"
-    "--- EXAMPLES ---\n\n"
-    "**EXAMPLE 1: Conversational Answer with Math**\n"
-    "_ANSWER_START_\n"
-    "{}\n"
-    "_JSON_END_\n"
-    "The quadratic formula is used to solve equations of the form $ax^2 + bx + c = 0$. The formula is:\n\n"
-    "$$x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n"
-    "_ANSWER_END_\n\n"
-    "**EXAMPLE 2: Code Project**\n"
-    "_FILE_START_\n"
-    "{ \"path\": \"./main.py\" }\n"
-    "_JSON_END_\n"
-    "import numpy as np\n"
-    "print(f'Numpy version: {np.__version__}!')\n"
-    "_FILE_END_\n"
-    "_FILE_START_\n"
-    "{ \"path\": \"./run.sh\" }\n"
-    "_JSON_END_\n"
-    "uv pip install numpy\n"
-    "python main.py\n"
-    "_FILE_END_"
-)
+def start_llm_worker():
+    """
+    Starts the background worker process and establishes a pipe for communication.
+    This should be called once when the main application starts up.
+    """
+    global worker_process, parent_conn
+    if worker_process is None or not worker_process.is_alive():
+        print("LLM_SYSTEM: Starting LLM worker process...")
+        parent_conn, child_conn = Pipe()
+        worker_process = Process(target=start_worker, args=(child_conn,))
+        worker_process.start()
+        child_conn.close()
+        print(f"LLM_SYSTEM: Worker process started with PID {worker_process.pid}.")
 
-def get_model(
-    provider_id: str,
-    model_id: str,
-    api_key: Optional[str] = None,
-    base_url_override: Optional[str] = None
-) -> Optional[Any]:
-    print(f"LLM: Attempting to get model for provider='{provider_id}', model='{model_id}', base_url_override='{base_url_override}'")
-    provider_config = config.get_provider_config(provider_id)
+def shutdown_llm_worker():
+    """
+    Sends an EXIT signal to the worker and terminates it.
+    This should be called when the main application shuts down.
+    """
+    global worker_process, parent_conn
+    print("LLM_SYSTEM: Shutting down LLM worker process...")
+    if parent_conn:
+        try:
+            parent_conn.send("EXIT")
+        except (BrokenPipeError, EOFError):
+            print("LLM_SYSTEM: Pipe to worker was already closed.")
+    if worker_process and worker_process.is_alive():
+        worker_process.join(timeout=5)
+        if worker_process.is_alive():
+            print("LLM_SYSTEM: Worker did not exit gracefully, terminating.")
+            worker_process.terminate()
+            worker_process.join()
+    print("LLM_SYSTEM: Worker process shut down.")
 
-    if not provider_config:
-        print(f"LLM_ERROR: Provider ID '{provider_id}' not found in LLM_PROVIDERS configuration.")
-        return None
-
-    provider_type = provider_config.get("type")
-    
-    final_base_url: Optional[str] = None
-    if base_url_override and base_url_override.strip():
-        final_base_url = base_url_override.strip()
-    else:
-        final_base_url = provider_config.get("base_url")
-
-    if provider_type in ["openai_compatible"] and not final_base_url:
-        print(f"LLM_ERROR: Final base URL for provider '{provider_id}' (type: {provider_type}) is missing.")
-        return None
-
-    resolved_api_key = api_key
-    api_key_env_name = provider_config.get("api_key_env_var_name")
-
-    if not resolved_api_key and api_key_env_name:
-        resolved_api_key = os.getenv(api_key_env_name)
-    
+# --- Database and Settings Functions (Copied from original, unchanged) ---
+def _get_llm_settings_sync(user_id: int) -> dict:
+    conn = None
     try:
-        if provider_type == "openai_compatible":
-            if api_key_env_name and not resolved_api_key:
-                print(f"LLM_WARNING: API key for openai_compatible provider '{provider_id}' not found. Proceeding without if possible.")
-            return ChatOpenAI(
-                model_name=model_id,
-                openai_api_base=final_base_url,
-                openai_api_key=resolved_api_key,
-            )
-        
-        elif provider_type == "google_genai":
-            if not resolved_api_key:
-                print(f"LLM_ERROR: Google API Key is required for provider '{provider_id}' but was not provided.")
-                return None
-            return ChatGoogleGenerativeAI(
-                model=model_id,
-                google_api_key=resolved_api_key
-            )
-
-        elif provider_type == "anthropic":
-            if not resolved_api_key:
-                print(f"LLM_ERROR: Anthropic API Key is required for provider '{provider_id}' but was not provided.")
-                return None
-            return ChatAnthropic(
-                    model=model_id,
-                    anthropic_api_key=resolved_api_key,
-                    max_tokens=8192,
-                )
-            
-        else:
-            print(f"LLM_ERROR: Unknown provider type '{provider_type}' for provider ID '{provider_id}'.")
-            return None
-
-    except Exception as e:
-        print(f"LLM_CRITICAL_ERROR: Failed to initialize model for provider '{provider_id}', model '{model_id}': {e}")
-        traceback.print_exc()
-        return None
-
-prompt = ChatPromptTemplate.from_messages([
-    SystemMessage(content=SYSTEM_PROMPT),
-    MessagesPlaceholder(variable_name="history"),
-    ("human", "{input}")
-])
-
-output_parser = StrOutputParser()
-
-def create_chain(
-    provider_id: str,
-    model_id: str,
-    memory_loader_func: Callable[[dict], List[BaseMessage]],
-    api_key: Optional[str] = None,
-    base_url_override: Optional[str] = None
-) -> Optional[Runnable]:
-    try:
-        current_model_instance = get_model(
-            provider_id=provider_id,
-            model_id=model_id,
-            api_key=api_key,
-            base_url_override=base_url_override
-        )
-        if not current_model_instance:
-            print(f"LLM Chain ERROR: Failed to get model instance for provider '{provider_id}', model '{model_id}'. Cannot create chain.")
-            return None
-
-        chain = (
-            RunnablePassthrough.assign(history=RunnableLambda(memory_loader_func))
-            | prompt
-            | current_model_instance
-            | output_parser
-        )
-        print(f"LLM Chain: Successfully created chain for '{model_id}' from '{provider_id}'.")
-        return chain
-    except Exception as e:
-        print(f"LLM Chain CRITICAL_ERROR: Failed to create LangChain chain: {e}")
-        traceback.print_exc()
-        return None
-async def invoke_llm_for_session(
-    session_id: str,
-    websocket: WebSocket,
-    user_id: int,
-    user_input_raw: str,
-    turn_id: int,
-    stream_id: str,
-    reply_to_message_id: Optional[int]
-):
-    stop_event = await state.register_ai_stream(stream_id)
-    full_response_content = ""
-    ai_message_id = None
-    project_files = []
-    answer_content = "" # New variable to hold just the conversational text
-
-    try:
-        db_conn_for_settings = database.get_db_connection()
-        cursor = db_conn_for_settings.cursor()
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
         cursor.execute(
             "SELECT selected_llm_provider_id, selected_llm_model_id, user_llm_api_key_encrypted, selected_llm_base_url FROM users WHERE id = ?",
             (user_id,)
         )
         user_settings = cursor.fetchone()
-        db_conn_for_settings.close()
+        if not user_settings:
+            return {"error": "User settings not found."}
+        settings = dict(user_settings)
+        api_key_encrypted = settings.get("user_llm_api_key_encrypted")
+        settings["api_key"] = encryption_utils.decrypt_data(api_key_encrypted) if api_key_encrypted else None
+        return settings
+    except Exception as e:
+        traceback.print_exc()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
 
-        provider_id = user_settings["selected_llm_provider_id"] if user_settings else None
-        model_id = user_settings["selected_llm_model_id"] if user_settings else None
+def _save_ai_message_sync(session_id: str, user_id: int, content: Optional[str], turn_id: int, reply_to_id: Optional[int], files: List[Dict[str, Any]]) -> Optional[int]:
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id, prompting_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, user_id, 'AI', 'ai', content or None, turn_id, reply_to_id, user_id)
+        )
+        message_id = cursor.lastrowid
+        if files and message_id:
+            for file_data in files:
+                cursor.execute(
+                    "INSERT INTO message_files (message_id, path, content, language) VALUES (?, ?, ?, ?)",
+                    (message_id, file_data['path'], file_data['content'], file_data['language'])
+                )
+        conn.commit()
+        return message_id
+    except sqlite3.Error as db_err:
+        traceback.print_exc()
+        if conn:
+            conn.rollback()
+        return None
+    finally:
+        if conn:
+            conn.close()
 
-        if not provider_id or not model_id:
-            await websocket.send_text("<ERROR> AI provider not configured.")
+
+async def invoke_llm_for_session(
+    session_id: str,
+    websocket: WebSocket,
+    user_id: int,
+    user_name: str,
+    user_input_raw: str,
+    turn_id: int,
+    stream_id: str,
+    reply_to_message_id: Optional[int]
+):
+    loop = asyncio.get_running_loop()
+    all_content_parts = []
+    all_files = []
+    ai_message_id = None
+    stop_event = await state.register_ai_stream(stream_id)
+    queue = asyncio.Queue()
+
+    def pipe_data_received():
+        try:
+            data = parent_conn.recv()
+            queue.put_nowait(data)
+        except Exception as e:
+            print(f"Error reading from pipe: {e}")
+            queue.put_nowait(STREAM_END_SIGNAL)
+
+    pipe_fileno = parent_conn.fileno()
+    loop.add_reader(pipe_fileno, pipe_data_received)
+
+    try:
+        if not parent_conn or not worker_process or not worker_process.is_alive():
+            await state.broadcast(session_id, {"type": "error", "payload": "LLM worker process is not running."}); await asyncio.sleep(0)
             return
 
-        api_key = None
-        base_url = None
-        if user_settings:
-            if user_settings["user_llm_api_key_encrypted"]:
-                api_key = encryption_utils.decrypt_data(user_settings["user_llm_api_key_encrypted"])
-            base_url = user_settings["selected_llm_base_url"]
+        settings = await asyncio.to_thread(_get_llm_settings_sync, user_id)
+        if "error" in settings:
+            await state.broadcast(session_id, {"type": "error", "payload": f"Could not load LLM settings: {settings['error']}"}); await asyncio.sleep(0)
+            return
         
-        def get_history(input_dict: dict) -> List[BaseMessage]:
-            memory = state.get_memory_for_client(session_id)
-            return memory.chat_memory.messages
+        provider_id = settings.get("selected_llm_provider_id")
+        if not provider_id or not settings.get("selected_llm_model_id"):
+            await state.broadcast(session_id, {"type": "error", "payload": "AI provider not configured."}); await asyncio.sleep(0)
+            return
 
-        chain = create_chain(
-            provider_id=provider_id, model_id=model_id,
-            memory_loader_func=get_history, api_key=api_key, base_url_override=base_url
-        )
-
-        if not chain:
-            raise ValueError(f"Failed to create chain for provider {provider_id}")
-
-        stream = chain.astream({"input": user_input_raw})
+        memory = await state.get_memory_for_client(session_id)
         
-        parser_state = "IDLE"
+        job_payload = {
+            "prompt": user_input_raw,
+            "provider_id": provider_id,
+            "model_id": settings.get("selected_llm_model_id"),
+            "api_key": settings.get("api_key"),
+            "base_url": settings.get("selected_llm_base_url"),
+            "history_messages_serialised": messages_to_dict(memory.chat_memory.messages)
+        }
+
+        await loop.run_in_executor(None, parent_conn.send, job_payload)
+        
+        parser_stack = []
         buffer = ""
-        current_block_type = None
-        current_file_args = {}
-        current_file_content = ""
+        tag_regex = re.compile(r"(_(ANSWER|PROJECT|FILE)_(START|END)_)")
+        json_end_tag = "_JSON_END_"
+        MAX_TAG_LENGTH = 20 
+        await state.broadcast(session_id, {"type": "ai_thinking", "payload": {"turn_id": turn_id, "prompting_user_id": user_id, "prompting_user_name": user_name}})
+        await asyncio.sleep(0)
 
-        print("\n--- LLM RAW STREAM START ---", flush=True)
-        async for chunk in stream:
-            print(chunk, end="", flush=True)
-            if stop_event.is_set():
+        while not stop_event.is_set():
+            chunk = await queue.get()
+            
+            if chunk == STREAM_END_SIGNAL:
                 break
             
-            full_response_content += chunk
+            if chunk.startswith(ERROR_PREFIX):
+                all_content_parts.append(chunk)
+                break
+            
             buffer += chunk
 
             while True:
-                can_process_more = False
-                if parser_state == "IDLE":
-                    match = re.search(r"(_ANSWER_START_|_FILE_START_)", buffer)
-                    if match:
-                        current_block_type = match.group(1)
-                        buffer = buffer[match.end():]
-                        parser_state = "PARSING_ARGS"
-                        can_process_more = True
+                match = tag_regex.search(buffer)
 
-                elif parser_state == "PARSING_ARGS":
-                    end_json_match = re.search(r"(.*?)\s*_JSON_END_", buffer, re.DOTALL)
-                    if end_json_match:
-                        json_str = end_json_match.group(1).strip()
-                        buffer = buffer[end_json_match.end():]
-                        
-                        try:
-                            args = json.loads(json_str)
-                            if current_block_type == "_ANSWER_START_":
-                                await utils.send_ws_message(websocket, "start_answer_stream", {})
-                                parser_state = "STREAMING_ANSWER"
-                            elif current_block_type == "_FILE_START_":
-                                current_file_args = args
-                                path = current_file_args.get("path")
-                                if path:
-                                    current_file_args["language"] = project_utils.get_language_from_extension(path)
-                                await utils.send_ws_message(websocket, "start_file_stream", current_file_args)
-                                parser_state = "STREAMING_FILE_CONTENT"
-                        except json.JSONDecodeError:
-                            parser_state = "IDLE"
-                        can_process_more = True
+                if not match:
+                    if parser_stack and len(buffer) > MAX_TAG_LENGTH:
+                        split_pos = len(buffer) - MAX_TAG_LENGTH
+                        content_chunk = buffer[:split_pos]
+                        buffer = buffer[split_pos:]
 
-                elif parser_state == "STREAMING_ANSWER":
-                    end_match = buffer.find("_ANSWER_END_")
-                    if end_match != -1:
-                        payload = buffer[:end_match]
-                        if payload:
-                            await utils.send_ws_message(websocket, "ai_chunk", payload)
-                            answer_content += payload # Accumulate answer content
-                        await utils.send_ws_message(websocket, "end_answer_stream", {})
-                        buffer = buffer[end_match + len("_ANSWER_END_"):]
-                        parser_state = "IDLE"
-                        can_process_more = True
-                    else:
-                        if buffer:
-                            await utils.send_ws_message(websocket, "ai_chunk", buffer)
-                            answer_content += buffer # Accumulate answer content
-                        buffer = ""
-                
-                elif parser_state == "STREAMING_FILE_CONTENT":
-                    end_match = buffer.find("_FILE_END_")
-                    if end_match != -1:
-                        payload = buffer[:end_match]
-                        if payload:
-                             await utils.send_ws_message(websocket, "file_chunk", {"content": payload})
-                        
-                        current_file_content += payload
-                        path = current_file_args.get("path")
-                        if path:
-                            project_files.append({
-                                "path": path,
-                                "content": current_file_content,
-                                "language": current_file_args.get("language")
-                            })
-                        
-                        await utils.send_ws_message(websocket, "end_file_stream", current_file_args)
-                        buffer = buffer[end_match + len("_FILE_END_"):]
-                        current_file_args, current_file_content = {}, ""
-                        parser_state = "IDLE"
-                        can_process_more = True
-                    else:
-                        if buffer:
-                            await utils.send_ws_message(websocket, "file_chunk", {"content": buffer})
-                        current_file_content += buffer
-                        buffer = ""
-
-                if not can_process_more:
+                        current_state = parser_stack[-1]
+                        if current_state in ["ANSWER", "PROJECT"]:
+                            all_content_parts.append(content_chunk)
+                            await state.broadcast(session_id, {"type": "ai_chunk", "payload": content_chunk}); await asyncio.sleep(0)
+                        elif current_state == "FILE":
+                            if all_files: all_files[-1]["content"] += content_chunk
+                            await state.broadcast(session_id, {"type": "file_chunk", "payload": {"content": content_chunk}}); await asyncio.sleep(0)
                     break
-        print("\n--- LLM RAW STREAM END ---", flush=True)
+
+                content_before_tag = buffer[:match.start()]
+                if content_before_tag:
+                    current_state = parser_stack[-1] if parser_stack else None
+                    if current_state in ["ANSWER", "PROJECT"]:
+                        all_content_parts.append(content_before_tag)
+                        await state.broadcast(session_id, {"type": "ai_chunk", "payload": content_before_tag}); await asyncio.sleep(0)
+                    elif current_state == "FILE":
+                        if all_files: all_files[-1]["content"] += content_before_tag
+                        await state.broadcast(session_id, {"type": "file_chunk", "payload": {"content": content_before_tag}}); await asyncio.sleep(0)
+
+                buffer = buffer[match.end():]
+                tag_full = match.group(0)
+                tag_type = match.group(2)
+                tag_action = match.group(3)
+                
+                if tag_action == "START":
+                    if json_end_tag in buffer:
+                        json_str, rest_of_buffer = buffer.split(json_end_tag, 1)
+                        buffer = rest_of_buffer.lstrip()
+                        buffer = rest_of_buffer
+                        try:
+                            args = json.loads(json_str.strip())
+                        except json.JSONDecodeError:
+                            args = {}
+                        
+                        parser_stack.append(tag_type)
+                        if tag_type == "PROJECT":
+                            await state.broadcast(session_id, {"type": "project_header", "payload": {"name": args.get("name", "Untitled Project"), "turn_id": turn_id, "prompting_user_id": user_id, "prompting_user_name": user_name}}); await asyncio.sleep(0)
+                        elif tag_type == "FILE":
+                            path = args.get("path", "untitled")
+                            lang = project_utils.get_language_from_extension(path)
+                            all_files.append({"path": path, "content": "", "language": lang})
+                            args["language"] = lang
+                            await state.broadcast(session_id, {"type": "start_file_stream", "payload": args}); await asyncio.sleep(0)
+                    else:
+                        buffer = tag_full + buffer
+                        break
+
+                elif tag_action == "END":
+                    if parser_stack and parser_stack[-1] == tag_type:
+                        parser_stack.pop()
+                        if tag_type == "FILE":
+                            await state.broadcast(session_id, {"type": "end_file_stream", "payload": {}}); await asyncio.sleep(0)
+                        elif tag_type == "ANSWER":
+                            await state.broadcast(session_id, {"type": "end_answer_stream", "payload": {"turn_id": turn_id}}); await asyncio.sleep(0)
+                    else:
+                        print(f"PARSER WARNING: Mismatched end tag. Stack: {parser_stack}, Got: {tag_type}")
         
+        if buffer and parser_stack:
+            current_state = parser_stack[-1]
+            if current_state in ["ANSWER", "PROJECT"]:
+                all_content_parts.append(buffer)
+                await state.broadcast(session_id, {"type": "ai_chunk", "payload": buffer})
+            elif current_state == "FILE":
+                if all_files: all_files[-1]["content"] += buffer
+                await state.broadcast(session_id, {"type": "file_chunk", "payload": {"content": buffer}})
+
     except Exception as e:
-        print(f"--- LLM ERROR for stream '{stream_id}' ---")
-        traceback.print_exc()
-        error_message = f"<ERROR> AI Error: {str(e)}"
-        await websocket.send_text(error_message)
+        tb_str = traceback.format_exc()
+        print(f"LLM_SYSTEM ERROR in invoke_llm_for_session: {e}\n{tb_str}")
+        await state.broadcast(session_id, {"type": "error", "payload": f"AI Error: {str(e)}"})
     finally:
-        print(f"--- LLM STREAM: Finalizing stream '{stream_id}' ---")
+        loop.remove_reader(pipe_fileno)
+
+        if stop_event.is_set():
+            print(f"LLM_SYSTEM: Stream {stream_id} was stopped by client.")
         
-        # --- NEW DATABASE SAVING LOGIC ---
-        ai_message_id = None
-        if full_response_content: 
-            try:
-                db_conn = database.get_db_connection()
-                cursor = db_conn.cursor()
-                
-                # Step 1: Insert the main message with only conversational content
-                cursor.execute(
-                    """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (session_id, user_id, 'AI', 'ai', answer_content or None, turn_id, reply_to_message_id)
-                )
-                ai_message_id = cursor.lastrowid
-
-                # Step 2: If there are files, insert them and link them to the new message ID
-                if project_files:
-                    for file_data in project_files:
-                        cursor.execute(
-                            """INSERT INTO message_files (message_id, path, content, language)
-                               VALUES (?, ?, ?, ?)""",
-                            (ai_message_id, file_data['path'], file_data['content'], file_data['language'])
-                        )
-                
-                db_conn.commit()
+        full_response_content = "".join(all_content_parts)
+        
+        if full_response_content or all_files:
+            ai_message_id = await asyncio.to_thread(
+                _save_ai_message_sync,
+                session_id, user_id, full_response_content, turn_id, reply_to_message_id, all_files
+            )
+            if ai_message_id is not None:
                 state.remove_memory_for_client(session_id)
-            except sqlite3.Error as db_err:
-                print(f"--- DB ERROR: Failed to save structured AI response for stream '{stream_id}': {db_err} ---")
-                traceback.print_exc()
-            finally:
-                if db_conn:
-                    db_conn.close()
-
-        print(f"--- LLM LOG: Finalizing stream '{stream_id}'. Sending ai_stream_end message. ---")
-        await utils.send_ws_message(websocket, "ai_stream_end", {"message_id": ai_message_id, "turn_id": turn_id})
+        
+        await state.broadcast(session_id, {"type": "ai_stream_end", "payload": {"message_id": ai_message_id, "turn_id": turn_id}})
         await state.unregister_ai_stream(stream_id)

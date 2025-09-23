@@ -6,7 +6,7 @@ import tempfile
 import subprocess
 import json
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 import uuid
 
 def get_language_from_extension(file_path: str) -> str:
@@ -60,39 +60,44 @@ def parse_file_blocks(content: str) -> Optional[List[Dict[str, Any]]]:
         print(f"PROJECT_UTILS PARSE ERROR: Failed to parse file blocks - {e}")
         return None
 
-def create_project_directory_and_files(project_data: Dict[str, Any]) -> Optional[str]:
+def create_project_directory_and_files(project_data: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """
-    Creates a temporary directory, saves project files, and initializes a git repo.
-    Returns the path to the created directory, or None on failure.
+    Creates a temporary directory and saves project files.
+    Returns a tuple of (path, error_message). On success, error_message is None.
     """
+    project_dir = None
     try:
         project_dir = tempfile.mkdtemp(prefix="tesseracs_proj_")
-        print(f"PROJECT_UTILS: Created temporary project directory at {project_dir}")
-
+        
         for file_info in project_data.get("files", []):
             file_path_str = file_info.get("path")
             content = file_info.get("content", "")
 
             if not file_path_str or file_path_str.startswith("/") or ".." in file_path_str:
-                print(f"PROJECT_UTILS WARNING: Skipping potentially unsafe file path: {file_path_str}")
                 continue
 
             full_path = Path(project_dir) / file_path_str
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content, encoding="utf-8", newline='\n')
-            print(f"    - Wrote file: {full_path}")
 
-        subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True)
+        subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True, text=True)
         subprocess.run(["git", "config", "user.name", "AI Assistant"], cwd=project_dir, check=True)
         subprocess.run(["git", "config", "user.email", "ai@tesseracs.com"], cwd=project_dir, check=True)
         subprocess.run(["git", "add", "."], cwd=project_dir, check=True)
         commit_message = f"Initial commit: Create project '{project_data.get('name', 'Untitled Project')}'"
-        subprocess.run(["git", "commit", "-m", commit_message], cwd=project_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", commit_message], cwd=project_dir, check=True, capture_output=True, text=True)
         
-        print(f"PROJECT_UTILS: Initialized Git repo and committed files for '{project_data.get('name')}'")
+        return project_dir, None
 
-        return project_dir
-
-    except (subprocess.CalledProcessError, OSError, Exception) as e:
-        print(f"PROJECT_UTILS ERROR: Failed to create project directory or files: {e}")
-        return None
+    except FileNotFoundError as e:
+        error_msg = f"Command '{e.filename}' not found. Ensure git is installed in the Docker image."
+        print(f"PROJECT_UTILS ERROR: {error_msg}")
+        return None, error_msg
+    except subprocess.CalledProcessError as e:
+        error_msg = f"A git command failed:\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}"
+        print(f"PROJECT_UTILS ERROR: {error_msg}")
+        return None, error_msg
+    except (OSError, Exception) as e:
+        error_msg = f"Failed to create project directory or files: {e}"
+        print(f"PROJECT_UTILS ERROR: {error_msg}")
+        return None, error_msg

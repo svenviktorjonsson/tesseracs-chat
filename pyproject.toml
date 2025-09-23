@@ -1,53 +1,46 @@
-# pyproject.toml
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-# Standard project metadata (PEP 621)
 [project]
 name = "tesseracs-chat"
 version = "1.1.0"
-description = "Web chat interface for Ollama using FastAPI and LangChain"
-readme = "README.md"
+description = "Web chat interface using FastAPI"
+readme = "Readme.md"
 authors = [
-    {name = "Viktor Jonsson", email = "viktor.jonsson@tesseracs.com"},
+    { name = "Viktor Jonsson", email = "viktor.jonsson@tesseracs.com" },
+]
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "langchain~=0.2.0",
+    "langchain-core~=0.2.0",
+    "langchain-community~=0.2.0",
+    "langchain-openai~=0.1.0",
+    "langchain-anthropic~=0.1.0",
+    "langchain-google-genai~=1.0.0",
+    "google-generativeai>=0.5.4",
+    "websockets>=12.0",
+    "python-dotenv>=1.0.1",
+    "aiofiles>=23.2.1",
+    "docker>=7.1.0",
+    "requests>=2.32.3",
+    "python-multipart>=0.0.20",
+    "fastapi-mail>=1.4.2",
+    "cryptography>=43.0,<44.0",
+    "passlib[bcrypt]>=1.7.4",
+    "bcrypt==4.0.1",
+    "fastapi-csrf-protect>=1.0.3",
+    "httptools>=0.6.1",
+    "click>=8.1.7",
 ]
 
-# Poetry-specific tool configuration
-[tool.poetry]
-packages = [
-    { include = "app" },
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-asyncio>=0.23.7",
 ]
 
-# Project Dependencies
-[tool.poetry.dependencies]
-python = "^3.9"
-fastapi = "^0.110.0"
-uvicorn = {extras = ["standard"], version = "^0.29.0"}
-langchain = "^0.2.0"
-langchain-core = "^0.2.0"
-langchain-community = "^0.2.0"
-langchain-ollama = "^0.1.0"
-langchain-openai = "^0.1.0"
-langchain-anthropic = "^0.1.0"
-langchain-google-genai = "^1.0.0" 
-websockets = "^12.0"
-python-dotenv = "^1.0.1"
-aiofiles = "^23.2.1"
-docker = "^7.1.0"
-requests = "^2.32.3"
-python-multipart = "^0.0.20"
-fastapi-mail = "^1.4.2"
-certifi = "^2024.7.4" # Corrected from "^2025.4.26", which is not a valid version.
-pydantic = "^2.11.4"
-cryptography = ">=43.0,<44.0"
-passlib = {extras = ["bcrypt"], version = "^1.7.4"}
-bcrypt = "==4.0.1"
-fastapi-csrf-protect = "^1.0.3"
-
-# Build System Definition
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.4.1"
-pytest-asyncio = "^1.1.0"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[tool.hatch.build.targets.wheel]
+# This tells the build system where to find the application package
+packages = ["app"]
