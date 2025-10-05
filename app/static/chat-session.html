@@ -17,19 +17,15 @@
 <body class="bg-gray-100 text-gray-800">
 
     <div class="flex h-screen overflow-hidden bg-gray-100">
-        <!-- Sidebar -->
         <aside id="sidebar-loader-target" class="w-64 bg-gray-800 text-gray-200 flex flex-col shrink-0 transition-all duration-300 ease-in-out">
-            <!-- Sidebar content is loaded dynamically -->
         </aside>
 
-        <!-- Sidebar Toggle Button -->
         <div class="relative z-10 flex items-center justify-center">
             <button id="sidebar-toggle" class="absolute top-1/2 -translate-y-1/2 -ml-4 bg-gray-700 hover:bg-gray-600 text-white p-1 rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-300 ease-in-out">
                 <svg id="sidebar-toggle-icon" class="w-5 h-5 transition-transform duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
             </button>
         </div>
 
-        <!-- Main Chat Area -->
         <main class="flex-1 flex flex-col overflow-hidden">
             <header class="bg-white border-b border-gray-200 p-4 shadow-sm flex items-center justify-between">
                 <h1 id="chat-session-title" class="text-lg font-semibold text-gray-800 truncate">%%SESSION_NAME_PLACEHOLDER%%</h1>
@@ -66,7 +62,6 @@
             </div>
         </main>
         
-        <!-- Right Participants Panel -->
         <aside class="w-48 bg-gray-50 border-l border-gray-200 p-4 flex flex-col shrink-0">
             <h3 class="text-md font-semibold text-gray-700 mb-4 border-b pb-2">Participants</h3>
             <ul id="participant-list" class="space-y-2 overflow-y-auto">

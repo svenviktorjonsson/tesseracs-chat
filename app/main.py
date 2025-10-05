@@ -10,6 +10,7 @@ import sqlite3
 import uuid
 from urllib.parse import urlparse
 import datetime
+import shutil
 from typing import Optional, Dict, Any, List
 
 
@@ -31,7 +32,8 @@ from fastapi.responses import (
     RedirectResponse,
     JSONResponse,
     FileResponse,
-    Response
+    Response,
+    StreamingResponse
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -200,6 +202,215 @@ async def get_session_choice_page_route(
     session_choice_html_path = config.STATIC_DIR / "session-choice.html"
     replacements = {"[User Name]": user.get("name", "User")}
     return await serve_html_with_csrf(session_choice_html_path, request, csrf_protect, replacements=replacements)
+
+
+@app.get("/api/projects/{project_id}/download", tags=["Projects"])
+async def download_project_zip(
+    project_id: str = FastApiPath(..., description="The ID of the project to download."),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user)
+):
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
+        # 1. Fetch the project and verify its existence
+        cursor.execute("SELECT session_id, name, git_repo_blob FROM projects WHERE id = ?", (project_id,))
+        project_row = cursor.fetchone()
+
+        if not project_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
+
+        # 2. Security Check: Verify the user is a participant in the project's session
+        session_id = project_row["session_id"]
+        cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user['id']))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to access this project.")
+
+        # 3. Create the ZIP file using our utility function
+        repo_blob = project_row["git_repo_blob"]
+        zip_buffer, error = await asyncio.to_thread(project_utils.create_zip_from_blob, repo_blob)
+
+        if error:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to create ZIP file: {error}")
+
+        # 4. Stream the ZIP file back to the client
+        project_name = project_row["name"].replace(" ", "_")
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={project_name}.zip"}
+        )
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/api/projects/{project_id}/upload", status_code=status.HTTP_200_OK, tags=["Projects"])
+async def upload_file_to_project(
+    request: Request,
+    project_id: str = FastApiPath(..., description="The ID of the project to upload to."),
+    upload_data: models.FileUploadRequest = Body(...),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user),
+    csrf_protect: CsrfProtect = Depends()
+):
+    await csrf_protect.validate_csrf(request)
+
+    if ".." in upload_data.path or upload_data.path.startswith("/") or ".." in upload_data.filename:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file path or name.")
+    
+    MAX_UPLOAD_SIZE = 1 * 1024 * 1024
+    if len(upload_data.content.encode('utf-8')) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File is too large.")
+
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT session_id, name, git_repo_blob FROM projects WHERE id = ?", (project_id,))
+        project_row = cursor.fetchone()
+        if not project_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
+
+        session_id = project_row["session_id"]
+        cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user['id']))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+        new_repo_blob, error = await asyncio.to_thread(
+            project_utils.add_file_and_repack_repo,
+            repo_blob=project_row["git_repo_blob"],
+            upload_data=upload_data,
+            user_name=user["name"]
+        )
+
+        if error:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update project: {error}")
+
+        cursor.execute(
+            """UPDATE projects SET git_repo_blob = ?, created_at = datetime('now', 'utc') WHERE id = ?""",
+            (new_repo_blob, project_id)
+        )
+        conn.commit()
+
+        full_project_data_response = await get_project_details(project_id, user)
+        
+        await state.broadcast(session_id, {
+            "type": "project_updated",
+            "payload": {
+                "project_id": project_id,
+                "project_data": full_project_data_response.model_dump()
+            }
+        })
+
+        return {"detail": "File uploaded and project updated successfully.", "project_id": project_id}
+
+    except Exception as e:
+        if conn: conn.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@app.post("/api/projects/{project_id}/move", status_code=status.HTTP_200_OK, tags=["Projects"])
+async def move_file_in_project(
+    request: Request,
+    project_id: str = FastApiPath(..., description="The ID of the project to modify."),
+    move_data: models.FileMoveRequest = Body(...),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user),
+    csrf_protect: CsrfProtect = Depends()
+):
+    await csrf_protect.validate_csrf(request)
+
+    if ".." in move_data.sourcePath or ".." in move_data.destinationPath:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file path.")
+
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT session_id, name, git_repo_blob FROM projects WHERE id = ?", (project_id,))
+        project_row = cursor.fetchone()
+        if not project_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
+
+        session_id = project_row["session_id"]
+        cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user['id']))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+        new_repo_blob, error = await asyncio.to_thread(
+            project_utils.move_file_and_repack_repo,
+            repo_blob=project_row["git_repo_blob"],
+            source_path=move_data.sourcePath,
+            destination_path=move_data.destinationPath,
+            user_name=user["name"]
+        )
+
+        if error:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update project: {error}")
+
+        cursor.execute(
+            """UPDATE projects SET git_repo_blob = ?, created_at = datetime('now', 'utc') WHERE id = ?""",
+            (new_repo_blob, project_id)
+        )
+        conn.commit()
+
+        full_project_data_response = await get_project_details(project_id, user)
+        
+        await state.broadcast(session_id, {
+            "type": "project_updated",
+            "payload": {
+                "project_id": project_id,
+                "project_data": full_project_data_response.model_dump()
+            }
+        })
+
+        return {"detail": "File moved and project updated successfully.", "project_id": project_id}
+
+    except Exception as e:
+        if conn: conn.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@app.get("/api/projects/{project_id}/commit/{commit_hash}", response_model=List[models.ProjectFileResponse], tags=["Projects"])
+async def get_project_version(
+    project_id: str = FastApiPath(..., description="The ID of the project to fetch a version for."),
+    commit_hash: str = FastApiPath(..., description="The git commit hash of the version to retrieve."),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user)
+):
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT session_id, git_repo_blob FROM projects WHERE id = ?", (project_id,))
+        project_row = cursor.fetchone()
+
+        if not project_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
+
+        cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (project_row["session_id"], user['id']))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+        files_list_dict, error = await asyncio.to_thread(
+            project_utils.get_project_state_at_commit,
+            project_row["git_repo_blob"],
+            commit_hash
+        )
+
+        if error:
+            raise HTTPException(status_code=500, detail=error)
+
+        return [models.ProjectFileResponse(**f) for f in files_list_dict]
+
+    finally:
+        if conn:
+            conn.close()
 
 @app.get("/chat/{session_id}", response_class=HTMLResponse, name="get_chat_page_for_session", tags=["Pages"])
 async def get_chat_page_for_session(
@@ -398,6 +609,56 @@ async def create_new_session_route(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error creating session.")
     finally:
         if conn: conn.close()
+
+# In app/main.py
+
+@app.get("/api/projects/{project_id}", response_model=models.ProjectDetailResponse, tags=["Projects"])
+async def get_project_details(
+    project_id: str = FastApiPath(..., description="The ID of the project to fetch."),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user)
+):
+    """
+    Fetches the details, files, and commit history for a specific project.
+    """
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT session_id, name, git_repo_blob FROM projects WHERE id = ?", (project_id,))
+        project_row = cursor.fetchone()
+
+        if not project_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
+
+        session_id = project_row["session_id"]
+        cursor.execute("SELECT 1 FROM session_participants WHERE session_id = ? AND user_id = ?", (session_id, user['id']))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this project's session.")
+
+        repo_blob = project_row["git_repo_blob"]
+        
+        # Use the utility function that returns both files and commits
+        project_details, error = await asyncio.to_thread(project_utils.unpack_git_repo_from_blob, repo_blob)
+
+        if error or not project_details:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to unpack project repository: {error}")
+
+        files_list_dict = project_details.get("files", [])
+        commits_list = project_details.get("commits", [])
+        
+        project_files_for_model = [
+            models.ProjectFileResponse(**f) for f in files_list_dict
+        ]
+        
+        return models.ProjectDetailResponse(
+            id=project_id,
+            name=project_row["name"],
+            files=project_files_for_model,
+            commits=commits_list
+        )
+    finally:
+        if conn:
+            conn.close()
 
 @app.post("/register", response_model=models.RegistrationResponse, tags=["Authentication"])
 async def register_new_user(
@@ -841,6 +1102,8 @@ async def get_chat_messages_for_session(
 ) -> List[models.MessageItem]:
     user_id = user.get('id')
     conn = None
+    project_info_map: Dict[str, Dict[str, Any]] = {}
+
     try:
         conn = database.get_db_connection()
         cursor = conn.cursor()
@@ -850,18 +1113,47 @@ async def get_chat_messages_for_session(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
         
         cursor.execute("SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC", (session_id,))
-        messages_rows = cursor.fetchall()
+        messages_rows = [dict(row) for row in cursor.fetchall()]
         
+        project_ids_to_fetch = {msg['project_id'] for msg in messages_rows if msg.get('project_id')}
+
+        if project_ids_to_fetch:
+            project_rows = database.get_projects_by_ids(conn, list(project_ids_to_fetch))
+            
+            for project_row in project_rows:
+                project_details, error = project_utils.unpack_git_repo_from_blob(project_row['git_repo_blob'])
+                if error or not project_details:
+                    print(f"Error unpacking project {project_row['id']}: {error}")
+                    continue
+                
+                unpacked_files = project_details.get("files", [])
+                commits = project_details.get("commits", [])
+
+                project_files_for_model = [
+                    models.ProjectFileResponse(
+                        path=f['path'],
+                        content=f['content'],
+                        language=project_utils.get_language_from_extension(f['path']),
+                        size=f.get('size'),
+                        lastModified=f.get('lastModified')
+                    ) for f in unpacked_files
+                ]
+                project_info_map[project_row['id']] = {
+                    "name": project_row['name'],
+                    "files": project_files_for_model,
+                    "commits": commits
+                }
+
         messages_to_return = []
-        for row in messages_rows:
-            msg_dict = dict(row)
-            
-            cursor.execute("SELECT path, content, language FROM message_files WHERE message_id = ?", (msg_dict['id'],))
-            files_rows = cursor.fetchall()
-            
-            msg_dict["files"] = [dict(file_row) for file_row in files_rows] if files_rows else None
-            
-            messages_to_return.append(models.MessageItem(**msg_dict))
+        for msg_row in messages_rows:
+            project_id = msg_row.get('project_id')
+            if project_id and project_id in project_info_map:
+                project_details = project_info_map[project_id]
+                msg_row['project_files'] = project_details['files']
+                msg_row['project_name'] = project_details['name']
+                msg_row['project_commits'] = project_details['commits']
+
+            messages_to_return.append(models.MessageItem(**msg_row))
             
         return messages_to_return
 
@@ -1078,13 +1370,11 @@ async def websocket_endpoint(
 
     await websocket.accept()
     
-    # Create a queue and connection object for this client
     queue = asyncio.Queue()
     connection = state.Connection(websocket=websocket, queue=queue)
     await state.connect(session_id_ws, connection)
 
     async def reader(ws: WebSocket, q: asyncio.Queue):
-        """Handles receiving messages from the client."""
         try:
             while True:
                 received_data = await ws.receive_text()
@@ -1126,7 +1416,6 @@ async def websocket_endpoint(
             traceback.print_exc()
 
     async def writer(ws: WebSocket, q: asyncio.Queue):
-        """Handles sending messages from the queue to the client."""
         try:
             while True:
                 message = await q.get()
@@ -1138,7 +1427,6 @@ async def websocket_endpoint(
             print(f"Error in writer task for client {client_js_id}: {e}")
             traceback.print_exc()
 
-    # Run reader and writer tasks concurrently
     reader_task = asyncio.create_task(reader(websocket, queue))
     writer_task = asyncio.create_task(writer(websocket, queue))
     
@@ -1151,50 +1439,103 @@ async def websocket_endpoint(
         reader_task.cancel()
         writer_task.cancel()
         await state.disconnect(session_id_ws, connection)
-        await docker_utils.cleanup_client_containers(client_js_id)
 
 async def handle_code_related_message(message_type: str, payload: dict, websocket: WebSocket, client_id: str, session_id: str):
-    """Helper to process code-related messages to avoid cluttering the reader."""
     if message_type == "run_code" and payload:
         project_data = payload.get("project_data")
-        project_id = payload.get("project_id")
+        # This is the temporary ID for the run block, not the persistent project ID
+        run_block_id = payload.get("project_id")
+        # This is the TRUE persistent project ID from the project explorer
+        persistent_project_id = payload.get("persistent_project_id")
         language = payload.get("language")
-        if not all([project_data, project_id, language]): return
 
-        project_path = await asyncio.to_thread(project_utils.create_project_directory_and_files, project_data)
-        if not project_path:
-            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Failed to create project files."})
+        if not all([project_data, run_block_id, language]): return
+
+        project_path, error = await asyncio.to_thread(
+            project_utils.create_project_directory_and_files, project_data
+        )
+        if error or not project_path:
+            await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Failed to create project files: {error}"})
             return
-        
+
         lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
         if not lang_config:
-            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Language '{language}' is not configured."})
-            return
-        
-        run_script = next((f for f in project_data.get("files", []) if f["path"].endswith('run.sh')), None)
-        if not run_script:
-            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Could not find run.sh in project."})
+            await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Language '{language}' is not configured."})
+            shutil.rmtree(project_path)
             return
 
-        await docker_utils.run_code_in_docker(
-            websocket=websocket, client_id=client_id, project_id=project_id,
-            project_path=project_path, run_command="sh run.sh", lang_config=lang_config
+        exit_code, full_output, error_message = await docker_utils.run_code_in_docker(
+            websocket=websocket, client_id=client_id, project_id=run_block_id,
+            project_data=project_data, project_path=project_path,
+            run_command="sh run.sh", lang_config=lang_config
         )
-    
+
+        final_payload = {"project_id": run_block_id, "exit_code": exit_code}
+        if error_message:
+            final_payload["error"] = error_message
+        await utils.send_ws_message(websocket, "code_finished", final_payload)
+
+        if exit_code == 0 and full_output is not None and persistent_project_id:
+            user = await auth.get_user_by_session_token_internal(websocket.cookies.get(auth.SESSION_COOKIE_NAME))
+            if not user: return
+
+            # Unpack the original repo, add output, commit, and repack
+            conn = None
+            try:
+                conn = database.get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT git_repo_blob FROM projects WHERE id = ?", (persistent_project_id,))
+                project_row = cursor.fetchone()
+
+                if project_row:
+                    original_blob = project_row["git_repo_blob"]
+                    temp_repo_path, unpack_error = project_utils.unpack_git_repo_to_temp_dir(original_blob)
+                    if unpack_error: raise Exception(unpack_error)
+
+                    try:
+                        commit_error = await asyncio.to_thread(
+                            project_utils.add_output_and_commit, temp_repo_path, full_output, user["name"]
+                        )
+                        if commit_error: raise Exception(commit_error)
+
+                        new_repo_blob, repack_error = project_utils.repack_repo_from_path(temp_repo_path)
+                        if repack_error: raise Exception(repack_error)
+
+                        cursor.execute("UPDATE projects SET git_repo_blob = ? WHERE id = ?", (new_repo_blob, persistent_project_id))
+                        conn.commit()
+
+                        full_project_data_response = await get_project_details(persistent_project_id, user)
+                        await state.broadcast(session_id, {
+                            "type": "project_updated",
+                            "payload": {
+                                "project_id": persistent_project_id,
+                                "project_data": full_project_data_response.model_dump()
+                            }
+                        })
+                    finally:
+                        shutil.rmtree(os.path.dirname(temp_repo_path))
+            except Exception as e:
+                print(f"ERROR during output commit: {e}")
+                traceback.print_exc()
+            finally:
+                if conn: conn.close()
+
+        shutil.rmtree(project_path)
+
     elif message_type == "stop_code" and payload:
         if project_id := payload.get("project_id"):
             await docker_utils.stop_container(project_id)
 
     elif message_type == "code_input" and payload:
         await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
-    
+
     elif message_type == "save_code_content" and payload:
         await asyncio.to_thread(
             database.save_edited_code_content,
             payload['session_id'], payload['code_block_id'], payload['language'], payload['code_content']
         )
         state.remove_memory_for_client(payload['session_id'])
-    
+
     elif message_type == "save_code_result" and payload:
         payload['session_id'] = session_id
         await asyncio.to_thread(database.save_code_execution_result, **payload)
@@ -1356,16 +1697,31 @@ async def delete_session_by_host(
     finally:
         if conn: conn.close()
 
+# In main.py
+
 @app.on_event("startup")
 async def startup_event():
+    print("=" * 60)
+    print(" Tesseracs Chat - Code Version: 2025-09-25-STREAMING-FIX-6")
+    print("=" * 60)
+
+    print("Running startup cleanup for orphaned Docker containers...")
+    await docker_utils.cleanup_dangling_containers()
+
     print("Application startup: Initializing database...")
     db_parent_dir = config.DATABASE_PATH.parent
     if not db_parent_dir.exists():
         db_parent_dir.mkdir(parents=True, exist_ok=True)
     database.init_db()
     print("Database initialization check complete.")
+    
+    # --- ADD THIS BLOCK ---
+    print("Starting background container scavenger...")
+    # Run the scavenger every 10 minutes (600 seconds)
+    scavenger_interval = 600 
+    asyncio.create_task(docker_utils.background_scavenger_task(scavenger_interval))
+    # --- END OF BLOCK ---
 
-    # ADD THIS LINE
     llm.start_llm_worker()
 
     try:

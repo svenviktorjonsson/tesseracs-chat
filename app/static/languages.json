@@ -4,13 +4,13 @@
     "is_preview_server": true
   },
   "python": {
-    "image": "python-runner-with-uv"
+    "image": "tesseracs-python"
   },
   "javascript": {
     "image": "tesseracs-node"
   },
   "bash": {
-    "image": "python-runner-with-uv"
+    "image": "tesseracs-python"
   },
   "c": {
     "image": "tesseracs-gcc"
@@ -32,5 +32,8 @@
   },
   "rust": {
     "image": "tesseracs-rust"
+  },
+  "latex": {
+    "image": "tesseracs-latex"
   }
 }

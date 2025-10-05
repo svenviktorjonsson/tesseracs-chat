@@ -2,20 +2,21 @@ services:
   app:
     build: .
     environment:
+      - HOST_PROJECT_PATH=${HOST_PROJECT_PATH}
       - PYTHONUNBUFFERED=1
     ports:
       - "8001:8000"
     volumes:
       - ./:/code
       - /code/.venv
-      - db_data:/code/tesseracs_chat.db
+      - ./tesseracs_chat.db:/code/tesseracs_chat.db
       - ./jobs:/code/jobs
+      - ./.data/projects:/projects
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
     command: >
-      sh -c "/code/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --http httptools"
+      sh -c "/code/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /code/app --http httptools"
 
-# Add this section at the bottom of the file
 volumes:
   db_data:

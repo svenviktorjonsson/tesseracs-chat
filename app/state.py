@@ -3,11 +3,15 @@ import json
 import sqlite3
 import datetime
 from langchain.memory import ConversationBufferMemory
-from langchain_core.messages import messages_from_dict, messages_to_dict
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, messages_from_dict, messages_to_dict
 from typing import Dict, Any, Optional, List
 from fastapi import WebSocket
-from . import database
+from . import database, project_utils
 import traceback
+import os
+import subprocess
+import shutil
+from pathlib import Path
 
 client_memory: Dict[str, ConversationBufferMemory] = {}
 running_containers: Dict[str, Dict[str, Any]] = {}
@@ -19,7 +23,6 @@ running_previews_lock = asyncio.Lock()
 
 
 def _get_memory_from_db_sync(session_id: str) -> Optional[ConversationBufferMemory]:
-    """A synchronous function to load and reconstruct memory from the database."""
     conn = None
     try:
         conn = database.get_db_connection()
@@ -31,27 +34,72 @@ def _get_memory_from_db_sync(session_id: str) -> Optional[ConversationBufferMemo
         )
         messages_rows = cursor.fetchall()
         
-        edited_blocks = database.get_edited_code_blocks(session_id)
-        reconstructed_messages = []
+        langchain_messages: List[BaseMessage] = []
 
         for row in messages_rows:
             msg = dict(row)
-            reconstructed_messages.append(msg)
-
-        if reconstructed_messages:
-            memory_instance = ConversationBufferMemory(return_messages=True, memory_key="history")
-            langchain_messages = []
-            for msg in reconstructed_messages:
-                if msg['sender_type'] == 'user':
-                    content = msg['content'] or ""
-                    langchain_messages.append({"type": "human", "data": {"content": content}})
-                elif msg['sender_type'] == 'ai':
-                    content = msg['content'] or ""
-                    langchain_messages.append({"type": "ai", "data": {"content": content}})
             
-            memory_instance.chat_memory.messages = messages_from_dict(langchain_messages)
+            if msg['sender_type'] == 'user':
+                langchain_messages.append(HumanMessage(content=msg['content'] or ""))
+            
+            elif msg['sender_type'] == 'ai':
+                ai_content = msg['content'] or ""
+                
+                if msg['project_id']:
+                    cursor.execute("SELECT git_repo_blob FROM projects WHERE id = ?", (msg['project_id'],))
+                    project_row = cursor.fetchone()
+                    
+                    if project_row and project_row['git_repo_blob']:
+                        repo_blob = project_row['git_repo_blob']
+                        project_path, error = project_utils.unpack_git_repo_to_temp_dir(repo_blob)
+                        
+                        if project_path:
+                            try:
+                                log_result = subprocess.run(
+                                    ['git', 'log', '--pretty=format:%h - %s (%cr)'],
+                                    cwd=project_path, capture_output=True, text=True, check=True
+                                )
+                                commit_history = log_result.stdout.strip()
+
+                                ls_result = subprocess.run(
+                                    ['git', 'ls-tree', '-r', '--name-only', 'HEAD'],
+                                    cwd=project_path, capture_output=True, text=True, check=True
+                                )
+                                file_paths = ls_result.stdout.strip().split('\n')
+
+                                project_context_parts = [
+                                    ai_content,
+                                    "\n\n--- PROJECT CONTEXT ---",
+                                    "Commit History:",
+                                    commit_history,
+                                    "\nLatest Files:"
+                                ]
+
+                                for file_path in file_paths:
+                                    if file_path:
+                                        try:
+                                            full_file_path = os.path.join(project_path, file_path)
+                                            file_content = Path(full_file_path).read_text(encoding="utf-8")
+                                            project_context_parts.append(f"--- file: {file_path} ---\n{file_content}")
+                                        except Exception as e:
+                                            project_context_parts.append(f"--- file: {file_path} ---\nError reading file: {e}")
+                                
+                                ai_content = "\n".join(project_context_parts)
+
+                            except Exception as e:
+                                print(f"STATE_ERROR: Failed to process git repo for project {msg['project_id']}: {e}")
+                            finally:
+                                unpack_dir = os.path.dirname(project_path)
+                                if os.path.exists(unpack_dir):
+                                    shutil.rmtree(unpack_dir)
+                
+                langchain_messages.append(AIMessage(content=ai_content))
+
+        if langchain_messages:
+            memory_instance = ConversationBufferMemory(return_messages=True, memory_key="history")
+            memory_instance.chat_memory.messages = langchain_messages
             return memory_instance
-        
+            
         return None
     finally:
         if conn:

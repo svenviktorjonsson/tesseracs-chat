@@ -2,10 +2,11 @@
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 
-# Install dependencies needed for git and the .NET install script
+# Install dependencies needed for the .NET install script
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl python3-venv git && \
+    apt-get install -y --no-install-recommends curl python3-venv coreutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

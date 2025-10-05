@@ -7,6 +7,36 @@ class LLMAvailableModel(BaseModel):
     display_name: str
     context_window: Optional[int] = None
 
+class ProjectFileResponse(BaseModel):
+    path: str
+    content: str
+    language: Optional[str] = None
+    size: Optional[int] = None
+    lastModified: Optional[float] = None
+
+class MessageItem(BaseModel):
+    id: int
+    session_id: str
+    user_id: Optional[int] = None
+    sender_name: Optional[str] = None
+    sender_type: str
+    content: Optional[str] = None
+    timestamp: str
+    turn_id: Optional[int] = None
+    reply_to_message_id: Optional[int] = None
+    sender_initials: Optional[str] = None
+    sender_color: Optional[str] = None
+    project_id: Optional[str] = None
+    prompting_user_id: Optional[int] = None
+    project_name: Optional[str] = None
+    project_files: Optional[List[ProjectFileResponse]] = None
+    project_commits: Optional[List[Dict[str, Any]]] = None
+
+class ProjectDetailResponse(BaseModel):
+    id: str
+    name: str
+    files: List[ProjectFileResponse]
+    commits: Optional[List[Dict[str, Any]]] = None
 class LLMProviderDetail(BaseModel):
     id: str
     display_name: str
@@ -109,20 +139,15 @@ class FileItem(BaseModel):
     content: str
     language: Optional[str] = None
 
-class MessageItem(BaseModel):
-    id: int
-    session_id: str
-    user_id: Optional[int] = None
-    sender_name: Optional[str] = None
-    sender_type: str
-    content: Optional[str] = None  # This is now for conversational text only
-    timestamp: str
-    turn_id: Optional[int] = None
-    reply_to_message_id: Optional[int] = None
-    sender_initials: Optional[str] = None
-    sender_color: Optional[str] = None
-    files: Optional[List[FileItem]] = None # This replaces the old project_data
-    prompting_user_id: Optional[int] = None
+
+class FileUploadRequest(BaseModel):
+    path: str
+    filename: str
+    content: str
+    
+class FileMoveRequest(BaseModel):
+    sourcePath: str
+    destinationPath: str
 
 class MessageListContainerResponse(BaseModel):
     messages: List[MessageItem]

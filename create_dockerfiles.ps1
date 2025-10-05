@@ -1,6 +1,6 @@
 # This script creates or overwrites all Dockerfiles with their final, correct versions.
 
-Write-Host "--- Updating all Dockerfiles to include git ---" -ForegroundColor Green
+Write-Host "--- Updating all Dockerfiles (git removed from specialists) ---" -ForegroundColor Green
 Write-Host ""
 
 # Helper function to create/overwrite a Dockerfile
@@ -27,95 +27,105 @@ function Set-DockerfileContent {
 
 # --- Define Content for Each Dockerfile ---
 
-# Base Python image
+# Base Python image (git removed)
 $pythonDockerfile = @"
 # dockerfiles/python/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Install 'coreutils', which contains essential tools like 'stdbuf'
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
+    apt-get install -y --no-install-recommends coreutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
 RUN pip install uv
 CMD ["/bin/sh"]
 "@
 
-# C/C++ Image
+# C/C++ Image (git removed)
 $gccDockerfile = @"
 # dockerfiles/gcc/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc g++ make git && \
+    apt-get install -y --no-install-recommends gcc g++ make coreutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# Node.js/Web Image
+# Node.js/Web Image (git removed)
 $nodeDockerfile = @"
 # dockerfiles/node/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends nodejs npm curl git && \
+    apt-get install -y --no-install-recommends nodejs npm curl coreutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# Java Image
+# Java Image (git removed)
 $javaDockerfile = @"
 # dockerfiles/java/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends default-jdk git && \
+    apt-get install -y --no-install-recommends default-jdk coreutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# Rust Image
+# Rust Image (git removed)
 $rustDockerfile = @"
 # dockerfiles/rust/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends rustc cargo curl git && \
+    apt-get install -y --no-install-recommends rustc cargo curl coreutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# Go Image
+# Go Image (git removed)
 $goDockerfile = @"
 # dockerfiles/go/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends golang git && \
+    apt-get install -y --no-install-recommends golang coreutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 "@
 
-# .NET/C# Image
+# .NET/C# Image (git removed)
 $dotnetDockerfile = @"
 # dockerfiles/dotnet/Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 
-# Install dependencies needed for git and the .NET install script
+# Install dependencies needed for the .NET install script
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl python3-venv git && \
+    apt-get install -y --no-install-recommends curl python3-venv coreutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -133,6 +143,20 @@ ENV PATH="/root/.dotnet:`$VIRTUAL_ENV/bin:`$PATH"
 RUN pip install uv
 "@
 
+# LaTeX Image
+$latexDockerfile = @"
+# dockerfiles/latex/Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends texlive-latex-base texlive-fonts-recommended make coreutils && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+RUN pip install uv
+"@
+
 
 # --- Write all the files ---
 Set-DockerfileContent -DockerfilePath "./dockerfiles/python/Dockerfile" -Content $pythonDockerfile
@@ -142,6 +166,7 @@ Set-DockerfileContent -DockerfilePath "./dockerfiles/java/Dockerfile" -Content $
 Set-DockerfileContent -DockerfilePath "./dockerfiles/rust/Dockerfile" -Content $rustDockerfile
 Set-DockerfileContent -DockerfilePath "./dockerfiles/go/Dockerfile" -Content $goDockerfile
 Set-DockerfileContent -DockerfilePath "./dockerfiles/dotnet/Dockerfile" -Content $dotnetDockerfile
+Set-DockerfileContent -DockerfilePath "./dockerfiles/latex/Dockerfile" -Content $latexDockerfile
 
 Write-Host ""
 Write-Host "--- All Dockerfiles have been updated successfully! ---" -ForegroundColor Green

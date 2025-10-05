@@ -16,7 +16,7 @@ import os
 root = fr"./"
 
 # Extensions to include
-extensions = ('.py', '.html', '.css', '.js', '.json', '.md', '.txt', '.yaml', '.yml', '.toml')
+extensions = ('.py', '.html', '.ps1', '.css', '.js', '.json', '.md', '.txt', '.yaml', '.yml', '.toml')
 
 # Directories to completely exclude (will not be walked)
 exclude_dirs = (

@@ -5,6 +5,8 @@
 /app/static/js/d3.min.js
 /app/static/js/mpld3.min.js
 
+/.data/
+
 # Python
 # Ignore virtual environments, bytecode, and distribution folders.
 __pycache__/

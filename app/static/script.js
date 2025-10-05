@@ -4,6 +4,8 @@ import katex from 'katex';
 import Prism from 'prismjs';
 import { updateAndDisplayParticipants } from './js/session-manager.js';
 
+import './js/project-explorer.js';
+
 // --- Prism Components ---
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-python';
@@ -21,6 +23,7 @@ import 'prismjs/components/prism-docker';
 import 'prismjs/components/prism-typescript';
 import 'prismjs/components/prism-c';
 import 'prismjs/components/prism-cpp';
+import 'prismjs/components/prism-latex'
 
 // --- DOM Elements ---
 const chatHistory = document.getElementById('chat-history');
@@ -78,6 +81,92 @@ let currentStreamingFile = {
     codeElement: null,
     path: null
 };
+let currentStreamingExplorer = null;
+
+
+document.addEventListener('fileToggle', (event) => {
+    const { path, isChecked, recursive, turnContainer } = event.detail;
+    if (!turnContainer) {
+        console.error("fileToggle event is missing its turnContainer!");
+        return;
+    }
+
+    const codeBlocksInScope = turnContainer.querySelectorAll('.block-container[data-path]');
+    
+    codeBlocksInScope.forEach(block => {
+        const blockPath = block.dataset.path;
+        let shouldToggle = recursive ? blockPath.startsWith(path) : blockPath === path;
+        if (shouldToggle) {
+            block.style.display = isChecked ? '' : 'none';
+        }
+    });
+});
+
+document.addEventListener('downloadClicked', (event) => {
+    const { projectId } = event.detail;
+    if (projectId) {
+        window.location.href = `/api/projects/${projectId}/download`;
+    }
+});
+
+document.addEventListener('fileUpload', (event) => {
+    const { projectId, path, filename, content } = event.detail;
+    let responseStatus = 'N/A';
+
+    fetch(`/api/projects/${projectId}/upload`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': window.csrfTokenRaw
+        },
+        body: JSON.stringify({ path, filename, content })
+    })
+    .then(response => {
+        responseStatus = response.status;
+        if (!response.ok) {
+            return response.json().then(err => {
+                const error = new Error(err.detail || 'Upload failed due to an unknown server error.');
+                error.response = response;
+                throw error;
+            });
+        }
+        return response.json();
+    })
+    .then(data => {
+        console.log("File upload successful, waiting for WebSocket update.", data);
+    })
+    .catch(error => {
+        console.error('File upload error:', error);
+        
+        let alertMessage = `Error uploading file: ${error.message}\n\n`;
+        alertMessage += `Request Status: ${responseStatus}\n`;
+        if (error.response) {
+            alertMessage += `Endpoint URL: ${error.response.url}`;
+        }
+
+        alert(alertMessage);
+    });
+});
+
+document.addEventListener('fileMove', (event) => {
+    const { projectId, sourcePath, destinationPath } = event.detail;
+    fetch(`/api/projects/${projectId}/move`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': window.csrfTokenRaw
+        },
+        body: JSON.stringify({ source_path: sourcePath, destination_path: destinationPath })
+    })
+    .then(response => {
+        if (!response.ok) return response.json().then(err => { throw new Error(err.detail || 'Move failed') });
+        console.log("File move successful, waiting for WebSocket update.");
+    })
+    .catch(error => {
+        console.error('File move error:', error);
+        alert(`Error moving file: ${error.message}`);
+    });
+});
 
 
 function escapeHTML(str) {
@@ -209,12 +298,9 @@ function getSessionIdFromPath() {
 }
 
 function scrollToBottom(behavior = 'auto') {
-    const isNearBottom = chatHistory.scrollHeight - chatHistory.scrollTop - chatHistory.clientHeight < 100;
-    if (isNearBottom) {
-        requestAnimationFrame(() => {
-            chatHistory.scrollTo({ top: chatHistory.scrollHeight, behavior: behavior });
-        });
-    }
+    requestAnimationFrame(() => {
+        chatHistory.scrollTo({ top: chatHistory.scrollHeight, behavior: behavior });
+    });
 }
 
 function setInputDisabledState(inputsDisabled, aiResponding) {
@@ -418,6 +504,12 @@ function renderMarkdownAndKatex(contentString, targetElement) {
     }
 
     targetElement.innerHTML = html;
+
+    targetElement.querySelectorAll('pre code[class*="language-"]').forEach((block) => {
+        if (typeof Prism !== 'undefined') {
+            Prism.highlightElement(block);
+        }
+    });
 }
 
 function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isRunnable = false, promptingUserId = null) {
@@ -487,9 +579,11 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
     container.appendChild(codeHeader);
     container.appendChild(preElement);
     codeBlocksAreaElement.appendChild(container);
+
     if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') {
         try { Prism.highlightElement(codeElement); } catch (e) { console.error(`Prism highlight error:`, e); }
     }
+
     toggleCodeBtn.addEventListener('click', () => { const isHidden = preElement.classList.toggle('hidden'); toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide'; });
     copyCodeBtn.addEventListener('click', async () => { try { await navigator.clipboard.writeText(codeElement.textContent || ''); copyCodeBtn.textContent = 'Copied!'; setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500); } catch (err) { console.error('Failed to copy code: ', err); } });
     restoreBtn.addEventListener('click', async () => { const originalContent = container.dataset.originalContent; const sessionId = getSessionIdFromPath(); if (!sessionId || !window.csrfTokenRaw) return; try { const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${blockId}`, { method: 'DELETE', headers: { 'X-CSRF-Token': window.csrfTokenRaw } }); if (response.ok) { const cursorPos = getCursorPosition(codeElement); codeElement.textContent = originalContent; if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length)); } catch (e) { console.error(`Prism highlight error:`, e); } } saveCodeBlockState(blockId, originalContent); } else { const error = await response.json(); alert(`Failed to restore code block: ${error.detail || 'Server error'}`); } } catch (error) { console.error("Error restoring code block:", error); alert("An error occurred while restoring the code block."); } });
@@ -497,6 +591,48 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
     codeElement.addEventListener('blur', () => { const content = codeElement.textContent || ''; saveCodeBlockContent(blockId, content); });
     codeElement.addEventListener('input', () => { const cursorPos = getCursorPosition(codeElement); const content = codeElement.textContent || ''; setTimeout(() => { if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, cursorPos); } catch (e) { console.error(`Prism highlight error:`, e); } } }, 10); saveCodeBlockState(blockId, content); });
     return container;
+}
+
+function handleCodeWaitingInput(payload) {
+    const { project_id } = payload;
+    const outputBlockId = `output-for-${project_id}`;
+    const outputContainer = document.getElementById(outputBlockId);
+    if (!outputContainer) return;
+
+    const outputPre = outputContainer.querySelector('.block-output-console pre');
+    if (!outputPre) return;
+
+    // Check if an input already exists to prevent duplicates
+    if (outputPre.querySelector('.console-input')) return;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'console-input';
+    input.spellcheck = false;
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const value = input.value;
+
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({
+                    type: 'code_input',
+                    payload: { project_id: project_id, input: value }
+                }));
+            }
+
+            // Simply remove the input field. The terminal's echo will appear shortly.
+            input.remove();
+        }
+    });
+
+    outputPre.appendChild(input);
+
+    // This timeout ensures the element is in the DOM before we try to focus it.
+    setTimeout(() => {
+        input.focus();
+    }, 0);
 }
 
 function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
@@ -574,6 +710,10 @@ function handleStructuredMessage(messageData) {
                 addCodeOutput(outputPre, payload.stream, payload.data);
                 outputContainer.style.display = ''; // Ensure it's visible
             }
+            break;
+        }
+        case 'code_waiting_input': {
+            handleCodeWaitingInput(payload);
             break;
         }
         case 'code_finished': {
@@ -717,56 +857,56 @@ async function handleRunStopCodeClick(event) {
     const button = event.currentTarget;
     const container = button.closest('.block-container');
     if (!container) return;
-    const codeBlockId = container.id;
+
+    const runBlockId = container.id;
     const status = button.dataset.status;
+
     if (status === 'running' || status === 'previewing') {
         if (websocket && websocket.readyState === WebSocket.OPEN) {
-            websocket.send(JSON.stringify({ type: 'stop_code', payload: { project_id: codeBlockId } }));
+            websocket.send(JSON.stringify({ type: 'stop_code', payload: { project_id: runBlockId } }));
         }
         return;
     }
-    const turnIdMatch = codeBlockId.match(/turn(\d+)/);
-    const turnId = turnIdMatch ? parseInt(turnIdMatch[1], 10) : null;
-    const projectData = turnId ? projectDataCache[turnId] : null;
-    if (!projectData) {
+
+    const turnContainer = button.closest('.ai-turn-container');
+    const explorer = turnContainer ? turnContainer.querySelector('project-explorer') : null;
+    if (!explorer || !explorer.projectData) {
         alert("Error: Could not find project data for this execution.");
         return;
     }
-    const updatedProjectData = JSON.parse(JSON.stringify(projectData));
-    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turnId}']`);
-    if (turnContainer) {
-        updatedProjectData.files.forEach(file => {
-            const allTitleElements = turnContainer.querySelectorAll('.block-title .title-text');
-            const codeBlockTitle = Array.from(allTitleElements).find(span => span.textContent === file.path);
-            if (codeBlockTitle) {
-                const codeElement = codeBlockTitle.closest('.block-container').querySelector('code');
-                if (codeElement) {
-                    file.content = codeElement.textContent;
-                }
-            }
-        });
-    }
 
-    // --- FIX START: Correct language detection ---
-    let mainLanguage = null;
-    const languagePriority = ['html', 'python', 'javascript', 'cpp', 'c', 'rust', 'go', 'java', 'csharp', 'typescript'];
+    const persistentProjectId = explorer.projectData.projectId || explorer.projectData.id;
+    const projectData = explorer.projectData;
+
+    const updatedProjectData = JSON.parse(JSON.stringify(projectData));
+    const allCodeBlocksInTurn = turnContainer.querySelectorAll('.block-container[id^="code-block-turn"]');
+
+    allCodeBlocksInTurn.forEach(block => {
+        const path = block.dataset.path;
+        const codeElem = block.querySelector('code');
+        if (path && codeElem) {
+            const fileInProject = updatedProjectData.files.find(f => f.path === path);
+            if (fileInProject) {
+                fileInProject.content = codeElem.textContent;
+            }
+        }
+    });
+
+    let mainLanguage = 'bash';
+    const languagePriority = ['html', 'csharp', 'java', 'go', 'rust', 'python', 'cpp', 'c', 'typescript', 'javascript'];
+    const projectLanguages = new Set(updatedProjectData.files.map(file => file.language));
     for (const lang of languagePriority) {
-        if (updatedProjectData.files.some(file => file.language === lang)) {
+        if (projectLanguages.has(lang)) {
             mainLanguage = lang;
             break;
         }
     }
-    // If no primary language is found, default to bash.
-    if (!mainLanguage) {
-        mainLanguage = 'bash';
-    }
-    // --- FIX END ---
 
     if (websocket && websocket.readyState === WebSocket.OPEN) {
         const titleElement = container.querySelector('.block-title .title-text');
         const title = titleElement ? titleElement.textContent : 'run.sh';
-        const promptingUserId = projectData.prompting_user_id || null;
-        const outputContainer = createOrClearOutputContainer(codeBlockId, title, promptingUserId);
+        const promptingUserId = JSON.parse(turnContainer.dataset.projectData).prompting_user_id || null;
+        const outputContainer = createOrClearOutputContainer(runBlockId, title, promptingUserId);
         updateHeaderStatus(outputContainer, 'Starting...', 'running');
         button.dataset.status = 'running';
         button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><rect width="100" height="100" rx="15"/></svg>`;
@@ -775,7 +915,8 @@ async function handleRunStopCodeClick(event) {
             type: 'run_code',
             payload: {
                 project_data: updatedProjectData,
-                project_id: codeBlockId,
+                project_id: runBlockId,
+                persistent_project_id: persistentProjectId, // Send the persistent ID
                 language: mainLanguage
             }
         }));
@@ -807,10 +948,10 @@ function updateHeaderStatus(outputContainer, statusText, statusClass) {
     }
 }
 
+
 function addCodeOutput(outputPreElement, streamType, text, language) {
     if (!outputPreElement || !text) return;
 
-    // The language is now passed in directly, so we don't need to guess it from the DOM.
     if (language === 'html' && streamType !== 'stderr') {
         if (!outputPreElement.htmlBuffer) {
             outputPreElement.htmlBuffer = '';
@@ -819,12 +960,27 @@ function addCodeOutput(outputPreElement, streamType, text, language) {
         return;
     }
 
-    // For all other languages, append the output as text.
-    const span = document.createElement('span');
-    span.classList.add(streamType === 'stderr' ? 'stderr-output' : 'stdout-output');
-    span.textContent = text;
-    outputPreElement.appendChild(span);
-    outputPreElement.scrollTop = outputPreElement.scrollHeight;
+    const spanClass = streamType === 'stderr' ? 'stderr-output' : 'stdout-output';
+    let lastSpan = outputPreElement.lastChild;
+
+    if (lastSpan && lastSpan.nodeName === 'SPAN' && lastSpan.classList.contains(spanClass)) {
+        lastSpan.textContent += text;
+    } else {
+        const newSpan = document.createElement('span');
+        newSpan.className = spanClass;
+        newSpan.textContent = text;
+        outputPreElement.appendChild(newSpan);
+    }
+    
+    requestAnimationFrame(() => {
+        const scroller = outputPreElement.parentElement;
+        if (scroller) {
+            // This scrolls the inside of the output pane
+            scroller.scrollTop = scroller.scrollHeight;
+        }
+        // This new line scrolls the main chat window
+        scrollToBottom('auto'); 
+    });
 }
 
 function performUndo(blockId) {
@@ -964,11 +1120,7 @@ async function loadAndDisplayChatHistory(sessionId) {
     chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>';
 
     try {
-        const [messagesResponse, codeResultsResponse, editedBlocksResponse] = await Promise.all([
-            fetch(`/api/sessions/${sessionId}/messages`),
-            fetch(`/api/sessions/${sessionId}/code-results`),
-            fetch(`/api/sessions/${sessionId}/edited-blocks`)
-        ]);
+        const messagesResponse = await fetch(`/api/sessions/${sessionId}/messages`);
 
         if (!messagesResponse.ok) {
             const errorData = await messagesResponse.json().catch(() => ({ detail: "Failed to load chat history." }));
@@ -976,154 +1128,203 @@ async function loadAndDisplayChatHistory(sessionId) {
         }
 
         const messages = await messagesResponse.json();
-        const codeResults = codeResultsResponse.ok ? await codeResultsResponse.json() : [];
-        const editedCodeBlocks = editedBlocksResponse.ok ? await editedBlocksResponse.json() : {};
-
         chatHistoryDiv.innerHTML = '';
 
         if (messages.length === 0) {
-            chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">No messages in this session yet. Start chatting!</p>';
+            chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">No messages in this session yet.</p>';
         } else {
+            currentTurnId = Math.max(0, ...messages.map(msg => msg.turn_id || 0));
+
+            const editedBlocksResponse = await fetch(`/api/sessions/${sessionId}/edited-blocks`);
+            const editedCodeBlocks = editedBlocksResponse.ok ? await editedBlocksResponse.json() : {};
+
             messages.forEach(msg => {
                 renderSingleMessage(msg, chatHistoryDiv, true, editedCodeBlocks);
             });
 
-            codeResults.forEach(result => {
-                restoreCodeExecutionResult(result);
-            });
+            const projectContainers = Array.from(chatHistoryDiv.querySelectorAll('.ai-turn-container[data-project-name]'));
+            const latestProjects = new Map();
 
-            if (typeof Prism !== 'undefined' && typeof Prism.highlightAll === 'function') {
-                Prism.highlightAll();
-            }
-
-            const allCodeBlocks = chatHistoryDiv.querySelectorAll('.block-container[id^="code-block-turn"]');
-            let maxBlockIndex = 0;
-            allCodeBlocks.forEach(block => {
-                const parts = block.id.split('-');
-                const blockIndex = parseInt(parts[parts.length - 1], 10);
-                if (!isNaN(blockIndex) && blockIndex > maxBlockIndex) {
-                    maxBlockIndex = blockIndex;
+            projectContainers.forEach(container => {
+                const projectName = container.dataset.projectName;
+                if (projectName) {
+                    latestProjects.set(projectName, container);
                 }
             });
-            streamingCodeBlockCounter = maxBlockIndex;
 
-            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+            projectContainers.forEach(container => {
+                const projectName = container.dataset.projectName;
+                if (projectName && latestProjects.get(projectName) !== container) {
+                    const explorer = container.querySelector('project-explorer');
+                    const codeArea = container.querySelector('.code-blocks-area');
+                    if (explorer) explorer.style.display = 'none';
+                    if (codeArea) codeArea.style.display = 'none';
+                    
+                    const messageBubble = container.querySelector('.message.ai-message, .system-message');
+                    if (!messageBubble) {
+                        container.style.display = 'none';
+                    }
+                }
+            });
         }
+        
+        chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
 
     } catch (error){
         console.error(`Failed to fetch or display chat history for session ${sessionId}:`, error);
-        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An unexpected error occurred while loading history: ${escapeHTML(error.message)}</p>`;
+        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An error occurred while loading history: ${escapeHTML(error.message)}</p>`;
     }
 }
 
-function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
+async function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
     if (!parentElement || !msg) return;
+
     const senderType = msg.sender_type;
     const senderName = msg.sender_name || (senderType === 'ai' ? 'AI Assistant' : 'User');
     const currentUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
     const isCurrentUser = msg.user_id === currentUserId;
-    if (senderType === 'ai') {
-        const aiTurnContainer = document.createElement('div');
-        aiTurnContainer.className = 'ai-turn-container';
-        if (msg.turn_id) aiTurnContainer.dataset.turnId = msg.turn_id;
-        const hasContent = msg.content && msg.content.trim().length > 0;
-        const hasFiles = msg.files && msg.files.length > 0;
-        if (hasContent) {
-            const messageBubble = document.createElement('div');
+
+    const turnContainer = document.createElement('div');
+    turnContainer.className = 'ai-turn-container';
+    if (msg.turn_id) turnContainer.dataset.turnId = msg.turn_id;
+
+    const hasContent = msg.content && msg.content.trim().length > 0;
+    const hasProject = msg.project_files && msg.project_files.length > 0;
+
+    if (hasContent) {
+        const messageBubble = document.createElement('div');
+        const contentElem = document.createElement('div');
+        const senderElem = document.createElement('p');
+
+        contentElem.className = 'text-gray-800 text-sm message-content';
+        senderElem.className = 'font-semibold text-sm mb-1 text-gray-800';
+
+        if (senderType === 'ai') {
             messageBubble.className = 'message ai-message';
             const prompterId = msg.prompting_user_id;
             const prompterInfo = prompterId ? window.participantInfo?.[prompterId] : null;
             const prompterColor = prompterInfo?.color || '#dbeafe';
             const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
             messageBubble.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
-            const senderElem = document.createElement('p');
-            senderElem.className = 'font-semibold text-sm mb-1 text-gray-800 italic';
             senderElem.textContent = prompterInfo ? `AI Assistant - Prompted by ${prompterInfo.name}` : 'AI Assistant';
-            messageBubble.appendChild(senderElem);
-            const contentElem = document.createElement('div');
-            contentElem.className = 'text-gray-800 text-sm message-content';
+            senderElem.classList.add('italic');
             renderMarkdownAndKatex(msg.content, contentElem);
-            messageBubble.appendChild(contentElem);
-            aiTurnContainer.appendChild(messageBubble);
-        }
-        if (hasFiles) {
-            const codeBlocksArea = document.createElement('div');
-            codeBlocksArea.className = 'code-blocks-area';
-
-            // --- FIX START: Determine the correct project_id from the runnable file's index ---
-            const runFileIndex = msg.files.findIndex(f => f.path.endsWith('run.sh'));
-            const runnableBlockIndex = runFileIndex !== -1 ? runFileIndex + 1 : msg.files.length;
-
-            projectDataCache[msg.turn_id] = {
-                name: `Project from turn ${msg.turn_id}`,
-                files: msg.files,
-                project_id: `code-block-turn${msg.turn_id}-${runnableBlockIndex}`,
-                prompting_user_id: msg.prompting_user_id
-            };
-            // --- FIX END ---
-
-            msg.files.forEach((file, index) => {
-                const codeBlockIndex = index + 1;
-                const isRunnable = file.path.endsWith('run.sh');
-                const blockId = `code-block-turn${msg.turn_id}-${codeBlockIndex}`;
-                const finalCodeContent = editedCodeBlocks[blockId] || file.content;
-                
-                // createCodeBlock now correctly assigns a unique ID to each block.
-                // We no longer need to manually override the run.sh block's ID.
-                const block = createCodeBlock(
-                    file.language,
-                    finalCodeContent,
-                    file.content,
-                    msg.turn_id,
-                    codeBlockIndex,
-                    codeBlocksArea,
-                    isRunnable,
-                    msg.prompting_user_id
-                );
-                
-                block.querySelector('.block-title .title-text').textContent = file.path;
-                initializeCodeBlockHistory(blockId, finalCodeContent);
-            });
-            aiTurnContainer.appendChild(codeBlocksArea);
-        }
-        if (aiTurnContainer.hasChildNodes()) {
-             parentElement.appendChild(aiTurnContainer);
-        }
-    } else if (senderType === 'user' || senderType === 'system') {
-        const messageDiv = document.createElement('div');
-        messageDiv.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
-        messageDiv.setAttribute('data-sender', senderType);
-        if (msg.id) messageDiv.setAttribute('data-message-id', String(msg.id));
-        if (senderType === 'user') {
+        } else if (senderType === 'user') {
+            messageBubble.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
             if (isCurrentUser) {
-                messageDiv.classList.add('self-end', 'ml-auto');
+                messageBubble.classList.add('self-end', 'ml-auto');
             } else {
-                messageDiv.classList.add('self-start', 'mr-auto');
+                messageBubble.classList.add('self-start', 'mr-auto');
             }
             let bubbleColor = msg.sender_color;
             if (!bubbleColor && window.participantInfo && msg.user_id) {
-                const participant = window.participantInfo[msg.user_id];
-                if (participant) bubbleColor = participant.color;
+                bubbleColor = window.participantInfo[msg.user_id]?.color;
             }
-            if (bubbleColor) {
-                messageDiv.style.backgroundColor = bubbleColor;
-            } else {
-                messageDiv.classList.add('bg-gray-200');
-            }
+            messageBubble.style.backgroundColor = bubbleColor || '#e5e7eb';
+            senderElem.textContent = senderName;
+            contentElem.innerHTML = marked.parse((msg.content || '').replace(/@\w+/g, '').trim());
         } else {
-             messageDiv.classList.add('bg-slate-200', 'self-center', 'mx-auto', 'text-xs', 'italic');
+            messageBubble.className = 'system-message';
+            contentElem.textContent = msg.content;
+            messageBubble.appendChild(contentElem);
         }
-        const senderElem = document.createElement('p');
-        senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800');
-        senderElem.textContent = senderName;
-        messageDiv.appendChild(senderElem);
-        const contentElem = document.createElement('div');
-        contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
-        const cleanContent = (msg.content || '').replace(/@\w+/g, '').trim();
-        contentElem.innerHTML = marked.parse(cleanContent);
-        messageDiv.appendChild(contentElem);
-        parentElement.appendChild(messageDiv);
+
+        if (senderType !== 'system') {
+            messageBubble.appendChild(senderElem);
+            messageBubble.appendChild(contentElem);
+        }
+        
+        turnContainer.appendChild(messageBubble);
     }
+    
+    if (hasProject) {
+        turnContainer.dataset.projectId = msg.project_id;
+        turnContainer.dataset.projectName = msg.project_name;
+
+        if (senderType === 'system' && msg.content && msg.content.includes("added the file")) {
+            const match = msg.content.match(/'([^']+)'/);
+            if (match) {
+                const newFilename = match[1];
+                msg.project_files.forEach(f => f.checked = true);
+                const newFile = msg.project_files.find(f => f.path.endsWith('/' + newFilename) || f.path === './' + newFilename);
+                if (newFile) {
+                    newFile.checked = false;
+                }
+            }
+        }
+
+        const explorer = document.createElement('project-explorer');
+        explorer.projectData = {
+            projectId: msg.project_id,
+            projectName: msg.project_name || 'Code Project',
+            files: msg.project_files,
+            commits: msg.project_commits || []
+        };
+        turnContainer.appendChild(explorer);
+
+        const codeBlocksArea = document.createElement('div');
+        codeBlocksArea.className = 'code-blocks-area';
+        
+        turnContainer.dataset.projectData = JSON.stringify({
+            name: msg.project_name || "Code Project",
+            files: msg.project_files,
+            prompting_user_id: msg.prompting_user_id
+        });
+        
+        msg.project_files.forEach((file, index) => {
+            const isChecked = file.checked === undefined ? true : file.checked;
+            const codeBlockIndex = index + 1;
+            const isRunnable = file.path.endsWith('run.sh');
+            const blockId = `code-block-turn${msg.turn_id}-${codeBlockIndex}`;
+            const finalCodeContent = editedCodeBlocks[blockId] || file.content;
+            const block = createCodeBlock(
+                file.language, finalCodeContent, file.content,
+                msg.turn_id, codeBlockIndex, codeBlocksArea,
+                isRunnable, msg.prompting_user_id
+            );
+            if (block) {
+                block.dataset.path = file.path;
+                block.querySelector('.block-title .title-text').textContent = file.path;
+                initializeCodeBlockHistory(blockId, finalCodeContent);
+                if (!isChecked) {
+                    block.style.display = 'none';
+                }
+            }
+        });
+        turnContainer.appendChild(codeBlocksArea);
+    }
+
+    if (turnContainer.hasChildNodes()) {
+        parentElement.appendChild(turnContainer);
+    }
+    console.log('Correct renderSingleMessage is running for sender:', msg.sender_type);
+}
+
+function handleProjectHeader(payload) {
+    const { turn_id, name, prompting_user_id } = payload;
+    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turn_id}']`);
+    if (!turnContainer) return;
+
+    turnContainer.dataset.projectData = JSON.stringify({
+        name: name,
+        files: [],
+        prompting_user_id: prompting_user_id
+    });
+
+    const explorer = document.createElement('project-explorer');
+    explorer.projectData = {
+        projectId: null,
+        projectName: name,
+        files: [],
+        commits: []
+    };
+    turnContainer.appendChild(explorer);
+    currentStreamingExplorer = explorer;
+
+    const codeBlocksArea = document.createElement('div');
+    codeBlocksArea.className = 'code-blocks-area';
+    turnContainer.appendChild(codeBlocksArea);
+    currentCodeBlocksArea = codeBlocksArea;
 }
 
 function stickHeader(header, scrollerRect) {
@@ -1225,6 +1426,45 @@ function handleAiThinking(payload) {
     scrollToBottom('smooth');
 }
 
+async function handleAiStreamEnd(payload) {
+    console.log("AI stream ended. Final payload received:", payload);
+    finalizeTurnOnErrorOrClose();
+
+    if (currentStreamingExplorer && payload && payload.project_id) {
+        console.log("Condition met: A project was being streamed and a final project_id was received.");
+        const projectId = payload.project_id;
+        const turnContainer = currentStreamingExplorer.closest('.ai-turn-container');
+        if (turnContainer) {
+            turnContainer.dataset.projectId = projectId;
+        }
+
+        try {
+            console.log(`Attempting to fetch final project details from: /api/projects/${projectId}`);
+            const response = await fetch(`/api/projects/${projectId}`);
+            
+            if (response.ok) {
+                const finalProjectData = await response.json();
+                finalProjectData.projectId = finalProjectData.id;
+                
+                console.log("Successfully fetched final project data. It includes commits:", finalProjectData.commits);
+                currentStreamingExplorer.updateData(finalProjectData);
+                console.log("Project explorer update has been called successfully.");
+            } else {
+                console.error("Error fetching final project data. Status:", response.status);
+                const errorText = await response.text();
+                console.error("Server error response text:", errorText);
+            }
+        } catch (error) {
+            console.error("A network or script error occurred while fetching final project data:", error);
+        }
+    } else {
+        console.warn("Condition not met: Did not update dropdown because either no project was being streamed, or the final message from the server was missing the project_id.");
+    }
+
+    currentStreamingExplorer = null;
+    currentCodeBlocksArea = null;
+}
+
 function unstickHeader(header) {
     if (!header || !header.classList.contains('header-is-sticky-js')) return;
 
@@ -1268,14 +1508,12 @@ function connectWebSocket() {
     try {
         const ws = new WebSocket(wsUrl);
         websocket = ws;
-        ws.onopen = () => { console.log("[WS_CLIENT] WebSocket connection opened."); setInputDisabledState(false, false); addSystemMessage("Connected to the chat server."); };
+        ws.onopen = () => { console.log("[WS_CLIENT] WebSocket connection opened."); setInputDisabledState(false, false); addSystemMessage("Connected to the server."); };
         ws.onmessage = (event) => {
             if (typeof event.data !== 'string') return;
             const messageData = JSON.parse(event.data);
             
-            // --- LOGGING ---
             console.log("[WebSocket Client] Received message:", messageData);
-            // --- END LOGGING ---
 
             if (event.data.startsWith("<ERROR>")) { addErrorMessage(event.data.substring(7)); finalizeTurnOnErrorOrClose(); return; }
             
@@ -1287,8 +1525,49 @@ function connectWebSocket() {
                 case 'start_file_stream': handleStartFileStream(messageData.payload); break;
                 case 'file_chunk': handleFileChunk(messageData.payload); break;
                 case 'end_file_stream': handleEndFileStream(messageData.payload); break;
-                case 'ai_stream_end': finalizeTurnOnErrorOrClose(); break;
-                case 'new_message': if (messageData.payload && messageData.payload.client_id_temp !== clientId) { renderSingleMessage(messageData.payload, chatHistory, true, {}); } scrollToBottom('smooth'); break;
+                case 'ai_stream_end': handleAiStreamEnd(messageData.payload); break;
+                case 'new_message':
+                    if (messageData.payload) {
+                        renderSingleMessage(messageData.payload, chatHistory, true, {});
+                    }
+                    scrollToBottom('smooth');
+                    break;
+                case 'project_updated':
+                    if (messageData.payload && messageData.payload.project_id) {
+                        const { project_id, project_data } = messageData.payload;
+                        const explorer = document.querySelector(`.ai-turn-container[data-project-id="${project_id}"] project-explorer`);
+                        
+                        if (explorer) {
+                            const checkedStates = new Map();
+                            if (explorer.projectData && explorer.projectData.files) {
+                                explorer.projectData.files.forEach(file => {
+                                    const checkbox = explorer.shadowRoot.querySelector(`input[data-path="${file.path}"]`);
+                                    if (checkbox) {
+                                        checkedStates.set(file.path, checkbox.checked);
+                                    }
+                                });
+                            }
+                            
+                            const newData = project_data;
+                            newData.files.forEach(file => {
+                                file.checked = checkedStates.has(file.path) ? checkedStates.get(file.path) : false;
+                            });
+
+                            console.log(`Found project instance for ${project_id}. Updating it.`);
+                            explorer.updateData(newData);
+                            
+                            const turnContainer = explorer.closest('.ai-turn-container');
+                            explorer.dispatchEvent(new CustomEvent('commitChanged', { 
+                                detail: { 
+                                    turnContainer: turnContainer,
+                                    files: newData.files
+                                }, 
+                                bubbles: true, 
+                                composed: true 
+                            }));
+                        }
+                    }
+                    break;
                 case 'participant_typing': handleTypingIndicators(messageData.payload); break;
                 case 'participants_update': updateAndDisplayParticipants(messageData.payload); break;
                 case 'session_deleted': const chatTitle = document.getElementById('chat-session-title'); if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`; const banner = document.createElement('div'); banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold'; banner.textContent = 'The host has deleted this session. The chat is now read-only.'; chatHistory.prepend(banner); setInputDisabledState(true, false); break;
@@ -1301,8 +1580,6 @@ function connectWebSocket() {
         console.error("WebSocket creation error:", error);
     }
 }
-
-
 
 function handleAnswerChunk(payload) {
     if (!currentStreamingAnswerElement) {
@@ -1324,85 +1601,39 @@ function handleAnswerChunk(payload) {
     scrollToBottom('auto');
 }
 
-function handleProjectHeader(payload) {
-    const { turn_id, name, prompting_user_id, prompting_user_name } = payload;
-    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turn_id}']`);
-    if (!turnContainer) {
-        console.error("Project header received but no thinking container exists for turn " + turn_id);
-        return;
-    }
 
-    // Initialize the project data cache for this turn
-    if (!projectDataCache[turn_id]) {
-        projectDataCache[turn_id] = { 
-            name: name,
-            files: [],
-            project_id: null, // Will be set when we find run.sh
-            prompting_user_id: prompting_user_id
-        };
-    }
-
-    const messageBubble = turnContainer.querySelector('.ai-message');
-    const contentArea = turnContainer.querySelector('.live-ai-content-area');
-
-    if (messageBubble && contentArea) {
-        // The sender name should NOT be changed. It's already correct.
-        // const senderElem = turnContainer.querySelector('.ai-message .font-semibold');
-
-        // Create a new, separate header element for the project title
-        const headerElement = document.createElement('div');
-        headerElement.className = 'text-lg font-semibold text-gray-800 mt-2 mb-1 pb-1 border-b';
-        headerElement.textContent = name;
-        
-        // Insert the header before the content area (where the dots are)
-        messageBubble.insertBefore(headerElement, contentArea);
-
-        // Clear the dots and prepare for the streaming description
-        contentArea.innerHTML = '';
-        currentStreamingAnswerElement = contentArea;
-    }
-}
 
 function handleStartFileStream(payload) {
-    const { turn_id, prompting_user_id, path, language } = payload;
-    let turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turn_id}']`);
-    if (!turnContainer) {
-        turnContainer = document.createElement('div');
-        turnContainer.className = 'ai-turn-container';
-        turnContainer.dataset.turnId = turn_id;
-        chatHistory.appendChild(turnContainer);
+    const turnContainer = currentStreamingExplorer.closest('.ai-turn-container');
+    if (turnContainer) {
+        const projectData = JSON.parse(turnContainer.dataset.projectData);
+        const newFile = {
+            path: payload.path,
+            content: '',
+            language: payload.language
+        };
+        projectData.files.push(newFile);
+        turnContainer.dataset.projectData = JSON.stringify(projectData);
+        currentStreamingExplorer.addFile(newFile);
     }
-    const codeBlocksArea = turnContainer.querySelector('.code-blocks-area') || document.createElement('div');
-    if (!codeBlocksArea.parentElement) {
-        codeBlocksArea.className = 'code-blocks-area';
-        turnContainer.appendChild(codeBlocksArea);
-    }
+    
     streamingCodeBlockCounter++;
-    const isRunnable = path.endsWith('run.sh');
-    const blockId = `code-block-turn${turn_id}-${streamingCodeBlockCounter}`;
-
-    if (isRunnable && projectDataCache[turn_id]) {
-        projectDataCache[turn_id].project_id = blockId;
-    }
-    
+    const isRunnable = payload.path.endsWith('run.sh');
+    const blockId = `code-block-turn${payload.turn_id}-${streamingCodeBlockCounter}`;
     const newBlock = createCodeBlock(
-        language || 'plaintext', '', '', turn_id, 
-        streamingCodeBlockCounter, codeBlocksArea, isRunnable,
-        prompting_user_id
+        payload.language || 'plaintext', '', '', payload.turn_id, 
+        streamingCodeBlockCounter, currentCodeBlocksArea, isRunnable,
+        payload.prompting_user_id
     );
-    newBlock.querySelector('.block-title .title-text').textContent = path;
-    
-    const newFileData = { path: path, content: "", language: language };
-    if (projectDataCache[turn_id]) {
-        projectDataCache[turn_id].files.push(newFileData);
-    }
+    newBlock.dataset.path = payload.path;
+    newBlock.querySelector('.block-title .title-text').textContent = payload.path;
 
     currentStreamingFile = { 
         container: newBlock, 
         codeElement: newBlock.querySelector('code'), 
-        path: path, 
-        fileData: newFileData,
-        highlightTimeout: null // For debouncing the highlighter
+        path: payload.path,
+        size: 0,
+        highlightTimeout: null
     };
 }
 
@@ -1412,11 +1643,21 @@ function handleFileChunk(payload) {
     const codeElement = currentStreamingFile.codeElement;
     codeElement.textContent += payload.content;
 
-    if (currentStreamingFile.fileData) {
-        currentStreamingFile.fileData.content += payload.content;
+    const turnContainer = currentStreamingFile.container.closest('.ai-turn-container');
+    if (turnContainer) {
+        const projectData = JSON.parse(turnContainer.dataset.projectData);
+        const fileToUpdate = projectData.files.find(f => f.path === currentStreamingFile.path);
+        if (fileToUpdate) {
+            fileToUpdate.content += payload.content;
+        }
+        turnContainer.dataset.projectData = JSON.stringify(projectData);
     }
 
-    // Debounce the syntax highlighting for better performance
+    if (currentStreamingExplorer && currentStreamingFile.path) {
+        currentStreamingFile.size += (new TextEncoder().encode(payload.content)).length;
+        currentStreamingExplorer.updateFileSize(currentStreamingFile.path, currentStreamingFile.size);
+    }
+
     clearTimeout(currentStreamingFile.highlightTimeout);
     currentStreamingFile.highlightTimeout = setTimeout(() => {
         const cursorPos = getCursorPosition(codeElement);
@@ -1424,9 +1665,8 @@ function handleFileChunk(payload) {
         if (document.activeElement === codeElement) {
             setCursorPosition(codeElement, cursorPos);
         }
-    }, 50); // Highlight after a 50ms pause in streaming
+    }, 50);
 }
-
 
 document.addEventListener('DOMContentLoaded', async () => {
     await initializeCurrentUser();
@@ -1438,7 +1678,58 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    document.addEventListener('versionChanged', (event) => {
+        const { turnContainer, files } = event.detail;
+        if (!turnContainer) return;
+
+        const codeBlocksArea = turnContainer.querySelector('.code-blocks-area');
+        if (!codeBlocksArea) return;
+
+        const runBlock = codeBlocksArea.querySelector('.run-code-btn')?.closest('.block-container');
+        const runBlockId = runBlock ? runBlock.id : null;
+
+        codeBlocksArea.innerHTML = '';
+
+        const turnId = turnContainer.dataset.turnId;
+        const projectDataStr = turnContainer.dataset.projectData;
+        const promptingUserId = projectDataStr ? JSON.parse(projectDataStr).prompting_user_id : null;
+
+        let outputContent = null;
+
+        files.forEach((file, index) => {
+            if (file.path === './_run_output.log') {
+                outputContent = file.content;
+                return; // Don't render this file as a code block
+            }
+            const codeBlockIndex = index + 1;
+            const isRunnable = file.path.endsWith('run.sh');
+            const block = createCodeBlock(
+                file.language, file.content, file.content,
+                turnId, codeBlockIndex, codeBlocksArea,
+                isRunnable, promptingUserId
+            );
+            if (block) {
+                block.dataset.path = file.path;
+                block.querySelector('.block-title .title-text').textContent = file.path;
+                if (file.checked === false) {
+                    block.style.display = 'none';
+                }
+            }
+        });
+
+        if (runBlockId && outputContent !== null) {
+            const runBlockTitle = "run.sh"; // Assume this for now
+            const outputContainer = createOrClearOutputContainer(runBlockId, runBlockTitle, promptingUserId);
+            const outputPre = outputContainer.querySelector('pre');
+            if (outputPre) {
+                outputPre.textContent = outputContent;
+            }
+            updateHeaderStatus(outputContainer, 'Finished (from history)', 'success');
+        }
+    });
+
     if (chatForm && messageInput && sendButton && stopAiButton) {
+        // ... (The rest of the event listener remains exactly the same) ...
         let typingTimeout;
         const sendTypingSignal = (isTyping) => {
             if (websocket && websocket.readyState === WebSocket.OPEN) {
@@ -1464,76 +1755,46 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         chatForm.addEventListener('submit', (event) => {
-        event.preventDefault();
-        
-        // --- ADDED LOGGING ---
-        console.log("Submit event fired.");
-
-        if(typingTimeout) {
-            clearTimeout(typingTimeout);
-            typingTimeout = null;
-            sendTypingSignal(false);
-        }
-        
-        const userMessage = messageInput.value.trim();
-        // --- ADDED LOGGING ---
-        console.log("User message:", userMessage);
-
-        if (!userMessage) {
-            console.log("Message is empty. Aborting send.");
-            return;
-        }
-
-        // --- ADDED LOGGING ---
-        // Check WebSocket state. 1 means OPEN.
-        console.log("WebSocket object:", websocket);
-        console.log("WebSocket readyState:", websocket ? websocket.readyState : "Not defined");
-
-        if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-            console.error("[FORM] WebSocket not open, cannot send message.");
-            addErrorMessage("Cannot send message: Not connected to the server. Please refresh the page."); // Show error in UI
-            return;
-        }
-        
-        try {
-            addUserMessage(userMessage);
-            messageInput.value = '';
-
-            const mentionRegex = /@(\w+)/gi;
-            const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
-            
-            currentTurnId++;
-            
-            if (recipients.includes("AI")) {
-                if (!window.isAiConfigured) {
-                    alert("AI provider has not been configured. Please go to User Settings to select a provider and add your API key.");
-                    currentTurnId--;
-                    return;
-                }
-                setInputDisabledState(true, true);
+            event.preventDefault();
+            if(typingTimeout) {
+                clearTimeout(typingTimeout);
+                typingTimeout = null;
+                sendTypingSignal(false);
             }
-            
-            const messagePayload = {
-                type: "chat_message",
-                payload: {
-                    user_input: userMessage,
-                    turn_id: currentTurnId,
-                    recipient_ids: recipients,
-                    reply_to_id: null
+            const userMessage = messageInput.value.trim();
+            if (!userMessage) return;
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                addErrorMessage("Cannot send message: Not connected to the server. Please refresh the page.");
+                return;
+            }
+            try {
+                addUserMessage(userMessage);
+                messageInput.value = '';
+                const mentionRegex = /@(\w+)/gi;
+                const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
+                currentTurnId++;
+                if (recipients.includes("AI")) {
+                    if (!window.isAiConfigured) {
+                        alert("AI provider has not been configured. Please go to User Settings to select a provider and add your API key.");
+                        currentTurnId--;
+                        return;
+                    }
                 }
-            };
-
-            // --- ADDED LOGGING ---
-            console.log("Sending payload:", JSON.stringify(messagePayload));
-            websocket.send(JSON.stringify(messagePayload));
-            console.log("Payload sent.");
-
-        } catch (sendError) {
-            // --- ADDED LOGGING ---
-            console.error("Error during message send:", sendError);
-            addErrorMessage(`Failed to send message: ${sendError.message}`);
-        }
-    });
+                const messagePayload = {
+                    type: "chat_message",
+                    payload: {
+                        user_input: userMessage,
+                        turn_id: currentTurnId,
+                        recipient_ids: recipients,
+                        reply_to_id: null
+                    }
+                };
+                websocket.send(JSON.stringify(messagePayload));
+            } catch (sendError) {
+                console.error("Error during message send:", sendError);
+                addErrorMessage(`Failed to send message: ${sendError.message}`);
+            }
+        });
 
         stopAiButton.addEventListener('click', () => {
             if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
@@ -1547,7 +1808,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const currentSessionId = getSessionIdFromPath();
     if (currentSessionId) {
         await loadAndDisplayChatHistory(currentSessionId);
-        connectWebSocket();
+        connectWebSocket(currentSessionId);
     } else {
         if (messageInput) {
             setInputDisabledState(true, false);
@@ -1562,12 +1823,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             rafId = requestAnimationFrame(function() {
                 const scrollerRect = chatHistoryScroller.getBoundingClientRect();
                 const containers = chatHistoryScroller.querySelectorAll('.block-container');
-
                 const measurements = [];
                 containers.forEach(function(container) {
                     const header = container.querySelector('.block-header, .block-header');
                     const content = container.querySelector('pre, .block-output-console');
-                    
                     if (header && content) {
                         measurements.push({
                             header: header,
@@ -1577,13 +1836,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         });
                     }
                 });
-
                 measurements.forEach(function(m) {
                     const shouldStick = m.headerRect.top < scrollerRect.top && m.contentRect.bottom > scrollerRect.top;
-                    
                     if (shouldStick) {
                         stickHeader(m.header, scrollerRect);
-                        
                         const stickyId = m.header.dataset.stickyId;
                         if (stickyId) {
                             const stickyClone = document.getElementById(stickyId);
@@ -1592,7 +1848,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 const contentBottom = m.contentRect.bottom;
                                 const viewportTop = scrollerRect.top + 1;
                                 const availableSpace = contentBottom - viewportTop + 3;
-                                
                                 if (availableSpace < headerHeight && availableSpace > 0) {
                                     const clipAmount = headerHeight - availableSpace - 1;
                                     stickyClone.style.top = `${viewportTop - clipAmount - 1}px`;
@@ -1618,7 +1873,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
             });
         };
-
         chatHistoryScroller.addEventListener('scroll', function(e) {
             if (e.target === chatHistoryScroller) {
                 handleScroll();

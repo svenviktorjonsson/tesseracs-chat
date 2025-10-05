@@ -95,11 +95,16 @@ def stream_with_native_google_sdk(conn: Connection, job: dict):
         chunk_count = 0
         for chunk in response_stream:
             chunk_count += 1
-            if chunk.text:
-                # --- ADDED LOGGING FOR EACH CHUNK ---
-                print(f"[WORKER/Google CHUNK {chunk_count}]: {repr(chunk.text)}")
-                conn.send(chunk.text)
-        
+            try:
+                if chunk.text:
+                    print(f"[WORKER/Google CHUNK {chunk_count}]: {repr(chunk.text)}")
+                    conn.send(chunk.text)
+            except ValueError:
+                print(f"[WORKER/Google WARN] Chunk {chunk_count} had no valid text part. It might have been blocked for safety reasons.")
+                if hasattr(chunk, 'candidates') and chunk.candidates:
+                     print(f"Safety Ratings: {chunk.candidates[0].safety_ratings}")
+                continue # Gracefully skip to the next chunk
+
         print(f"[WORKER/Google] Stream finished. Received {chunk_count} chunks.")
 
     except Exception as e:

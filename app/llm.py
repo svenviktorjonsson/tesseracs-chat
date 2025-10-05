@@ -1,4 +1,5 @@
 import os
+import uuid
 import traceback
 import json
 import re
@@ -6,7 +7,7 @@ import asyncio
 import sqlite3
 from multiprocessing import Process, Pipe
 from multiprocessing.connection import Connection
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Tuple
 
 from fastapi import WebSocket
 from langchain_core.messages import messages_to_dict
@@ -76,35 +77,44 @@ def _get_llm_settings_sync(user_id: int) -> dict:
         if conn:
             conn.close()
 
-def _save_ai_message_sync(session_id: str, user_id: int, content: Optional[str], turn_id: int, reply_to_id: Optional[int], files: List[Dict[str, Any]]) -> Optional[int]:
+def _save_ai_message_sync(session_id: str, user_id: int, content: Optional[str], turn_id: int, reply_to_id: Optional[int], project_data: Optional[Dict[str, Any]]) -> Tuple[Optional[int], Optional[str]]:
     conn = None
     try:
         conn = database.get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id, prompting_user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (session_id, user_id, 'AI', 'ai', content or None, turn_id, reply_to_id, user_id)
-        )
-        message_id = cursor.lastrowid
-        if files and message_id:
-            for file_data in files:
+        
+        project_id_to_save = None
+        if project_data:
+            repo_blob, error = project_utils.create_and_pack_git_repo(project_data)
+            if error:
+                print(f"LLM_SAVE_ERROR: Could not pack git repo: {error}")
+            elif repo_blob:
+                project_id_to_save = str(uuid.uuid4())
+                project_name = project_data.get("name", "Untitled Project")
                 cursor.execute(
-                    "INSERT INTO message_files (message_id, path, content, language) VALUES (?, ?, ?, ?)",
-                    (message_id, file_data['path'], file_data['content'], file_data['language'])
+                    """INSERT INTO projects (id, session_id, name, git_repo_blob)
+                       VALUES (?, ?, ?, ?)""",
+                    (project_id_to_save, session_id, project_name, repo_blob)
                 )
+
+        cursor.execute(
+            """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id, prompting_user_id, project_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, user_id, 'AI', 'ai', content or None, turn_id, reply_to_id, user_id, project_id_to_save)
+        )
+        
+        message_id = cursor.lastrowid
         conn.commit()
-        return message_id
+        return message_id, project_id_to_save
+
     except sqlite3.Error as db_err:
         traceback.print_exc()
         if conn:
             conn.rollback()
-        return None
+        return None, None
     finally:
         if conn:
             conn.close()
-
-
 async def invoke_llm_for_session(
     session_id: str,
     websocket: WebSocket,
@@ -118,9 +128,12 @@ async def invoke_llm_for_session(
     loop = asyncio.get_running_loop()
     all_content_parts = []
     all_files = []
+    project_name = "Untitled Project"
     ai_message_id = None
     stop_event = await state.register_ai_stream(stream_id)
     queue = asyncio.Queue()
+
+    reply_to_id = reply_to_message_id
 
     def pipe_data_received():
         try:
@@ -165,7 +178,7 @@ async def invoke_llm_for_session(
         buffer = ""
         tag_regex = re.compile(r"(_(ANSWER|PROJECT|FILE)_(START|END)_)")
         json_end_tag = "_JSON_END_"
-        MAX_TAG_LENGTH = 20 
+        MAX_TAG_LENGTH = 20
         await state.broadcast(session_id, {"type": "ai_thinking", "payload": {"turn_id": turn_id, "prompting_user_id": user_id, "prompting_user_name": user_name}})
         await asyncio.sleep(0)
 
@@ -218,7 +231,6 @@ async def invoke_llm_for_session(
                     if json_end_tag in buffer:
                         json_str, rest_of_buffer = buffer.split(json_end_tag, 1)
                         buffer = rest_of_buffer.lstrip()
-                        buffer = rest_of_buffer
                         try:
                             args = json.loads(json_str.strip())
                         except json.JSONDecodeError:
@@ -226,7 +238,8 @@ async def invoke_llm_for_session(
                         
                         parser_stack.append(tag_type)
                         if tag_type == "PROJECT":
-                            await state.broadcast(session_id, {"type": "project_header", "payload": {"name": args.get("name", "Untitled Project"), "turn_id": turn_id, "prompting_user_id": user_id, "prompting_user_name": user_name}}); await asyncio.sleep(0)
+                            project_name = args.get("name", "Untitled Project")
+                            await state.broadcast(session_id, {"type": "project_header", "payload": {"name": project_name, "turn_id": turn_id, "prompting_user_id": user_id, "prompting_user_name": user_name}}); await asyncio.sleep(0)
                         elif tag_type == "FILE":
                             path = args.get("path", "untitled")
                             lang = project_utils.get_language_from_extension(path)
@@ -236,7 +249,6 @@ async def invoke_llm_for_session(
                     else:
                         buffer = tag_full + buffer
                         break
-
                 elif tag_action == "END":
                     if parser_stack and parser_stack[-1] == tag_type:
                         parser_stack.pop()
@@ -268,13 +280,21 @@ async def invoke_llm_for_session(
         
         full_response_content = "".join(all_content_parts)
         
-        if full_response_content or all_files:
-            ai_message_id = await asyncio.to_thread(
+        project_data_to_save = None
+        if all_files:
+            project_data_to_save = {
+                "name": project_name,
+                "files": all_files
+            }
+
+        saved_project_id = None
+        if full_response_content or project_data_to_save:
+            ai_message_id, saved_project_id = await asyncio.to_thread(
                 _save_ai_message_sync,
-                session_id, user_id, full_response_content, turn_id, reply_to_message_id, all_files
+                session_id, user_id, full_response_content, turn_id, reply_to_id, project_data_to_save
             )
             if ai_message_id is not None:
                 state.remove_memory_for_client(session_id)
         
-        await state.broadcast(session_id, {"type": "ai_stream_end", "payload": {"message_id": ai_message_id, "turn_id": turn_id}})
+        await state.broadcast(session_id, {"type": "ai_stream_end", "payload": {"message_id": ai_message_id, "turn_id": turn_id, "project_id": saved_project_id}})
         await state.unregister_ai_stream(stream_id)
