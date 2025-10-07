@@ -20,7 +20,9 @@ active_ai_streams: Dict[str, asyncio.Event] = {}
 active_ai_streams_lock = asyncio.Lock()
 running_previews: Dict[str, Dict[str, Any]] = {}
 running_previews_lock = asyncio.Lock()
-
+preview_routes: Dict[str, str] = {}
+running_code_tasks: Dict[str, asyncio.Task] = {}
+running_code_tasks_lock = asyncio.Lock()
 
 def _get_memory_from_db_sync(session_id: str) -> Optional[ConversationBufferMemory]:
     conn = None

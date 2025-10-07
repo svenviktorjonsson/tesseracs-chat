@@ -468,33 +468,52 @@ def add_output_and_commit(project_path: str, output: str, user_name: str) -> Opt
         with open(output_file_path, 'w', encoding='utf-8', newline='\n') as f:
             f.write(output)
 
-        # Check if there are any changes to commit
+        meta_file_path = os.path.join(project_path, '.tesseracs_meta.json')
+        if os.path.exists(meta_file_path):
+            with open(meta_file_path, 'r+', encoding='utf-8') as f:
+                meta_data = json.load(f)
+                file_order = meta_data.get("file_order", [])
+                
+                output_log_path = './_run_output.log'
+                run_sh_path = './run.sh'
+
+                if output_log_path in file_order:
+                    file_order.remove(output_log_path)
+                
+                try:
+                    run_sh_index = file_order.index(run_sh_path)
+                    file_order.insert(run_sh_index + 1, output_log_path)
+                except ValueError:
+                    file_order.append(output_log_path)
+                
+                meta_data["file_order"] = file_order
+                f.seek(0)
+                json.dump(meta_data, f, indent=4)
+                f.truncate()
+        
         status_result = subprocess.run(
             ["git", "status", "--porcelain"], 
             cwd=project_path, check=True, capture_output=True, text=True
         )
         if not status_result.stdout.strip():
-            print("PROJECT_UTILS: No changes to commit.")
-            return None # No error, but no changes
+            return None
 
         subprocess.run(["git", "config", "user.name", user_name], cwd=project_path, check=True)
         subprocess.run(["git", "config", "user.email", f"{user_name.replace(' ', '.')}@tesseracs.dev"], cwd=project_path, check=True)
-
-        subprocess.run(["git", "add", "_run_output.log"], cwd=project_path, check=True)
-
-        # Check again if adding the file actually staged anything
+        
+        subprocess.run(["git", "add", "_run_output.log", ".tesseracs_meta.json"], cwd=project_path, check=True)
+        
         status_result_after_add = subprocess.run(
             ["git", "diff", "--staged", "--quiet"], 
             cwd=project_path
         )
-
+        
         if status_result_after_add.returncode == 0:
-            print("PROJECT_UTILS: Output is identical to the previous run. No new commit needed.")
             return None
 
         commit_message = "Capture code execution output"
         subprocess.run(["git", "commit", "-m", commit_message], cwd=project_path, check=True)
-
+        
         return None
     except subprocess.CalledProcessError as e:
         error_msg = f"Git operation failed: {e.stderr}"

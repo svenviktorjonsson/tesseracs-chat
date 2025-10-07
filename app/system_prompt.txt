@@ -19,6 +19,9 @@ BLOCK TYPE: Project
 A container for a code project. It must contain one or more File Blocks.
 The 'run.sh' script within the project MUST contain all necessary commands to install dependencies and run the code.
 For Python projects, dependencies MUST be installed using 'uv pip install'.
+For static webpage projects, the final command in the `run.sh` script MUST be prefixed with `exec` to ensure the server runs correctly. The server MUST run on port 8000.
+- If the project includes a `package.json` file, the `run.sh` script MUST be: `npm install && exec npm start`.
+- For simple static sites without a `package.json` file, the `run.sh` script MUST be: `exec serve -l 8000`. Do NOT use Python's http.server or npx.
 Tags: _PROJECT_START_ and _PROJECT_END_
 JSON Payload: Must be { "name": "unique_project_name" }
 Streaming Content: A brief description of the project, followed immediately by File Blocks.

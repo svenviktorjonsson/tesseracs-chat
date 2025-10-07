@@ -480,6 +480,7 @@ dependencies = [
     "fastapi-csrf-protect>=1.0.3",
     "httptools>=0.6.1",
     "click>=8.1.7",
+    "httpx>=0.27.0"
 ]
 
 [project.optional-dependencies]
@@ -1524,6 +1525,7 @@ import socket
 import sys
 import re
 import os
+import shutil
 
 from pathlib import Path
 from typing import Dict, Any, List
@@ -1532,6 +1534,8 @@ from docker.errors import DockerException
 
 from . import config, state
 from .utils import send_ws_message
+
+_PREVIEW_PORT_RANGE = range(9000, 9100)
 
 # --- Docker Client Initialization ---
 docker_client = None
@@ -1556,10 +1560,6 @@ except ImportError:
 def get_docker_client():
     return docker_client
 
-def _find_free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('', 0))
-        return s.getsockname()[1]
 
 def detect_input_prompt(chunk_str: str) -> bool:
     stripped = chunk_str.rstrip('\n\r')
@@ -1568,15 +1568,10 @@ def detect_input_prompt(chunk_str: str) -> bool:
         'input' in stripped.lower() or 'enter' in stripped.lower()
     )
 
-# In docker_utils.py
-
 def prepare_run_command(project_path: str, lang_config: Dict[str, Any]) -> List[str]:
-    """
-    Prepares the command to run inside the container.
-    This universal version wraps the command with 'stdbuf' for all languages
-    to ensure unbuffered, streaming I/O.
-    """
     return ["stdbuf", "-o0", "-e0", "sh", "run.sh"]
+
+
 
 async def stream_output(websocket: WebSocket, project_id: str, container, socket_obj):
     raw_sock = socket_obj._sock if hasattr(socket_obj, "_sock") else socket_obj
@@ -1625,93 +1620,59 @@ async def stream_output(websocket: WebSocket, project_id: str, container, socket
 
 
 def _sync_stream_and_wait(container, socket_obj, project_id, loop, websocket):
-    """
-    A synchronous, blocking function that runs in a thread to mimic the test script.
-    It reads all output from the socket until it closes, then gets the exit code.
-    It uses a thread-safe asyncio call to send messages back to the main loop.
-    """
     raw_sock = socket_obj._sock if hasattr(socket_obj, "_sock") else socket_obj
-    buffer = b''
-    
-    # This is the blocking `while True` loop from your test script.
+    full_output = []
     try:
         while True:
             try:
-                # This call blocks the worker thread, but not the main asyncio loop.
-                raw = raw_sock.recv(1024)
-                if not raw:
-                    break  # Socket has closed, stream is finished.
-            except (ConnectionResetError, BrokenPipeError, OSError, PIPE_ENDED_ERROR) as e:
-                # Handle cases where the connection is abruptly terminated.
-                if isinstance(e, PIPE_ENDED_ERROR) and e.args[0] == 109: # Windows pipe ended
-                    break
-                print(f"[StreamSync-{project_id}] Socket error: {e}")
-                break
-
-            buffer += raw
-            while len(buffer) >= 8:
-                header = buffer[:8]
-                stream_type, size = struct.unpack('>BxxxL', header)
-                if len(buffer) < 8 + size:
+                raw_data = raw_sock.recv(1024)
+                if not raw_data:
                     break
 
-                payload = buffer[8:8+size].decode('utf-8', 'replace')
-                stream = "stdout" if stream_type == 1 else "stderr"
+                payload = raw_data.decode('utf-8', 'replace')
+                full_output.append(payload)
 
-                # Send messages back to the main asyncio loop in a thread-safe way.
                 asyncio.run_coroutine_threadsafe(
                     send_ws_message(websocket, "code_output", {
                         "project_id": project_id,
-                        "stream": stream,
+                        "stream": "stdout",
                         "data": payload
                     }),
                     loop
                 )
-                
-                if stream == 'stdout' and detect_input_prompt(payload):
-                     asyncio.run_coroutine_threadsafe(
+
+                if detect_input_prompt(payload):
+                    asyncio.run_coroutine_threadsafe(
                         send_ws_message(websocket, "code_waiting_input", {
                             "project_id": project_id,
                             "prompt": payload
                         }),
                         loop
                     )
-
-                buffer = buffer[8 + size:]
+            except (ConnectionResetError, BrokenPipeError, OSError, PIPE_ENDED_ERROR) as e:
+                if isinstance(e, PIPE_ENDED_ERROR) and e.args[0] == 109:
+                    break
+                print(f"[StreamSync-{project_id}] Socket error: {e}")
+                break
     finally:
-        # AFTER the streaming loop is done, we get the container's exit code.
         print(f"[StreamSync-{project_id}] Stream finished. Waiting for container exit code.")
         result = container.wait()
-        return result.get("StatusCode", 0)
-
-# ------------------------------------------------------------------------------------
-
-# Now, replace your existing run_code_in_docker with this new version.
+        exit_code = result.get("StatusCode", 0)
+        return exit_code, "".join(full_output)
 
 async def run_code_in_docker(websocket: WebSocket, client_id: str, project_id: str,
                              project_data: Dict[str, Any], project_path: str,
                              run_command: str, lang_config: Dict[str, Any]):
-    """
-    Runs code in a Docker container using a synchronous worker to perfectly
-    replicate the logic of a simple, blocking test script, eliminating race conditions.
-    """
     client = get_docker_client()
     if not client:
-        await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Docker is not available."})
-        return
+        return -1, None, "Docker is not available."
 
     host_base_path = os.environ.get('HOST_PROJECT_PATH')
     if not host_base_path:
-        await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Configuration error: HOST_PROJECT_PATH is not set."})
-        return
-    
-    container = None
-    exit_code = 1  # Default to error
-    error_message = None
+        return -1, None, "Configuration error: HOST_PROJECT_PATH is not set."
 
+    container = None
     try:
-        print(f"[DockerRun-{project_id}] Starting...")
-        # Your original prepare_run_command that uses stdbuf for non-python and modifies run.sh for python
         command_to_run = prepare_run_command(project_path, lang_config)
         absolute_host_path_for_volume = os.path.join(host_base_path, project_path)
 
@@ -1728,44 +1689,31 @@ async def run_code_in_docker(websocket: WebSocket, client_id: str, project_id: s
             environment=container_env,
             mem_limit=config.DOCKER_MEM_LIMIT,
             stdin_open=True,
-            tty=False,
+            tty=True,
             detach=True,
             labels={"managed-by": "tesseracs-chat"}
         )
 
         socket_obj = await asyncio.to_thread(container.attach_socket, params={"stdin": 1, "stdout": 1, "stderr": 1, "stream": 1})
         await asyncio.to_thread(container.start)
-        print(f"[DockerRun-{project_id}] Container started.")
 
         async with state.running_containers_lock:
             state.running_containers[project_id] = {"container": container, "client_id": client_id, "socket": socket_obj}
-        
-        # Get the current asyncio loop to pass to the worker thread.
+
         current_loop = asyncio.get_running_loop()
 
-        # Run our entire synchronous stream-and-wait process in a worker thread.
-        # This await will not finish until the worker function returns the exit code.
-        exit_code = await asyncio.to_thread(
+        exit_code, full_output = await asyncio.to_thread(
             _sync_stream_and_wait, container, socket_obj, project_id, current_loop, websocket
         )
+        return exit_code, full_output, None
 
     except docker.errors.ImageNotFound:
-        error_message = f"Docker image '{lang_config['image']}' not found."
-        exit_code = -1
+        return -1, None, f"Docker image '{lang_config['image']}' not found."
     except Exception as e:
-        print(f"[DockerRun-{project_id}] Error: {e}")
         traceback.print_exc()
-        error_message = f"Execution failed: {e}"
-        exit_code = -1
+        return -1, None, f"Execution failed: {e}"
     finally:
-        # This cleanup now happens only after the synchronous worker is completely finished.
         await stop_container(project_id)
-
-        final_payload = {"project_id": project_id, "exit_code": exit_code}
-        if error_message:
-            final_payload["error"] = error_message
-        
-        await send_ws_message(websocket, "code_finished", final_payload)
 
 async def send_input_to_container(project_id: str, user_input: str):
     async with state.running_containers_lock:
@@ -1781,7 +1729,6 @@ async def send_input_to_container(project_id: str, user_input: str):
         except Exception as e:
             print(f"[Input-{project_id}] Error sending input: {e}")
 
-# --- Cleanup ---
 async def stop_container(project_id: str):
     async with state.running_containers_lock:
         info = state.running_containers.pop(project_id, None)
@@ -1792,45 +1739,100 @@ async def stop_container(project_id: str):
             container = info["container"]
             await asyncio.to_thread(container.stop, timeout=5)
             await asyncio.to_thread(container.remove, force=True)
-            print(f"[Cleanup-{project_id}] Container stopped and removed.")
         except Exception as e:
-            print(f"[Cleanup-{project_id}] Error during cleanup: {e}")
+            print(f"[Cleanup-{project_id}] Error during regular container cleanup: {e}")
 
+    async with state.running_previews_lock:
+        preview_info = state.running_previews.pop(project_id, None)
+    if preview_info:
+        try:
+            container = preview_info["container"]
+            await asyncio.to_thread(container.stop, timeout=5)
+            await asyncio.to_thread(container.remove, force=True)
+            # The project path is no longer deleted here to prevent race conditions
+            state.preview_routes.pop(project_id, None)
+        except Exception as e:
+            print(f"[Cleanup-{project_id}] Error during preview container cleanup: {e}")
 
-async def handle_preview_server(websocket: WebSocket, project_id: str, project_path: str, run_command: str, lang_config: Dict[str, Any], local_docker_client):
-    port_match = re.search(r'\b(\d{4,5})\b', run_command)
-    container_port = int(port_match.group(1)) if port_match else 8000
-    host_port = _find_free_port()
+def _find_free_port_in_range():
+    import socket
+    for port in _PREVIEW_PORT_RANGE:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('', port))
+                return port
+            except OSError:
+                continue # Port is already in use
+    return None # No free ports in the range
+
+async def handle_preview_server(websocket: WebSocket, project_id: str, persistent_project_id: str, project_path: str, run_command: str, lang_config: Dict[str, Any], local_docker_client):
+    if project_id in state.running_previews and project_id in state.preview_routes:
+        print(f"DOCKER_UTILS: Preview for {project_id} is already running. Re-sending ready signal.")
+        proxy_path = f"/preview/{project_id}/"
+        await send_ws_message(websocket, "project_preview_ready", {
+            "project_id": project_id,
+            "url": proxy_path
+        })
+        return
+
+    container_name = f"preview-{persistent_project_id}"
+
+    try:
+        existing_container = await asyncio.to_thread(local_docker_client.containers.get, container_name)
+        print(f"DOCKER_UTILS: Found and removing conflicting orphaned container {existing_container.short_id}...")
+        await asyncio.to_thread(existing_container.remove, force=True)
+    except docker.errors.NotFound:
+        pass
+    except Exception as e:
+        print(f"DOCKER_UTILS: Error removing old container '{container_name}': {e}")
+        await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Failed to clean up old preview container: {e}."})
+        return
+
+    await stop_container(project_id)
+
+    host_port = _find_free_port_in_range()
+    if host_port is None:
+        await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Failed to start preview: No available ports in the allowed range (9000-9099)."})
+        return
+
+    container_port = 8000
     port_mapping = {f'{container_port}/tcp': host_port}
     
+    absolute_host_path_for_volume = os.path.join(os.environ.get('HOST_PROJECT_PATH', '.'), project_path)
+
     try:
         container = await asyncio.to_thread(
             local_docker_client.containers.run,
+            name=container_name,
             image=lang_config["image"],
-            command=run_command.split(),
-            volumes={project_path: {'bind': '/app', 'mode': 'rw'}},
+            command=["sh", "run.sh"],
+            volumes={absolute_host_path_for_volume: {'bind': '/app', 'mode': 'rw'}},
             working_dir='/app',
             ports=port_mapping,
             detach=True,
-            remove=True,
-            mem_limit=config.DOCKER_MEM_LIMIT
+            remove=False,
+            tty=False,
+            mem_limit=config.DOCKER_MEM_LIMIT,
+            labels={"managed-by": "tesseracs-chat-preview", "project_id": project_id}
         )
-        preview_url = f"http://127.0.0.1:{host_port}"
+        
+        internal_url = f"http://host.docker.internal:{host_port}"
+        proxy_path = f"/preview/{project_id}/"
+        state.preview_routes[project_id] = internal_url
+        
         async with state.running_previews_lock:
-            state.running_previews[project_id] = {
-                "container": container, 
-                "url": preview_url
-            }
+            state.running_previews[project_id] = { "container": container, "project_path": project_path, "client_id": websocket.scope.get("client_id") }
+
         await send_ws_message(websocket, "project_preview_ready", {
             "project_id": project_id, 
-            "url": preview_url
+            "url": proxy_path
         })
     except Exception as e:
+        traceback.print_exc()
         await send_ws_message(websocket, "code_finished", {
             "project_id": project_id, 
-            "error": f"Failed to start preview: {e}"
+            "error": f"Failed to start preview server: {e}"
         })
-
 
 async def scavenge_orphaned_containers():
     """
@@ -1877,38 +1879,29 @@ async def background_scavenger_task(interval_seconds: int):
         print("SCAVENGER: Running periodic check for orphaned containers...")
         await scavenge_orphaned_containers()
 
-# In docker_utils.py
-
 async def cleanup_dangling_containers():
-    """
-    Finds and removes any containers from previous sessions that were
-    left running, identified by a specific label.
-    """
     client = get_docker_client()
     if not client:
         print("DOCKER_CLEANUP: Docker is not available, skipping cleanup.")
         return
-
     try:
-        # Find all containers (running or stopped) with our custom label
-        filter = {"label": "managed-by=tesseracs-chat"}
-        orphaned_containers = await asyncio.to_thread(client.containers.list, all=True, filters=filter)
+        filters = {"label": ["managed-by=tesseracs-chat", "managed-by=tesseracs-chat-preview"]}
+        orphaned_containers = await asyncio.to_thread(client.containers.list, all=True, filters=filters)
 
         if not orphaned_containers:
-            print("✅ DOCKER_CLEANUP: No orphaned containers found.")
+            print("✅ DOCKER_CLEANUP: No orphaned containers found on startup.")
             return
 
-        print(f"🧹 DOCKER_CLEANUP: Found {len(orphaned_containers)} orphaned container(s). Removing them...")
+        print(f"🧹 DOCKER_CLEANUP: Found {len(orphaned_containers)} orphaned container(s) from previous sessions. Removing them...")
         for container in orphaned_containers:
             try:
                 print(f"  -> Removing container {container.short_id} ({container.name})...")
                 await asyncio.to_thread(container.remove, force=True)
             except Exception as e:
                 print(f"  -> Error removing container {container.short_id}: {e}")
-        print("✅ DOCKER_CLEANUP: Finished cleanup.")
-
+        print("✅ DOCKER_CLEANUP: Finished startup cleanup.")
     except Exception as e:
-        print(f"❌ DOCKER_CLEANUP: An error occurred during cleanup: {e}")
+        print(f"❌ DOCKER_CLEANUP: An error occurred during startup cleanup: {e}")
 
 === app/email_utils.py ===
 # app/email_utils.py
@@ -2693,7 +2686,7 @@ from urllib.parse import urlparse
 import datetime
 import shutil
 from typing import Optional, Dict, Any, List
-
+import httpx
 
 from fastapi import (
     FastAPI,
@@ -2856,6 +2849,77 @@ async def update_session_name(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected error occurred.")
     finally:
         if conn: conn.close()
+
+@app.get("/preview/{project_id}/{path:path}", tags=["Preview"])
+async def preview_proxy(project_id: str, path: str, request: Request):
+    if project_id not in state.preview_routes:
+        raise HTTPException(status_code=404, detail="Preview server not running or not found.")
+
+    base_url = state.preview_routes[project_id]
+    target_url = f"{base_url}/{path if path else ''}"
+    
+    client = httpx.AsyncClient()
+    try:
+        proxied_request = client.build_request(
+            method=request.method,
+            url=target_url,
+            headers={k: v for k, v in request.headers.items() if k.lower() not in ['host']},
+            params=request.query_params,
+        )
+        proxied_response = await client.send(proxied_request, stream=True)
+        
+        # Exclude headers that can cause conflicts with streaming
+        excluded_headers = ["content-encoding", "content-length", "transfer-encoding"]
+        headers = {
+            name: value for name, value in proxied_response.headers.items()
+            if name.lower() not in excluded_headers
+        }
+        
+        return StreamingResponse(
+            proxied_response.aiter_bytes(),
+            status_code=proxied_response.status_code,
+            headers=headers,
+        )
+    except httpx.RequestError as exc:
+        error_detail = utils.escape_html(f"Failed to connect to preview server: {exc}")
+        container_logs = "Could not retrieve container logs."
+        
+        preview_info = state.running_previews.get(project_id)
+        if preview_info and (container := preview_info.get("container")):
+            try:
+                await asyncio.to_thread(container.reload)
+                logs_bytes = await asyncio.to_thread(container.logs)
+                container_logs = utils.strip_ansi_codes(logs_bytes.decode('utf-8', 'replace').strip())
+            except Exception as log_exc:
+                container_logs = utils.escape_html(f"Failed to retrieve container logs: {log_exc}")
+
+        # Return a user-friendly HTML error page
+        html_content = f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <title>502 Bad Gateway</title>
+            <style>
+                body {{ font-family: sans-serif; background-color: #f8f9fa; color: #212529; margin: 2em; }}
+                .container {{ max-width: 800px; margin: auto; background: white; padding: 2em; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                h1 {{ color: #dc3545; }}
+                pre {{ background-color: #e9ecef; padding: 1em; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>502 Bad Gateway</h1>
+                <p><strong>Error:</strong> {error_detail}</p>
+                <p>The preview server inside the container may still be starting up. Please wait a moment and try refreshing. Below are the logs from the container:</p>
+                <pre>{utils.escape_html(container_logs)}</pre>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content, status_code=502)
+    finally:
+        await client.aclose()
 
 @app.get("/login", response_class=HTMLResponse, name="get_login_page_route", tags=["Pages"])
 async def get_login_page_route(
@@ -3299,11 +3363,9 @@ async def get_project_details(
     user: Dict[str, Any] = Depends(auth.get_current_active_user)
 ):
     """
-    Fetches the details and files for a specific project by unpacking its
-    repository to a temporary directory and reading the files.
+    Fetches the details, files, and commit history for a specific project.
     """
     conn = None
-    temp_dir_to_clean = None
     try:
         conn = database.get_db_connection()
         cursor = conn.cursor()
@@ -3319,68 +3381,29 @@ async def get_project_details(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this project's session.")
 
         repo_blob = project_row["git_repo_blob"]
-        unpacked_project_path, error = project_utils.unpack_git_repo_to_temp_dir(repo_blob)
         
-        if error or not unpacked_project_path:
+        # Use the utility function that returns both files and commits
+        project_details, error = await asyncio.to_thread(project_utils.unpack_git_repo_from_blob, repo_blob)
+
+        if error or not project_details:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to unpack project repository: {error}")
 
-        temp_dir_to_clean = os.path.dirname(unpacked_project_path)
-
-        meta_file_path = os.path.join(unpacked_project_path, '.tesseracs_meta.json')
-        file_order_map = {}
-        if os.path.exists(meta_file_path):
-            with open(meta_file_path, 'r', encoding='utf-8') as f:
-                meta_data = json.load(f)
-                ordered_paths = meta_data.get("file_order", [])
-                file_order_map = {path: i for i, path in enumerate(ordered_paths)}
-
-        files_list = []
-        for root, dirs, files in os.walk(unpacked_project_path):
-            if '.git' in dirs:
-                dirs.remove('.git')
-            
-            for filename in files:
-                if filename == '.tesseracs_meta.json':
-                    continue
-
-                file_path_on_disk = os.path.join(root, filename)
-                
-                # --- THIS IS THE FIX ---
-                # 1. Get the relative path and normalize slashes first.
-                normalized_path = os.path.relpath(file_path_on_disk, unpacked_project_path).replace('\\', '/')
-                # 2. Then, use the clean variable in the f-string.
-                relative_path = f"./{normalized_path}"
-                # --- END OF FIX ---
-                
-                try:
-                    with open(file_path_on_disk, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    files_list.append(
-                        models.ProjectFileResponse(
-                            path=relative_path,
-                            content=content,
-                            language=project_utils.get_language_from_extension(filename)
-                        )
-                    )
-                except UnicodeDecodeError:
-                    print(f"Warning: Could not read file {relative_path} as UTF-8 text.")
-
-        if file_order_map:
-            files_list.sort(key=lambda f: file_order_map.get(f.path, float('inf')))
-        else:
-            files_list.sort(key=lambda f: f.path)
-
+        files_list_dict = project_details.get("files", [])
+        commits_list = project_details.get("commits", [])
+        
+        project_files_for_model = [
+            models.ProjectFileResponse(**f) for f in files_list_dict
+        ]
+        
         return models.ProjectDetailResponse(
             id=project_id,
             name=project_row["name"],
-            files=files_list
+            files=project_files_for_model,
+            commits=commits_list
         )
     finally:
         if conn:
             conn.close()
-        if temp_dir_to_clean and os.path.exists(temp_dir_to_clean):
-            shutil.rmtree(temp_dir_to_clean)
 
 @app.post("/register", response_model=models.RegistrationResponse, tags=["Authentication"])
 async def register_new_user(
@@ -4091,6 +4114,7 @@ async def websocket_endpoint(
         return
 
     await websocket.accept()
+    websocket.scope['client_id'] = client_js_id # Make client ID available to other parts of the app
     
     queue = asyncio.Queue()
     connection = state.Connection(websocket=websocket, queue=queue)
@@ -4100,16 +4124,11 @@ async def websocket_endpoint(
         try:
             while True:
                 received_data = await ws.receive_text()
-                print(f"[WS-READER / {client_js_id}] Received raw data: {received_data}")
-                
                 message_data = json.loads(received_data)
                 message_type = message_data.get("type")
                 payload = message_data.get("payload")
 
-                print(f"[WS-READER / {client_js_id}] Parsed message type: '{message_type}'")
-
                 if message_type == "chat_message" and payload:
-                    print(f"[WS-READER / {client_js_id}] Identified 'chat_message', creating task...")
                     asyncio.create_task(handle_chat_message(
                         session_id_ws, client_js_id, current_ws_user, payload, websocket
                     ))
@@ -4158,65 +4177,136 @@ async def websocket_endpoint(
         print(f"WebSocket endpoint error for client {client_js_id}: {e}")
     finally:
         print(f"Client {client_js_id} (User {user_id}) connection closing.")
+
+        # --- NEW CLEANUP LOGIC ---
+        # Find and stop all containers started by this specific client
+        async with state.running_containers_lock:
+            running_ids = [pid for pid, info in state.running_containers.items() if info.get("client_id") == client_js_id]
+        for pid in running_ids:
+            print(f"Cleaning up running container {pid} for disconnected client {client_js_id}")
+            await docker_utils.stop_container(pid)
+
+        async with state.running_previews_lock:
+            preview_ids = [pid for pid, info in state.running_previews.items() if info.get("client_id") == client_js_id]
+        for pid in preview_ids:
+            print(f"Cleaning up preview container {pid} for disconnected client {client_js_id}")
+            await docker_utils.stop_container(pid)
+        # --- END OF NEW LOGIC ---
+
         reader_task.cancel()
         writer_task.cancel()
         await state.disconnect(session_id_ws, connection)
 
 async def handle_code_related_message(message_type: str, payload: dict, websocket: WebSocket, client_id: str, session_id: str):
-    """Helper to process code-related messages to avoid cluttering the reader."""
-    if message_type == "run_code" and payload:
-        project_data = payload.get("project_data")
-        project_id = payload.get("project_id")
-        language = payload.get("language")
-        if not all([project_data, project_id, language]): return
+    user = await auth.get_user_by_session_token_internal(websocket.cookies.get(auth.SESSION_COOKIE_NAME))
+    if not user:
+        return
 
-        project_path, error = await asyncio.to_thread(
-            project_utils.create_project_directory_and_files, project_data
-        )
+    project_path = None
+    try:
+        if message_type == "run_code" and payload:
+            project_data = payload.get("project_data")
+            run_block_id = payload.get("project_id")
+            persistent_project_id = payload.get("persistent_project_id")
+            language = payload.get("language")
 
-        if error or not project_path:
-            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Failed to create project files: {error}"})
-            return
+            if not all([project_data, run_block_id, language, persistent_project_id]):
+                return
+
+            project_path, error = await asyncio.to_thread(
+                project_utils.create_project_directory_and_files, project_data
+            )
+            if error or not project_path:
+                await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Failed to create project files: {error}"})
+                return
+            
+            lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
+            if not lang_config:
+                await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Language '{language}' is not configured."})
+                return
+
+            is_preview = lang_config.get("is_preview_server", False)
+
+            if is_preview:
+                await docker_utils.handle_preview_server(
+                    websocket=websocket,
+                    project_id=run_block_id,
+                    persistent_project_id=persistent_project_id,
+                    project_path=project_path,
+                    run_command="sh run.sh",
+                    lang_config=lang_config,
+                    local_docker_client=docker_utils.get_docker_client()
+                )
+                project_path = None
+            else:
+                exit_code, full_output, error_message = await docker_utils.run_code_in_docker(
+                    websocket=websocket, client_id=client_id, project_id=run_block_id,
+                    project_data=project_data, project_path=project_path,
+                    run_command="sh run.sh", lang_config=lang_config
+                )
+
+                final_payload = {"project_id": run_block_id, "exit_code": exit_code}
+                if error_message:
+                    final_payload["error"] = error_message
+                await utils.send_ws_message(websocket, "code_finished", final_payload)
+
+                if exit_code == 0 and full_output is not None and persistent_project_id:
+                    conn = None
+                    try:
+                        conn = database.get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT git_repo_blob FROM projects WHERE id = ?", (persistent_project_id,))
+                        project_row = cursor.fetchone()
+                        if project_row:
+                            original_blob = project_row["git_repo_blob"]
+                            temp_repo_path, unpack_error = project_utils.unpack_git_repo_to_temp_dir(original_blob)
+                            if unpack_error: raise Exception(unpack_error)
+                            try:
+                                commit_error = await asyncio.to_thread(
+                                    project_utils.add_output_and_commit, temp_repo_path, full_output, user["name"]
+                                )
+                                if commit_error: raise Exception(commit_error)
+                                new_repo_blob, repack_error = project_utils.repack_repo_from_path(temp_repo_path)
+                                if repack_error: raise Exception(repack_error)
+                                cursor.execute("UPDATE projects SET git_repo_blob = ? WHERE id = ?", (new_repo_blob, persistent_project_id))
+                                conn.commit()
+                                full_project_data_response = await get_project_details(persistent_project_id, user)
+                                await state.broadcast(session_id, {
+                                    "type": "project_updated",
+                                    "payload": { "project_id": persistent_project_id, "project_data": full_project_data_response.model_dump() }
+                                })
+                            finally:
+                                if temp_repo_path and os.path.exists(os.path.dirname(temp_repo_path)):
+                                    shutil.rmtree(os.path.dirname(temp_repo_path))
+                    except Exception as e:
+                        print(f"ERROR during output commit: {e}")
+                        traceback.print_exc()
+                    finally:
+                        if conn: conn.close()
+
+        elif message_type == "stop_code" and payload:
+            if project_id := payload.get("project_id"):
+                # For previews, the name is based on persistent_project_id
+                # This part of the logic might need refinement later, but for now it stops cmd line tools
+                await docker_utils.stop_container(project_id)
+
+        elif message_type == "code_input" and payload:
+            await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
         
-        lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
-        if not lang_config:
-            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": f"Language '{language}' is not configured."})
-            return
+        elif message_type == "save_code_content" and payload:
+            await asyncio.to_thread(
+                database.save_edited_code_content,
+                payload['session_id'], payload['code_block_id'], payload['language'], payload['code_content']
+            )
+            state.remove_memory_for_client(payload['session_id'])
         
-        run_script = next((f for f in project_data.get("files", []) if f["path"].endswith('run.sh')), None)
-        if not run_script:
-            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Could not find run.sh in project."})
-            return
-
-        await docker_utils.run_code_in_docker(
-            websocket=websocket, 
-            client_id=client_id, 
-            project_id=project_id,
-            project_data=project_data,
-            project_path=project_path, 
-            run_command="sh run.sh", 
-            lang_config=lang_config
-        )
-    
-    elif message_type == "stop_code" and payload:
-        if project_id := payload.get("project_id"):
-            await docker_utils.stop_container(project_id)
-
-    elif message_type == "code_input" and payload:
-        await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
-    
-    elif message_type == "save_code_content" and payload:
-        await asyncio.to_thread(
-            database.save_edited_code_content,
-            payload['session_id'], payload['code_block_id'], payload['language'], payload['code_content']
-        )
-        state.remove_memory_for_client(payload['session_id'])
-    
-    elif message_type == "save_code_result" and payload:
-        payload['session_id'] = session_id
-        await asyncio.to_thread(database.save_code_execution_result, **payload)
-        state.remove_memory_for_client(session_id)
-
+        elif message_type == "save_code_result" and payload:
+            payload['session_id'] = session_id
+            await asyncio.to_thread(database.save_code_execution_result, **payload)
+            state.remove_memory_for_client(session_id)
+    finally:
+        if project_path and os.path.exists(project_path):
+            shutil.rmtree(project_path)
 
 @app.get("/api/sessions", response_model=List[models.SessionResponseModel], tags=["Sessions"])
 async def get_user_sessions(
@@ -5049,6 +5139,75 @@ def get_project_state_at_commit(repo_blob: bytes, commit_hash: str) -> Tuple[Opt
         if temp_dir_to_clean and os.path.exists(temp_dir_to_clean):
             shutil.rmtree(temp_dir_to_clean)
 
+def add_output_and_commit(project_path: str, output: str, user_name: str) -> Optional[str]:
+    try:
+        output_file_path = os.path.join(project_path, "_run_output.log")
+        with open(output_file_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(output)
+
+        meta_file_path = os.path.join(project_path, '.tesseracs_meta.json')
+        if os.path.exists(meta_file_path):
+            with open(meta_file_path, 'r+', encoding='utf-8') as f:
+                meta_data = json.load(f)
+                file_order = meta_data.get("file_order", [])
+                
+                output_log_path = './_run_output.log'
+                run_sh_path = './run.sh'
+
+                if output_log_path in file_order:
+                    file_order.remove(output_log_path)
+                
+                try:
+                    run_sh_index = file_order.index(run_sh_path)
+                    file_order.insert(run_sh_index + 1, output_log_path)
+                except ValueError:
+                    file_order.append(output_log_path)
+                
+                meta_data["file_order"] = file_order
+                f.seek(0)
+                json.dump(meta_data, f, indent=4)
+                f.truncate()
+        
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"], 
+            cwd=project_path, check=True, capture_output=True, text=True
+        )
+        if not status_result.stdout.strip():
+            return None
+
+        subprocess.run(["git", "config", "user.name", user_name], cwd=project_path, check=True)
+        subprocess.run(["git", "config", "user.email", f"{user_name.replace(' ', '.')}@tesseracs.dev"], cwd=project_path, check=True)
+        
+        subprocess.run(["git", "add", "_run_output.log", ".tesseracs_meta.json"], cwd=project_path, check=True)
+        
+        status_result_after_add = subprocess.run(
+            ["git", "diff", "--staged", "--quiet"], 
+            cwd=project_path
+        )
+        
+        if status_result_after_add.returncode == 0:
+            return None
+
+        commit_message = "Capture code execution output"
+        subprocess.run(["git", "commit", "-m", commit_message], cwd=project_path, check=True)
+        
+        return None
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Git operation failed: {e.stderr}"
+        print(f"PROJECT_UTILS GIT ERROR: {error_msg}")
+        return error_msg
+    except Exception as e:
+        return str(e)
+
+def repack_repo_from_path(project_path: str) -> Tuple[Optional[bytes], Optional[str]]:
+    try:
+        in_memory_file = io.BytesIO()
+        with tarfile.open(fileobj=in_memory_file, mode="w:gz") as tar:
+            tar.add(project_path, arcname=os.path.basename(project_path))
+        return in_memory_file.getvalue(), None
+    except Exception as e:
+        return None, str(e)
+
 def unpack_git_repo_from_blob(repo_blob: bytes) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     try:
         in_memory_file = io.BytesIO(repo_blob)
@@ -5162,7 +5321,7 @@ active_ai_streams: Dict[str, asyncio.Event] = {}
 active_ai_streams_lock = asyncio.Lock()
 running_previews: Dict[str, Dict[str, Any]] = {}
 running_previews_lock = asyncio.Lock()
-
+preview_routes: Dict[str, str] = {}
 
 def _get_memory_from_db_sync(session_id: str) -> Optional[ConversationBufferMemory]:
     conn = None
@@ -5381,6 +5540,8 @@ BLOCK TYPE: Project
 A container for a code project. It must contain one or more File Blocks.
 The 'run.sh' script within the project MUST contain all necessary commands to install dependencies and run the code.
 For Python projects, dependencies MUST be installed using 'uv pip install'.
+For static webpage projects, the final command in the `run.sh` script MUST be prefixed with `exec` to ensure the server runs correctly. The server must run on port 8000. For example: `exec python3 -m http.server 8000` or `npm install && exec npx -y serve -l 8000`.
+If a project has a package.json file, the run.sh script must run npm install first.
 Tags: _PROJECT_START_ and _PROJECT_END_
 JSON Payload: Must be { "name": "unique_project_name" }
 Streaming Content: A brief description of the project, followed immediately by File Blocks.
@@ -5428,7 +5589,7 @@ _FILE_START_
 { "path": "./run.sh" }
 _JSON_END_
 uv pip install numpy matplotlib
-python -u main.py
+python main.py
 _FILE_END_
 _PROJECT_END_
 
@@ -5440,6 +5601,7 @@ from fastapi.websockets import WebSocketState
 import html
 import traceback
 from typing import Any
+import re
 
 def escape_html(s: str) -> str:
     """
@@ -5448,6 +5610,12 @@ def escape_html(s: str) -> str:
     if not isinstance(s, str):
         s = str(s) # Ensure it's a string
     return html.escape(s)
+
+
+def strip_ansi_codes(text: str) -> str:
+    """Removes ANSI escape codes (used for terminal colors) from a string."""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
 
 def is_valid_email(email: str) -> bool:
     """
@@ -5630,7 +5798,7 @@ async def send_ws_message(websocket: WebSocket, message_type: str, payload: Any)
 
 
 === app/static/input.css ===
-/* app/static/input.css */
+/* app/static/input.css (Final Corrected Version) */
 
 /* --- Imports for Prism and KaTeX --- */
 @import 'prismjs/themes/prism-tomorrow.css';
@@ -5648,7 +5816,7 @@ html, body {
     height: 100%;
     margin: 0;
     font-family: 'Inter', sans-serif;
-    background-color: #f3f4f6; /* Light gray background for the whole page */
+    background-color: #f3f4f6;
 }
 
 #chat-history {
@@ -5665,21 +5833,12 @@ html, body {
 
 .sidebar-scrollable {
     overflow-y: auto;
-    scrollbar-width: thin; /* For Firefox */
-    scrollbar-color: theme('colors.gray.400') theme('colors.gray.200'); /* For Firefox */
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.gray.400') theme('colors.gray.200');
 }
-.sidebar-scrollable::-webkit-scrollbar {
-    width: 6px;
-}
-.sidebar-scrollable::-webkit-scrollbar-track {
-    background: theme('colors.gray.200');
-    border-radius: 3px;
-}
-.sidebar-scrollable::-webkit-scrollbar-thumb {
-    background-color: theme('colors.gray.400');
-    border-radius: 3px;
-    border: 1px solid theme('colors.gray.200');
-}
+.sidebar-scrollable::-webkit-scrollbar { width: 6px; }
+.sidebar-scrollable::-webkit-scrollbar-track { background: theme('colors.gray.200'); border-radius: 3px; }
+.sidebar-scrollable::-webkit-scrollbar-thumb { background-color: theme('colors.gray.400'); border-radius: 3px; border: 1px solid theme('colors.gray.200'); }
 /* ----------------------------------- */
 
 /* Style for the AI Stop Generation button */
@@ -5692,28 +5851,20 @@ html, body {
     transition: background-color 0.15s ease-in-out;
     margin-left: 0.5rem;
 }
-#stop-ai-button:hover {
-    background-color: #dc2626; /* red-600 */
-}
-#stop-ai-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
+#stop-ai-button:hover { background-color: #dc2626; } /* red-600 */
+#stop-ai-button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* Utility class (already present in Tailwind but good to have explicit) */
-.hidden {
-    display: none !important;
-}
+.hidden { display: none !important; }
 /* ----------------------------------- */
 
-/* --- Message Styling --- */
+/* --- Base Message Styling --- */
 .message {
-    padding: 0.5rem 0.75rem;
+    padding: 0.75rem 1rem;
     margin-bottom: 0.5rem;
     border-radius: 0.5rem;
     max-width: 90%;
     word-wrap: break-word;
-    line-height: 1.5;
+    line-height: 1.6;
 }
 
 .user-message {
@@ -5732,173 +5883,130 @@ html, body {
 }
 
 .ai-message {
-    background-color: #e5e7eb; /* Tailwind gray-200 */
+    background-color: #f3f4f6; /* Tailwind gray-100 */
     align-self: flex-start;
     margin-right: auto;
     max-width: 90%;
-    padding: 0.5rem 0.75rem;
     border-radius: 0.5rem;
+    width: fit-content;
 }
 
-.ai-message p { margin-bottom: 0.5em; }
-.ai-message p:last-child { margin-bottom: 0; }
-.ai-message ul, .ai-message ol { margin-left: 1.5em; margin-top: 0.5em; margin-bottom: 0.5em; }
-.ai-message li { margin-bottom: 0.25em; }
-.ai-message blockquote { border-left: 3px solid #ccc; padding-left: 0.8em; margin-left: 0; margin-top: 0.5em; margin-bottom: 0.5em; color: #555; }
-.ai-message code {
-    background-color: transparent;
-    padding: 0.1em 0.3em;
-    border-radius: 3px;
-    font-family: monospace;
+/* --- AI Message Markdown Content (Comprehensive Styling) --- */
+.ai-message * { max-width: 100%; }
+.ai-message h1 { @apply text-2xl font-bold mb-4 mt-6 border-b pb-2; }
+.ai-message h2 { @apply text-xl font-semibold mb-3 mt-5 border-b pb-2; }
+.ai-message h3 { @apply text-lg font-semibold mb-2 mt-4; }
+.ai-message h4 { @apply text-base font-semibold mb-2 mt-3; }
+.ai-message h5 { @apply text-sm font-semibold mb-1 mt-2; }
+.ai-message h6 { @apply text-xs font-semibold mb-1 mt-1 text-gray-600 uppercase; }
+
+.ai-message p { @apply mb-4; }
+.ai-message p:last-child { @apply mb-0; }
+
+.ai-message ul, .ai-message ol { @apply my-4 pl-8; }
+.ai-message ul { @apply list-disc; }
+.ai-message ol { @apply list-decimal; }
+.ai-message ul ul, .ai-message ol ul { @apply list-[circle] my-2; }
+.ai-message ol ol, .ai-message ul ol { @apply list-[lower-alpha] my-2; }
+.ai-message li { @apply mb-2 pl-2; }
+
+.ai-message li > input[type="checkbox"] { @apply mr-2 align-middle cursor-default; }
+
+.ai-message blockquote { @apply border-l-4 border-gray-300 pl-4 my-4 italic text-gray-600; }
+.ai-message blockquote > p { @apply mb-2; }
+
+.ai-message :not(pre) > code {
+    @apply bg-gray-200 text-gray-800 font-mono text-sm px-1.5 py-0.5 rounded-md;
+}
+
+/* Fenced code block container (<pre>) */
+.ai-message pre {
+    background-color: #2d2d2d; /* This is the solid dark background */
+    border-radius: 6px;
+    padding: 1em;
+    margin: 1em 0;
+    overflow-x: auto;
+    text-shadow: none;
+}
+
+/* Text inside the fenced code block (<code>) */
+.ai-message pre code {
+    color: #ccc; /* This is the light gray text color */
+    background: none;
     font-size: 0.9em;
-}
-.ai-message pre[class*="language-"] code {
-    background-color: transparent;
     padding: 0;
-    border-radius: 0;
-    font-size: inherit;
-}
-.ai-message a { color: #007bff; text-decoration: underline; }
-.ai-message a:hover { color: #0056b3; }
-.ai-message hr { border: none; border-top: 1px solid #ccc; margin: 1em 0; }
-.ai-message table { border-collapse: collapse; margin: 1em 0; width: auto; }
-.ai-message th, .ai-message td { border: 1px solid #ccc; padding: 0.3em 0.6em; text-align: left; }
-.ai-message th { background-color: #f2f2f2; font-weight: bold; }
-
-.code-reference {
-    font-family: monospace;
-    background-color: rgba(0, 0, 0, 0.08);
-    padding: 1px 5px;
-    border-radius: 4px;
-    font-size: 0.85em;
-    white-space: nowrap;
-    margin: 0 2px;
 }
 
+.ai-message a { @apply text-blue-600 underline hover:text-blue-800; }
+.ai-message hr { @apply border-t border-gray-300 my-6; }
+
+/* Table Styling */
+.ai-message table {
+    border-collapse: collapse;
+    margin: 1.5em 0;
+    font-size: 0.9em;
+    width: auto;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.05);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.ai-message th,
+.ai-message td {
+    border: 1px solid #e5e7eb;
+    padding: 0.6em 0.9em;
+}
+.ai-message thead th {
+    background-color: #f9fafb;
+    font-weight: 600;
+    color: #374151;
+}
+.ai-message tbody tr:nth-of-type(odd) {
+    background-color: #f9fafb;
+}
+
+/* Corrected Table Alignment Fix */
+.ai-message th[align="left"],
+.ai-message td[align="left"] {
+    text-align: left;
+}
+.ai-message th[align="center"],
+.ai-message td[align="center"] {
+    text-align: center;
+}
+.ai-message th[align="right"],
+.ai-message td[align="right"] {
+    text-align: right;
+}
+/* --- End Markdown Content --- */
+
+.code-reference { font-family: monospace; background-color: rgba(0, 0, 0, 0.08); padding: 1px 5px; border-radius: 4px; font-size: 0.85em; white-space: nowrap; margin: 0 2px; }
 .loading-dots { display: inline-block; }
-.loading-dots::after {
-    display: inline-block; position: relative; left: 1px;
-    animation: ellipsis 1.5s infinite; content: ".";
-    width: 1.5em; text-align: left; vertical-align: bottom;
-}
-@keyframes ellipsis {
-    0% { content: "."; } 33% { content: ".."; } 66% { content: "..."; }
-}
+.loading-dots::after { display: inline-block; position: relative; left: 1px; animation: ellipsis 1.5s infinite; content: "."; width: 1.5em; text-align: left; vertical-align: bottom; }
+@keyframes ellipsis { 0% { content: "."; } 33% { content: ".."; } 66% { content: "..."; } }
 
-.thinking-area {
-    width: 100%; max-width: 90%; margin-bottom: 4px;
-    align-self: flex-start; font-size: 0.9em;
-}
-.thinking-area details {
-    width: 100%; border: 1px dashed #aaa; border-radius: 6px;
-    background-color: #f0f0f0; overflow: hidden;
-}
-.thinking-summary {
-    padding: 3px 8px; cursor: pointer; font-weight: normal; color: #444;
-    background-color: #e0e0e0; border-bottom: 1px dashed #aaa;
-    outline: none; user-select: none; list-style: none; display: block;
-    transition: background-color 0.15s ease;
-}
+.thinking-area { width: 100%; max-width: 90%; margin-bottom: 4px; align-self: flex-start; font-size: 0.9em; }
+.thinking-area details { width: 100%; border: 1px dashed #aaa; border-radius: 6px; background-color: #f0f0f0; overflow: hidden; }
+.thinking-summary { padding: 3px 8px; cursor: pointer; font-weight: normal; color: #444; background-color: #e0e0e0; border-bottom: 1px dashed #aaa; outline: none; user-select: none; list-style: none; display: block; transition: background-color 0.15s ease; }
 .thinking-summary:hover { background-color: #d0d0d0; }
 .thinking-summary::-webkit-details-marker { display: none; }
 .thinking-summary .dots { display: inline-block; margin-left: 4px; }
-.thinking-summary .dots::after {
-    display: inline-block; position: relative; left: 1px;
-    animation: ellipsis 1.5s infinite; content: ".";
-    width: 1.5em; text-align: left; vertical-align: bottom;
-}
+.thinking-summary .dots::after { display: inline-block; position: relative; left: 1px; animation: ellipsis 1.5s infinite; content: "."; width: 1.5em; text-align: left; vertical-align: bottom; }
 .thinking-area details[open] > .thinking-summary .dots { display: none; }
-.thinking-area details pre {
-    margin: 0; padding: 8px; background-color: #f8f8f8;
-    white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word;
-    max-height: 200px; overflow-y: auto;
-}
-
-.code-blocks-area {
-    width: 100%;
-    max-width: 90%;
-    align-self: flex-start;
-    margin-top: 0.5rem;
-}
-
-.block-container {
-    margin-bottom: 0.75rem;
-    border-radius: 0.375rem;
-    overflow: hidden;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-}
-
-
-.block-header {
-    display: flex;
-    align-items: center;
-    background-color: #e5e7eb;
-    padding: 0.25rem 0.5rem;
-    font-size: 0.8em;
-    color: #4b5563;
-    gap: 0.625rem;
-    border-top-left-radius: 0.375rem;
-    border-top-right-radius: 0.375rem;
-}
-
-.block-buttons {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    flex-shrink: 0;
-}
-
-.block-title {
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex-shrink: 1;
-    flex-grow: 1;
-    text-align: left;
-}
-
-.block-status {
-    margin-left: auto;
-    text-align: right;
-    font-style: italic;
-    font-size: 0.9em;
-    padding: 0 0.3125rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: #6b7280;
-    flex-shrink: 0;
-}
-
+.thinking-area details pre { margin: 0; padding: 8px; background-color: #f8f8f8; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; max-height: 200px; overflow-y: auto; }
+.code-blocks-area { width: 100%; max-width: 90%; align-self: flex-start; margin-top: 0.5rem; }
+.block-container { margin-bottom: 0.75rem; border-radius: 0.375rem; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.block-header { display: flex; align-items: center; background-color: #e5e7eb; padding: 0.25rem 0.5rem; font-size: 0.8em; color: #4b5563; gap: 0.625rem; border-top-left-radius: 0.375rem; border-top-right-radius: 0.375rem; }
+.block-buttons { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; }
+.block-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; flex-grow: 1; text-align: left; }
+.block-status { margin-left: auto; text-align: right; font-style: italic; font-size: 0.9em; padding: 0 0.3125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #6b7280; flex-shrink: 0; }
 .block-status.running, .block-status.stopping { color: #ca8a04; font-weight: 500; }
 .block-status.success { color: #16a34a; font-weight: 500; }
 .block-status.error, .block-status.stopped { color: #dc2626; font-weight: 500; }
-
-.block-action-btn {
-    background-color: #d1d5db;
-    color: #4b5563;
-    border: none;
-    padding: 0.1875rem 0.4375rem;
-    border-radius: 0.25rem;
-    cursor: pointer;
-    font-size: 0.9em;
-    line-height: 1.2;
-    transition: background-color 0.2s ease, color 0.2s ease;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    white-space: nowrap;
-}
+.block-action-btn { background-color: #d1d5db; color: #4b5563; border: none; padding: 0.1875rem 0.4375rem; border-radius: 0.25rem; cursor: pointer; font-size: 0.9em; line-height: 1.2; transition: background-color 0.2s ease, color 0.2s ease; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; }
 .block-action-btn:hover { background-color: #9ca3af; color: #1f2937; }
 .block-action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .block-action-btn.copied { background-color: #16a34a; color: white; }
-
-.run-code-btn {
-    padding: 4px; width: 24px; height: 24px; font-size: 1em;
-    background-color: transparent !important; border: none !important;
-    color: #9ca3af; transition: color 0.2s ease;
-}
+.run-code-btn { padding: 4px; width: 24px; height: 24px; font-size: 1em; background-color: transparent !important; border: none !important; color: #9ca3af; transition: color 0.2s ease; }
 .run-code-btn:hover { color: #4b5563; background-color: transparent !important; }
 .run-code-btn[data-status="idle"] { color: #16a34a; }
 .run-code-btn[data-status="idle"]:hover { color: #15803d; }
@@ -5907,266 +6015,65 @@ html, body {
 .run-code-btn[data-status="stopping"] { color: #f59e0b; cursor: wait; animation: spin 1s linear infinite; }
 .run-code-btn[data-status="stopping"]:hover { color: #d97706; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-.block-container > pre[class*="language-"] {
-    margin: 0;
-    border: 1px solid #d1d5db;
-    border-top: none;
-    border-bottom: none !important;
-    overflow: hidden;
-}
-.block-container > pre[class*="language-"] > code[class*="language-"] {
-    outline: none;
-    white-space: pre-wrap !important;
-    word-wrap: break-word !important;
-    display: block;
-    min-height: 1.5em;
-    padding: 0.5em;
-}
-.block-container > pre[class*="language-"] > code[class*="language-"]:focus {
-    background-color: rgba(0, 0, 0, 0.03);
-}
-
-.block-output-console {
-    background-color: #1f2937;
-    color: #f3f4f6;
-    padding: 0;
-    border: 1px solid #4b5563;
-    border-top: none !important;
-    border-bottom-left-radius: 0.375rem;  /* Add this */
-    border-bottom-right-radius: 0.375rem; /* Add this */
-    max-height: 250px;
-    overflow-y: auto;
-    font-family: monospace;
-    font-size: 0.85em;
-    line-height: 1.4;
-}
-
-.block-output-console pre {
-    margin: 0;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    color: inherit;
-    border: none !important;
-    padding: 0.5rem;
-    background-color: transparent;
-    outline: none !important;
-}
+.block-container > pre[class*="language-"] { margin: 0; border: 1px solid #d1d5db; border-top: none; border-bottom: none !important; overflow: hidden; }
+.block-container > pre[class*="language-"] > code[class*="language-"] { outline: none; white-space: pre-wrap !important; word-wrap: break-word !important; display: block; min-height: 1.5em; padding: 0.5em; }
+.block-container > pre[class*="language-"] > code[class*="language-"]:focus { background-color: rgba(0, 0, 0, 0.03); }
+.block-output-console { background-color: #1f2937; color: #f3f4f6; padding: 0; border: 1px solid #4b5563; border-top: none !important; border-bottom-left-radius: 0.375rem; border-bottom-right-radius: 0.375rem; max-height: 250px; overflow-y: auto; font-family: monospace; font-size: 0.85em; line-height: 1.4; }
+.block-output-console pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; color: inherit; border: none !important; padding: 0.5rem; background-color: transparent; outline: none !important; }
 .block-output-console span { display: inline; white-space: pre-wrap; }
 .block-output-console span.stdout-output { color: #ffffff; }
 .block-output-console span.stderr-output { color: #f87171; }
-.block-container > pre.hidden,
-.block-output-console.hidden,
-.block-header.hidden { display: none !important; }
-
-/* Sticky header fixes */
-.block-header.header-is-sticky-js {
-    box-shadow: none !important;
-    margin-top: 0 !important;
+.block-output-console .console-input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #f3f4f6;
+    font: inherit;
+    width: 90%;
 }
-
-
-
-.mpld3-plot-container {
-    background-color: white !important;
-    border: 1px solid #d1d5db;
-    border-top: none !important;
-    border-bottom-left-radius: 0.375rem;
-    border-bottom-right-radius: 0.375rem;
-    padding: 0 !important;
-    margin: 0;
-    overflow: visible !important; /* Key change: ensure toolbar isn't clipped */
-    min-height: 500px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    width: 100%;
-    box-sizing: border-box;
-}
-
-.mpld3-plot-container svg {
-    background-color: white !important;
-    border: none !important;
-    border-radius: 0;
-    box-shadow: none !important;
-    width: 100% !important;
-    height: auto !important;
-    min-height: 450px;
-    max-width: 100% !important;
-    display: block;
-    margin: 0 !important;
-    padding: 0 !important;
-    overflow: visible !important; /* Ensure SVG content isn't clipped */
-}
-
-.mpld3-plot-container.hidden {
-    display: none !important;
-}
-
-/* Toolbar styling - ensure it's always visible */
-.mpld3-plot-container .mpld3-toolbar {
-    background-color: rgba(255, 255, 255, 0.95) !important;
-    border: 1px solid #d1d5db !important;
-    border-radius: 0.375rem !important;
-    padding: 0.375rem !important;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
-    pointer-events: auto !important;
-    z-index: 1000 !important;
-    position: relative !important; /* Ensure it's not clipped */
-}
-
-.mpld3-plot-container .mpld3-toolbar button {
-    background-color: white !important;
-    border: 1px solid #d1d5db !important;
-    color: #374151 !important;
-    padding: 0.25rem 0.5rem !important;
-    margin: 0.125rem !important;
-    border-radius: 0.25rem !important;
-    cursor: pointer !important;
-    pointer-events: auto !important;
-    min-width: 24px !important;
-    min-height: 24px !important;
-}
-
-.mpld3-plot-container .mpld3-toolbar button:hover {
-    background-color: #f9fafb !important;
-    border-color: #9ca3af !important;
-}
-
-/* Ensure toolbar images/icons are visible */
-.mpld3-plot-container .mpld3-toolbar image {
-    pointer-events: auto !important;
-    opacity: 1 !important;
-}
-
-.mpld3-plot-container .mpld3-toolbar rect {
-    pointer-events: auto !important;
-}
-
-/* Ensure axes and plot elements are properly contained */
-.mpld3-plot-container .mpld3-axes {
-    pointer-events: auto !important;
-}
-
-/* Fix any text elements that might be clipped */
-.mpld3-plot-container text {
-    pointer-events: none !important;
-    fill: #333333 !important;
-}
-
-/* Animation notice styling */
-.animation-notice {
-    background-color: #fef3c7;
-    border: 1px solid #f59e0b;
-    border-radius: 0.375rem;
-    padding: 1rem;
-    margin-bottom: 1rem;
-}
-
-.animation-notice-content {
-    font-size: 0.875rem;
-}
-
-.animation-notice-content strong {
-    color: #92400e;
-    display: block;
-    margin-bottom: 0.5rem;
-}
-
-.animation-notice-content p {
-    margin: 0.5rem 0;
-    color: #78350f;
-}
-
-.animation-notice-content details {
-    margin-top: 0.75rem;
-}
-
-.animation-notice-content summary {
-    cursor: pointer;
-    font-weight: 600;
-    color: #92400e;
-    margin-bottom: 0.5rem;
-}
-
-.animation-notice-content ul {
-    margin: 0.5rem 0;
-    padding-left: 1.5rem;
-    color: #78350f;
-}
-
-.animation-notice-content li {
-    margin: 0.25rem 0;
-}
-
-.animation-notice-content code {
-    background-color: #fbbf24;
-    padding: 0.125rem 0.25rem;
-    border-radius: 0.25rem;
-    font-family: 'Courier New', monospace;
-    font-size: 0.8rem;
-}
-
-.animation-notice.hidden {
-    display: none;
-}
-
-/* Warning status styling */
-.block-status.warning {
-    background-color: #fbbf24;
-    color: #78350f;
-    padding: 0.25rem 0.5rem;
-    border-radius: 0.25rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-}
-
+.block-container > pre.hidden, .block-output-console.hidden, .block-header.hidden { display: none !important; }
+.block-header.header-is-sticky-js { box-shadow: none !important; margin-top: 0 !important; }
+.mpld3-plot-container { background-color: white !important; border: 1px solid #d1d5db; border-top: none !important; border-bottom-left-radius: 0.375rem; border-bottom-right-radius: 0.375rem; padding: 0 !important; margin: 0; overflow: visible !important; min-height: 500px; display: flex; justify-content: center; align-items: center; width: 100%; box-sizing: border-box; }
+.mpld3-plot-container svg { background-color: white !important; border: none !important; border-radius: 0; box-shadow: none !important; width: 100% !important; height: auto !important; min-height: 450px; max-width: 100% !important; display: block; margin: 0 !important; padding: 0 !important; overflow: visible !important; }
+.mpld3-plot-container.hidden { display: none !important; }
+.mpld3-plot-container .mpld3-toolbar { background-color: rgba(255, 255, 255, 0.95) !important; border: 1px solid #d1d5db !important; border-radius: 0.375rem !important; padding: 0.375rem !important; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important; pointer-events: auto !important; z-index: 1000 !important; position: relative !important; }
+.mpld3-plot-container .mpld3-toolbar button { background-color: white !important; border: 1px solid #d1d5db !important; color: #374151 !important; padding: 0.25rem 0.5rem !important; margin: 0.125rem !important; border-radius: 0.25rem !important; cursor: pointer !important; pointer-events: auto !important; min-width: 24px !important; min-height: 24px !important; }
+.mpld3-plot-container .mpld3-toolbar button:hover { background-color: #f9fafb !important; border-color: #9ca3af !important; }
+.mpld3-plot-container .mpld3-toolbar image { pointer-events: auto !important; opacity: 1 !important; }
+.mpld3-plot-container .mpld3-toolbar rect { pointer-events: auto !important; }
+.mpld3-plot-container .mpld3-axes { pointer-events: auto !important; }
+.mpld3-plot-container text { pointer-events: none !important; fill: #333333 !important; }
+.animation-notice { background-color: #fef3c7; border: 1px solid #f59e0b; border-radius: 0.375rem; padding: 1rem; margin-bottom: 1rem; }
+.animation-notice-content { font-size: 0.875rem; }
+.animation-notice-content strong { color: #92400e; display: block; margin-bottom: 0.5rem; }
+.animation-notice-content p { margin: 0.5rem 0; color: #78350f; }
+.animation-notice-content details { margin-top: 0.75rem; }
+.animation-notice-content summary { cursor: pointer; font-weight: 600; color: #92400e; margin-bottom: 0.5rem; }
+.animation-notice-content ul { margin: 0.5rem 0; padding-left: 1.5rem; color: #78350f; }
+.animation-notice-content li { margin: 0.25rem 0; }
+.animation-notice-content code { background-color: #fbbf24; padding: 0.125rem 0.25rem; border-radius: 0.25rem; font-family: 'Courier New', monospace; font-size: 0.8rem; }
+.animation-notice.hidden { display: none; }
+.block-status.warning { background-color: #fbbf24; color: #78350f; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; font-weight: 600; }
 footer { padding: 1rem; background-color: #e5e7eb; border-top: 1px solid #d1d5db; }
 #chat-form { display: flex; align-items: center; gap: 0.5rem; }
 .think-checkbox-container { display: flex; align-items: center; font-size: 0.9em; color: #4b5563; }
 .think-checkbox-container input { margin-right: 4px; cursor: pointer; }
 .think-checkbox-container label { cursor: pointer; user-select: none;}
-#message-input {
-    flex-grow: 1; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db;
-    border-radius: 0.5rem; outline: none;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
+#message-input { flex-grow: 1; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.5rem; outline: none; transition: border-color 0.2s ease, box-shadow 0.2s ease; }
 #message-input:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3); }
-#send-button {
-    background-color: #2563eb; color: white; font-weight: 500; padding: 0.5rem 1rem;
-    border-radius: 0.5rem; border: none; cursor: pointer; transition: background-color 0.2s ease;
-}
+#send-button { background-color: #2563eb; color: white; font-weight: 500; padding: 0.5rem 1rem; border-radius: 0.5rem; border: none; cursor: pointer; transition: background-color 0.2s ease; }
 #send-button:hover { background-color: #1d4ed8; }
 #send-button:disabled { opacity: 0.6; cursor: not-allowed; }
-.error-message {
-    background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca;
-    align-self: flex-start; margin-right: auto; padding: 0.5rem 0.75rem;
-    border-radius: 0.5rem; max-width: 90%; word-wrap: break-word;
-    margin-bottom: 0.5rem; white-space: pre-wrap;
-}
-.system-message {
-    width: 100%; text-align: center; font-size: 0.875rem; color: #6b7280;
-    font-style: italic; margin: 0.25rem 0;
-}
+.error-message { background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca; align-self: flex-start; margin-right: auto; padding: 0.5rem 0.75rem; border-radius: 0.5rem; max-width: 90%; word-wrap: break-word; margin-bottom: 0.5rem; white-space: pre-wrap; }
+.system-message { width: 100%; text-align: center; font-size: 0.875rem; color: #6b7280; font-style: italic; margin: 0.25rem 0; }
 span[data-katex-rendered="true"] .katex-display { margin: 0.5em 0; overflow-x: auto; overflow-y: hidden; padding: 0.2em 0; }
 span[data-katex-rendered="true"] .katex { line-height: normal; vertical-align: baseline; font-size: 1em; }
 .katex-error { color: #cc0000; background-color: #fdd; border: 1px solid #cc0000; padding: 2px 4px; border-radius: 3px; }
-
-
-.sidebar-collapsed {
-    width: 0 !important;
-    padding: 0 !important;
-    overflow: hidden;
-}
-
-#sidebar-toggle.collapsed {
-    transform: translateX(1.5rem); /* Move button slightly out from the edge */
-}
-
-#sidebar-toggle-icon.collapsed {
-    transform: rotate(180deg);
-}
-
+.sidebar-collapsed { width: 0 !important; padding: 0 !important; overflow: hidden; }
+#sidebar-toggle.collapsed { transform: translateX(1.5rem); }
+#sidebar-toggle-icon.collapsed { transform: rotate(180deg); }
+.run-code-btn[data-status="previewing"] { color: #dc2626; }
+.run-code-btn[data-status="previewing"]:hover { color: #b91c1c; }
 
 === app/static/languages.json ===
 {
@@ -6731,6 +6638,7 @@ document.addEventListener('fileToggle', (event) => {
 
     const codeBlocksInScope = turnContainer.querySelectorAll('.block-container[data-path]');
     
+    // This part hides/shows the code blocks themselves
     codeBlocksInScope.forEach(block => {
         const blockPath = block.dataset.path;
         let shouldToggle = recursive ? blockPath.startsWith(path) : blockPath === path;
@@ -6738,6 +6646,19 @@ document.addEventListener('fileToggle', (event) => {
             block.style.display = isChecked ? '' : 'none';
         }
     });
+
+    // This new part specifically links run.sh to its output
+    if (path === './run.sh' && !recursive) {
+        const runBlock = turnContainer.querySelector('.block-container[data-path="./run.sh"]');
+        if (runBlock) {
+            const runBlockId = runBlock.id;
+            const outputBlockId = `output-for-${runBlockId}`;
+            const outputBlock = document.getElementById(outputBlockId);
+            if (outputBlock) {
+                outputBlock.style.display = isChecked ? '' : 'none';
+            }
+        }
+    }
 });
 
 document.addEventListener('downloadClicked', (event) => {
@@ -7142,6 +7063,12 @@ function renderMarkdownAndKatex(contentString, targetElement) {
     }
 
     targetElement.innerHTML = html;
+
+    targetElement.querySelectorAll('pre code[class*="language-"]').forEach((block) => {
+        if (typeof Prism !== 'undefined') {
+            Prism.highlightElement(block);
+        }
+    });
 }
 
 function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSuffix, codeBlockIndex, codeBlocksAreaElement, isRunnable = false, promptingUserId = null) {
@@ -7152,19 +7079,23 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
     const rawLang = (language || 'plaintext').trim().toLowerCase();
     const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
     const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
-    const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
+
     const container = document.createElement('div');
     container.classList.add('block-container');
-    container.id = blockId;
+    // ID is now set by the caller
     container.dataset.language = canonicalLang;
     container.dataset.originalContent = originalCodeForDataset;
+
     const codeHeader = document.createElement('div');
     codeHeader.classList.add('block-header');
+
     if (promptingUserId !== null) {
         const prompterColor = window.participantInfo?.[promptingUserId]?.color || '#dbeafe';
         const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
         codeHeader.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
     }
+
+    // The rest of the function for creating buttons and elements remains the same...
     const codeButtonsDiv = document.createElement('div');
     codeButtonsDiv.classList.add('block-buttons');
     const runStopBtn = document.createElement('button');
@@ -7216,13 +7147,59 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
         try { Prism.highlightElement(codeElement); } catch (e) { console.error(`Prism highlight error:`, e); }
     }
 
+    // This ID is temporary and will be overwritten by the caller for stability
+    const tempBlockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
+
     toggleCodeBtn.addEventListener('click', () => { const isHidden = preElement.classList.toggle('hidden'); toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide'; });
     copyCodeBtn.addEventListener('click', async () => { try { await navigator.clipboard.writeText(codeElement.textContent || ''); copyCodeBtn.textContent = 'Copied!'; setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500); } catch (err) { console.error('Failed to copy code: ', err); } });
-    restoreBtn.addEventListener('click', async () => { const originalContent = container.dataset.originalContent; const sessionId = getSessionIdFromPath(); if (!sessionId || !window.csrfTokenRaw) return; try { const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${blockId}`, { method: 'DELETE', headers: { 'X-CSRF-Token': window.csrfTokenRaw } }); if (response.ok) { const cursorPos = getCursorPosition(codeElement); codeElement.textContent = originalContent; if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length)); } catch (e) { console.error(`Prism highlight error:`, e); } } saveCodeBlockState(blockId, originalContent); } else { const error = await response.json(); alert(`Failed to restore code block: ${error.detail || 'Server error'}`); } } catch (error) { console.error("Error restoring code block:", error); alert("An error occurred while restoring the code block."); } });
-    codeElement.addEventListener('keydown', (event) => { handleCodeBlockKeydown(event, blockId); });
-    codeElement.addEventListener('blur', () => { const content = codeElement.textContent || ''; saveCodeBlockContent(blockId, content); });
-    codeElement.addEventListener('input', () => { const cursorPos = getCursorPosition(codeElement); const content = codeElement.textContent || ''; setTimeout(() => { if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, cursorPos); } catch (e) { console.error(`Prism highlight error:`, e); } } }, 10); saveCodeBlockState(blockId, content); });
+    restoreBtn.addEventListener('click', async () => { const originalContent = container.dataset.originalContent; const sessionId = getSessionIdFromPath(); if (!sessionId || !window.csrfTokenRaw) return; try { const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${container.id}`, { method: 'DELETE', headers: { 'X-CSRF-Token': window.csrfTokenRaw } }); if (response.ok) { const cursorPos = getCursorPosition(codeElement); codeElement.textContent = originalContent; if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length)); } catch (e) { console.error(`Prism highlight error:`, e); } } saveCodeBlockState(container.id, originalContent); } else { const error = await response.json(); alert(`Failed to restore code block: ${error.detail || 'Server error'}`); } } catch (error) { console.error("Error restoring code block:", error); alert("An error occurred while restoring the code block."); } });
+    codeElement.addEventListener('keydown', (event) => { handleCodeBlockKeydown(event, container.id); });
+    codeElement.addEventListener('blur', () => { const content = codeElement.textContent || ''; saveCodeBlockContent(container.id, content); });
+    codeElement.addEventListener('input', () => { const cursorPos = getCursorPosition(codeElement); const content = codeElement.textContent || ''; setTimeout(() => { if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, cursorPos); } catch (e) { console.error(`Prism highlight error:`, e); } } }, 10); saveCodeBlockState(container.id, content); });
+
     return container;
+}
+
+function handleCodeWaitingInput(payload) {
+    const { project_id } = payload;
+    const outputBlockId = `output-for-${project_id}`;
+    const outputContainer = document.getElementById(outputBlockId);
+    if (!outputContainer) return;
+
+    const outputPre = outputContainer.querySelector('.block-output-console pre');
+    if (!outputPre) return;
+
+    // Check if an input already exists to prevent duplicates
+    if (outputPre.querySelector('.console-input')) return;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'console-input';
+    input.spellcheck = false;
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const value = input.value;
+
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({
+                    type: 'code_input',
+                    payload: { project_id: project_id, input: value }
+                }));
+            }
+
+            // Simply remove the input field. The terminal's echo will appear shortly.
+            input.remove();
+        }
+    });
+
+    outputPre.appendChild(input);
+
+    // This timeout ensures the element is in the DOM before we try to focus it.
+    setTimeout(() => {
+        input.focus();
+    }, 0);
 }
 
 function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
@@ -7302,6 +7279,10 @@ function handleStructuredMessage(messageData) {
             }
             break;
         }
+        case 'code_waiting_input': {
+            handleCodeWaitingInput(payload);
+            break;
+        }
         case 'code_finished': {
             const { exit_code, error } = payload;
             let finishMessage = `Finished (Exit: ${exit_code})`;
@@ -7327,13 +7308,20 @@ function handleStructuredMessage(messageData) {
     }
 }
 
-function createOrClearOutputContainer(projectId, title, promptingUserId) {
+function createOrClearOutputContainer(projectId, codeContainer, title, promptingUserId) {
     const outputBlockId = `output-for-${projectId}`;
     let outputContainer = document.getElementById(outputBlockId);
-    const codeContainer = document.getElementById(projectId);
+
     if (outputContainer) {
         const outputPre = outputContainer.querySelector('.block-output-console pre');
         if (outputPre) outputPre.innerHTML = '';
+        const outputHeader = outputContainer.querySelector('.block-header');
+        if (outputHeader) {
+            outputHeader.innerHTML = createOutputHeaderHTML(title, promptingUserId, 'Ready', 'idle');
+            const consoleDiv = outputContainer.querySelector('.block-output-console');
+            outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = consoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
+            outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { const text = outputContainer.querySelector('pre')?.textContent || ''; await navigator.clipboard.writeText(text); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
+        }
     } else {
         outputContainer = document.createElement('div');
         outputContainer.id = outputBlockId;
@@ -7350,13 +7338,15 @@ function createOrClearOutputContainer(projectId, title, promptingUserId) {
         outputConsoleDiv.appendChild(outputPre);
         outputContainer.appendChild(outputHeader);
         outputContainer.appendChild(outputConsoleDiv);
+
+        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = outputConsoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
+        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { await navigator.clipboard.writeText(outputPre.textContent || ''); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
+        
         if (codeContainer) {
             codeContainer.insertAdjacentElement('afterend', outputContainer);
         } else {
             chatHistory.appendChild(outputContainer);
         }
-        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = outputConsoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
-        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { await navigator.clipboard.writeText(outputPre.textContent || ''); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
     }
     outputContainer.style.display = '';
     return outputContainer;
@@ -7444,12 +7434,12 @@ async function handleRunStopCodeClick(event) {
     const container = button.closest('.block-container');
     if (!container) return;
 
-    const codeBlockId = container.id;
+    const runBlockId = container.id;
     const status = button.dataset.status;
 
     if (status === 'running' || status === 'previewing') {
         if (websocket && websocket.readyState === WebSocket.OPEN) {
-            websocket.send(JSON.stringify({ type: 'stop_code', payload: { project_id: codeBlockId } }));
+            websocket.send(JSON.stringify({ type: 'stop_code', payload: { project_id: runBlockId } }));
         }
         return;
     }
@@ -7457,9 +7447,11 @@ async function handleRunStopCodeClick(event) {
     const turnContainer = button.closest('.ai-turn-container');
     const explorer = turnContainer ? turnContainer.querySelector('project-explorer') : null;
     if (!explorer || !explorer.projectData) {
-        alert("Error: Could not find project data for this execution. The parent project explorer component is missing.");
+        alert("Error: Could not find project data for this execution.");
         return;
     }
+    
+    const persistentProjectId = explorer.projectData.projectId || explorer.projectData.id;
     const projectData = explorer.projectData;
     
     const updatedProjectData = JSON.parse(JSON.stringify(projectData));
@@ -7476,33 +7468,35 @@ async function handleRunStopCodeClick(event) {
         }
     });
 
-    let mainLanguage = 'bash'; 
-    const languagePriority = [
-        'html', 'csharp', 'java', 'go', 'rust', 'python',
-        'cpp', 'c', 'typescript', 'javascript'
-    ];
-    const projectLanguages = new Set(updatedProjectData.files.map(file => file.language));
+    let mainLanguage = 'bash';
+    const languagePriority = ['html', 'csharp', 'java', 'go', 'rust', 'python', 'cpp', 'c', 'typescript', 'javascript'];
+    const projectLanguages = new Set(updatedProjectData.files.map(file => file.language || ''));
     for (const lang of languagePriority) {
         if (projectLanguages.has(lang)) {
             mainLanguage = lang;
-            break; 
+            break;
         }
     }
 
     if (websocket && websocket.readyState === WebSocket.OPEN) {
-        const titleElement = container.querySelector('.block-title .title-text');
-        const title = titleElement ? titleElement.textContent : 'run.sh';
-        const promptingUserId = JSON.parse(turnContainer.dataset.projectData).prompting_user_id || null;
-        const outputContainer = createOrClearOutputContainer(codeBlockId, title, promptingUserId);
-        updateHeaderStatus(outputContainer, 'Starting...', 'running');
         button.dataset.status = 'running';
         button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><rect width="100" height="100" rx="15"/></svg>`;
         button.title = 'Stop Execution';
+
+        if (mainLanguage !== 'html') {
+            const titleElement = container.querySelector('.block-title .title-text');
+            const title = titleElement ? titleElement.textContent : 'run.sh';
+            const promptingUserId = JSON.parse(turnContainer.dataset.projectData).prompting_user_id || null;
+            const outputContainer = createOrClearOutputContainer(runBlockId, container, title, promptingUserId);
+            updateHeaderStatus(outputContainer, 'Starting...', 'running');
+        }
+
         websocket.send(JSON.stringify({
             type: 'run_code',
             payload: {
                 project_data: updatedProjectData,
-                project_id: codeBlockId,
+                project_id: runBlockId,
+                persistent_project_id: persistentProjectId,
                 language: mainLanguage
             }
         }));
@@ -7534,6 +7528,7 @@ function updateHeaderStatus(outputContainer, statusText, statusClass) {
     }
 }
 
+
 function addCodeOutput(outputPreElement, streamType, text, language) {
     if (!outputPreElement || !text) return;
 
@@ -7557,7 +7552,19 @@ function addCodeOutput(outputPreElement, streamType, text, language) {
         outputPreElement.appendChild(newSpan);
     }
     
-    outputPreElement.parentElement.scrollTop = outputPreElement.parentElement.scrollHeight;
+    requestAnimationFrame(() => {
+        const internalScroller = outputPreElement.parentElement;
+        if (internalScroller) {
+            // This scrolls the inside of the output pane
+            internalScroller.scrollTop = internalScroller.scrollHeight;
+        }
+
+        // This scrolls the main chat window just enough to see the output container
+        const outputContainer = internalScroller.parentElement;
+        if (outputContainer) {
+            outputContainer.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+        }
+    });
 }
 
 function performUndo(blockId) {
@@ -7753,6 +7760,7 @@ async function loadAndDisplayChatHistory(sessionId) {
     }
 }
 
+
 async function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
     if (!parentElement || !msg) return;
 
@@ -7817,18 +7825,12 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
     if (hasProject) {
         turnContainer.dataset.projectId = msg.project_id;
         turnContainer.dataset.projectName = msg.project_name;
-
-        if (senderType === 'system' && msg.content && msg.content.includes("added the file")) {
-            const match = msg.content.match(/'([^']+)'/);
-            if (match) {
-                const newFilename = match[1];
-                msg.project_files.forEach(f => f.checked = true);
-                const newFile = msg.project_files.find(f => f.path.endsWith('/' + newFilename) || f.path === './' + newFilename);
-                if (newFile) {
-                    newFile.checked = false;
-                }
-            }
-        }
+        
+        turnContainer.dataset.projectData = JSON.stringify({
+            name: msg.project_name || "Code Project",
+            files: msg.project_files,
+            prompting_user_id: msg.prompting_user_id
+        });
 
         const explorer = document.createElement('project-explorer');
         explorer.projectData = {
@@ -7842,39 +7844,111 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
         const codeBlocksArea = document.createElement('div');
         codeBlocksArea.className = 'code-blocks-area';
         
-        turnContainer.dataset.projectData = JSON.stringify({
-            name: msg.project_name || "Code Project",
-            files: msg.project_files,
-            prompting_user_id: msg.prompting_user_id
-        });
-        
+        const outputLogFile = msg.project_files.find(f => f.path.endsWith('_run_output.log'));
+        const outputContent = outputLogFile ? outputLogFile.content : null;
+        let runBlockElement = null; // This will hold the actual DOM element for run.sh
+
         msg.project_files.forEach((file, index) => {
-            const isChecked = file.checked === undefined ? true : file.checked;
+            if (file.path.endsWith('_run_output.log')) return;
+
             const codeBlockIndex = index + 1;
             const isRunnable = file.path.endsWith('run.sh');
-            const blockId = `code-block-turn${msg.turn_id}-${codeBlockIndex}`;
-            const finalCodeContent = editedCodeBlocks[blockId] || file.content;
+            const stableId = `code-block-turn${msg.turn_id}-${btoa(file.path)}`;
+            const finalCodeContent = editedCodeBlocks[stableId] || file.content;
+
             const block = createCodeBlock(
                 file.language, finalCodeContent, file.content,
                 msg.turn_id, codeBlockIndex, codeBlocksArea,
                 isRunnable, msg.prompting_user_id
             );
+
             if (block) {
+                block.id = stableId;
                 block.dataset.path = file.path;
                 block.querySelector('.block-title .title-text').textContent = file.path;
-                initializeCodeBlockHistory(blockId, finalCodeContent);
-                if (!isChecked) {
-                    block.style.display = 'none';
+                initializeCodeBlockHistory(block.id, finalCodeContent);
+                if (isRunnable) {
+                    runBlockElement = block; // <-- Capture the element reference
                 }
             }
         });
         turnContainer.appendChild(codeBlocksArea);
+
+        if (runBlockElement && outputContent !== null) {
+            const outputContainer = createOrClearOutputContainer(runBlockElement.id, runBlockElement, "run.sh", msg.prompting_user_id);
+            const outputPre = outputContainer.querySelector('pre');
+            if (outputPre) {
+                outputPre.innerHTML = '';
+                const outputSpan = document.createElement('span');
+                outputSpan.className = 'stdout-output';
+                outputSpan.textContent = outputContent;
+                outputPre.appendChild(outputSpan);
+            }
+            updateHeaderStatus(outputContainer, 'Finished (from history)', 'success');
+        }
     }
 
     if (turnContainer.hasChildNodes()) {
         parentElement.appendChild(turnContainer);
     }
-    console.log('Correct renderSingleMessage is running for sender:', msg.sender_type);
+}
+
+async function handlePreviewReady() {
+    // Get references to the necessary DOM elements
+    const loader = document.getElementById('loader');
+    const mainContent = document.getElementById('main-content');
+
+    // --- You can switch these URLs to test both scenarios ---
+    const API_URL_SUCCESS = 'https://jsonplaceholder.typicode.com/posts/1'; // This will work
+    const API_URL_FAILURE = 'https://httpstat.us/502'; // This will cause a "Bad Gateway" error
+
+    try {
+        // Attempt to fetch the data
+        const response = await fetch(API_URL_SUCCESS); // Change to API_URL_FAILURE to test error
+
+        // If the server responds with an error status (like 404 or 502), throw an error
+        if (!response.ok) {
+            throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+        }
+
+        // If the fetch was successful, parse the JSON data
+        const data = await response.json();
+
+        // --- SUCCESS LOGIC ---
+        // 1. Hide the loader element
+        if (loader) {
+            loader.style.display = 'none';
+        }
+
+        // 2. Populate the main content area with the fetched data
+        if (mainContent) {
+            mainContent.innerHTML = `
+                <h1>${data.title}</h1>
+                <p>${data.body}</p>
+                <p><small>Post ID: ${data.id}</small></p>
+            `;
+            // 3. Make the main content area visible
+            mainContent.style.display = 'block';
+        }
+
+    } catch (error) {
+        // --- FAILURE LOGIC ---
+        // This block runs if the fetch fails or if we threw an error manually
+
+        // 1. Clear the entire page to display the error cleanly
+        document.body.innerHTML = '';
+
+        // 2. Create a container and display the raw error message
+        const errorContainer = document.createElement('div');
+        errorContainer.style.fontFamily = 'monospace, sans-serif';
+        errorContainer.style.padding = '2rem';
+        errorContainer.innerHTML = `
+            <h1>Page Load Failed</h1>
+            <hr>
+            <pre><strong>Error:</strong> ${error.message}</pre>
+        `;
+        document.body.appendChild(errorContainer);
+    }
 }
 
 function handleProjectHeader(payload) {
@@ -8145,6 +8219,7 @@ function connectWebSocket() {
                         }
                     }
                     break;
+                case 'project_preview_ready': handlePreviewReady(messageData.payload); break;
                 case 'participant_typing': handleTypingIndicators(messageData.payload); break;
                 case 'participants_update': updateAndDisplayParticipants(messageData.payload); break;
                 case 'session_deleted': const chatTitle = document.getElementById('chat-session-title'); if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`; const banner = document.createElement('div'); banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold'; banner.textContent = 'The host has deleted this session. The chat is now read-only.'; chatHistory.prepend(banner); setInputDisabledState(true, false); break;
@@ -8166,19 +8241,29 @@ function handleAnswerChunk(payload) {
 
     const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
     if (loadingDots) {
-        currentStreamingAnswerElement.innerHTML = ''; // Clear the dots
+        currentStreamingAnswerElement.innerHTML = '';
     }
     
-    // This is the fix for the [object Object] bug.
-    // We now directly use the payload, which the server has corrected to be a simple string.
     const currentContent = (currentStreamingAnswerElement.dataset.rawContent || '') + payload;
     currentStreamingAnswerElement.dataset.rawContent = currentContent;
     renderMarkdownAndKatex(currentContent, currentStreamingAnswerElement);
     
-    scrollToBottom('auto');
+    requestAnimationFrame(() => {
+        currentStreamingAnswerElement.scrollIntoView({ behavior: 'auto', block: 'end' });
+    });
 }
 
-
+function createPreviewHeaderHTML(title, promptingUserId) {
+    return `
+        <div class="block-buttons">
+            <button class="refresh-btn header-btn" title="Refresh Preview">Refresh</button>
+            <button class="publish-btn header-btn" title="Publish (coming soon)">Publish</button>
+            <button class="toggle-output-btn header-btn">Hide</button>
+        </div>
+        <span class="block-title" style="color: #374151;">Preview of ${escapeHTML(title)}</span>
+        <span class="block-status running">Starting...</span>
+    `;
+}
 
 function handleStartFileStream(payload) {
     const turnContainer = currentStreamingExplorer.closest('.ai-turn-container');
@@ -8216,10 +8301,33 @@ function handleStartFileStream(payload) {
 
 function handleFileChunk(payload) {
     if (!currentStreamingFile || !currentStreamingFile.codeElement) return;
-    
-    const codeElement = currentStreamingFile.codeElement;
-    codeElement.textContent += payload.content;
 
+    const codeElement = currentStreamingFile.codeElement;
+
+    // Initialize a raw content store on the element itself
+    if (typeof codeElement.dataset.rawContent === 'undefined') {
+        codeElement.dataset.rawContent = '';
+    }
+
+    // Append new text to our raw content store
+    codeElement.dataset.rawContent += payload.content;
+
+    // Use Prism's core highlighting function on the full string
+    if (typeof Prism !== 'undefined') {
+        const language = codeElement.className.replace('language-', '');
+        const grammar = Prism.languages[language];
+        if (grammar) {
+            // This highlights the text in memory and returns an HTML string
+            const highlightedHtml = Prism.highlight(codeElement.dataset.rawContent, grammar, language);
+            // This replaces the content in one single, non-flickering operation
+            codeElement.innerHTML = highlightedHtml;
+        } else {
+            // Fallback for unknown languages
+            codeElement.textContent = codeElement.dataset.rawContent;
+        }
+    }
+
+    // --- The rest of the function remains the same ---
     const turnContainer = currentStreamingFile.container.closest('.ai-turn-container');
     if (turnContainer) {
         const projectData = JSON.parse(turnContainer.dataset.projectData);
@@ -8235,14 +8343,9 @@ function handleFileChunk(payload) {
         currentStreamingExplorer.updateFileSize(currentStreamingFile.path, currentStreamingFile.size);
     }
 
-    clearTimeout(currentStreamingFile.highlightTimeout);
-    currentStreamingFile.highlightTimeout = setTimeout(() => {
-        const cursorPos = getCursorPosition(codeElement);
-        Prism.highlightElement(codeElement);
-        if (document.activeElement === codeElement) {
-            setCursorPosition(codeElement, cursorPos);
-        }
-    }, 50);
+    requestAnimationFrame(() => {
+        currentStreamingFile.container.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+    });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -8257,22 +8360,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.addEventListener('versionChanged', (event) => {
         const { turnContainer, files } = event.detail;
-        if (!turnContainer) {
-            return;
-        }
+        if (!turnContainer) return;
 
         const codeBlocksArea = turnContainer.querySelector('.code-blocks-area');
-        if (!codeBlocksArea) {
-            return;
-        }
+        if (!codeBlocksArea) return;
 
         codeBlocksArea.innerHTML = '';
-        
+
         const turnId = turnContainer.dataset.turnId;
         const projectDataStr = turnContainer.dataset.projectData;
         const promptingUserId = projectDataStr ? JSON.parse(projectDataStr).prompting_user_id : null;
 
+        const outputLogFile = files.find(f => f.path.endsWith('_run_output.log'));
+        const outputContent = outputLogFile ? outputLogFile.content : null;
+
+        let runBlockId = null;
+
         files.forEach((file, index) => {
+            if (file.path.endsWith('_run_output.log')) {
+                return;
+            }
+            
             const codeBlockIndex = index + 1;
             const isRunnable = file.path.endsWith('run.sh');
             const block = createCodeBlock(
@@ -8280,14 +8388,39 @@ document.addEventListener('DOMContentLoaded', async () => {
                 turnId, codeBlockIndex, codeBlocksArea,
                 isRunnable, promptingUserId
             );
+
             if (block) {
+                const stableId = `code-block-turn${turnId}-${btoa(file.path)}`;
+                block.id = stableId;
                 block.dataset.path = file.path;
                 block.querySelector('.block-title .title-text').textContent = file.path;
+
+                if (isRunnable) {
+                    runBlockId = block.id;
+                }
+
+                initializeCodeBlockHistory(block.id, file.content);
+
                 if (file.checked === false) {
-                     block.style.display = 'none';
+                    block.style.display = 'none';
                 }
             }
         });
+
+        if (runBlockId && outputContent !== null) {
+            const runBlockTitle = "run.sh";
+            const outputContainer = createOrClearOutputContainer(runBlockId, runBlockTitle, promptingUserId);
+            const outputPre = outputContainer.querySelector('pre');
+            
+            if (outputPre) {
+                outputPre.innerHTML = '';
+                const outputSpan = document.createElement('span');
+                outputSpan.className = 'stdout-output';
+                outputSpan.textContent = outputContent;
+                outputPre.appendChild(outputSpan);
+            }
+            updateHeaderStatus(outputContainer, 'Finished (from history)', 'success');
+        }
     });
 
     if (chatForm && messageInput && sendButton && stopAiButton) {
@@ -9580,6 +9713,9 @@ class ProjectExplorer extends HTMLElement {
             if (nodeA.type !== nodeB.type) return nodeA.type === 'folder' ? -1 : 1;
             return a.localeCompare(b);
         }).forEach(name => {
+            if (name === '_run_output.log') {
+                return;
+            }
             const node = treeNode.children[name];
             const newPath = `${currentPath}${name}${node.type === 'folder' ? '/' : ''}`;
             const li = document.createElement('li');
@@ -10898,86 +11034,3 @@ Here are the rules:
 7. DONT use the CANVAS TOOL where code is written in artifacts.
 8. Write only functions that are new seperately from functions that needs updates.
 9. Make sure to write what has been change where to place/what to replace for each code snippet.
-
-
-I am testing markdown:
-
-E0000 00:00:1759606442.284312      13 alts_credentials.cc:93] ALTS creds ignored. Not running on GCP and untrusted ALTS is not enabled.
-app-1  | [WORKER/Google CHUNK 1]: "_ANSWER_START_\n{}\n_JSON_END_\n### Maxwell's Equations in Free Space (Differential"
-app-1  | [WORKER/Google CHUNK 2]: " Form)\n\n1.  **Gauss's Law for Electricity:**\n    $$ \\nabla \\cdot \\mathbf{E}"
-app-1  | [WORKER/Google CHUNK 3]: " = \\frac{\\rho}{\\epsilon_0} $$\n\n2.  **Gauss's Law for Magnetism"
-app-1  | INFO:     172.18.0.1:43390 - "GET /static/assets/css/fonts/KaTeX_Main-Bold.woff2 HTTP/1.1" 200 OK
-app-1  | INFO:     172.18.0.1:43388 - "GET /static/assets/css/fonts/KaTeX_Main-Regular.woff2 HTTP/1.1" 200 OK
-app-1  | INFO:     172.18.0.1:43400 - "GET /static/assets/css/fonts/KaTeX_Math-Italic.woff2 HTTP/1.1" 200 OK
-app-1  | [WORKER/Google CHUNK 4]: ':**\n    $$ \\nabla \\cdot \\mathbf{B} = 0 $$\n\n3.  **Faraday'
-app-1  | [WORKER/Google CHUNK 5]: "'s Law of Induction:**\n    $$ \\nabla \\times \\mathbf{E} = -\\frac{\\partial \\"
-app-1  | [WORKER/Google CHUNK 6]: "mathbf{B}}{\\partial t} $$\n\n4.  **Ampère-Maxwell's Law:**\n    $$"
-app-1  | [WORKER/Google CHUNK 7]: ' \\nabla \\times \\mathbf{B} = \\mu_0 \\left( \\mathbf{J} + \\'
-app-1  | [WORKER/Google CHUNK 8]: "epsilon_0 \\frac{\\partial \\mathbf{E}}{\\partial t} \\right) $$\n\n### Maxwell's"
-app-1  | [WORKER/Google CHUNK 9]: " Equations in a Material (Differential Form)\n\n1.  **Gauss's Law for Electricity in Matter:**\n    $$"
-app-1  | INFO:     172.18.0.1:43400 - "GET /static/assets/css/fonts/KaTeX_Size3-Regular.woff2 HTTP/1.1" 200 OK
-app-1  | [WORKER/Google CHUNK 10]: " \\nabla \\cdot \\mathbf{D} = \\rho_f $$\n\n2.  **Gauss's"
-app-1  | [WORKER/Google CHUNK 11]: ' Law for Magnetism in Matter:**\n    $$ \\nabla \\cdot \\mathbf{B} = 0 $$\n\n'
-app-1  | [WORKER/Google CHUNK 12]: "3.  **Faraday's Law of Induction in Matter:**\n    $$ \\nabla \\times \\mathbf{"
-app-1  | [WORKER/Google CHUNK 13]: 'E} = -\\frac{\\partial \\mathbf{B}}{\\partial t} $$\n\n4.  **Ampère-'
-app-1  | [WORKER/Google CHUNK 14]: "Maxwell's Law in Matter:**\n    $$ \\nabla \\times \\mathbf{H} = \\mathbf{J"
-app-1  | [WORKER/Google CHUNK 15]: '}_f + \\frac{\\partial \\mathbf{D}}{\\partial t} $$\n_ANSWER_END_'
-app-1  | [WORKER/Google] Stream finished. Received 15 chunks.
-app-1  | [Worker Process]: Finished job and sent stream end signal.
-app-1  | STATE: Memory cache cleared for session eefe709f-b362-465f-92b0-7e1a9121c396 due to data change.
-app-1  | [WS-READER / web-1759606371231-qa9ns] Received raw data: {"type":"user_typing","payload":{"is_typing":true}}
-app-1  | [WS-READER / web-1759606371231-qa9ns] Parsed message type: 'user_typing'
-app-1  | [WS-READER / web-1759606371231-qa9ns] Received raw data: {"type":"user_typing","payload":{"is_typing":false}}
-app-1  | [WS-READER / web-1759606371231-qa9ns] Parsed message type: 'user_typing'
-app-1  | [WS-READER / web-1759606371231-qa9ns] Received raw data: {"type":"user_typing","payload":{"is_typing":true}}
-app-1  | [WS-READER / web-1759606371231-qa9ns] Parsed message type: 'user_typing'
-app-1  | [WS-READER / web-1759606371231-qa9ns] Received raw data: {"type":"user_typing","payload":{"is_typing":false}}
-app-1  | [WS-READER / web-1759606371231-qa9ns] Parsed message type: 'user_typing'
-app-1  | [WS-READER / web-1759606371231-qa9ns] Received raw data: {"type":"user_typing","payload":{"is_typing":true}}
-app-1  | [WS-READER / web-1759606371231-qa9ns] Parsed message type: 'user_typing'
-app-1  | [WS-READER / web-1759606371231-qa9ns] Received raw data: {"type":"user_typing","payload":{"is_typing":false}}
-app-1  | [WS-READER / web-1759606371231-qa9ns] Parsed message type: 'user_typing'
-app-1  | [WS-READER / web-1759606371231-qa9ns] Received raw data: {"type":"chat_message","payload":{"user_input":"can you write different types of markdown syntax to illustrate how it will be represented@ai","turn_id":2,"recipient_ids":["AI"],"reply_to_id":null}}
-app-1  | [WS-READER / web-1759606371231-qa9ns] Parsed message type: 'chat_message'
-app-1  | [WS-READER / web-1759606371231-qa9ns] Identified 'chat_message', creating task...
-app-1  | [HANDLER / web-1759606371231-qa9ns] handle_chat_message started for user 'Viktor Jonsson'
-app-1  | [HANDLER / web-1759606371231-qa9ns] Checking recipients: ['AI']
-app-1  | [HANDLER / web-1759606371231-qa9ns] AI is a recipient. Invoking LLM for turn_id 2.
-app-1  | [Worker] Processing job for provider: google_gemini
-app-1  | [WORKER/Google] Using native Google SDK for streaming.
-app-1  | [WORKER/Google] Configuring with API Key starting with: AIza...
-app-1  | [WORKER/Google] Sending request to Google API...
-app-1  | E0000 00:00:1759606514.692970      13 alts_credentials.cc:93] ALTS creds ignored. Not running on GCP and untrusted ALTS is not enabled.
-app-1  | [WORKER/Google CHUNK 1]: '_ANSWER_START_\n{}\n_JSON_END_\nOf course. Here are various examples of Markdown syntax.'
-app-1  | [WORKER/Google CHUNK 2]: '\n\n---\n\n### Headers\n# Heading 1\n## Heading 2\n### Heading 3\n#### Heading '
-app-1  | [WORKER/Google CHUNK 3]: '4\n##### Heading 5\n###### Heading 6\n\n---\n\n### Text Formatting\n*This text is italic.*\n'
-app-1  | [WORKER/Google CHUNK 4]: '_This text is also italic._\n\n**This text is bold.**\n__This text is also bold.__\n\n***'
-app-1  | [WORKER/Google CHUNK 5]: 'This text is bold and italic.***\n___This text is also bold and italic.___\n\n~~This text is struck'
-app-1  | [WORKER/Google CHUNK 6]: ' through.~~\n\n---\n\n### Lists\n\n**Unordered List:**\n*   Item 1\n*   Item'
-app-1  | [WORKER/Google CHUNK 7]: ' 2\n    *   Nested Item 2.1\n    *   Nested Item 2.2\n-'
-app-1  | [WORKER/Google CHUNK 8]: '   Item 3\n+   Item 4\n\n**Ordered List:**\n1.  First item\n2.  Second'
-app-1  | [WORKER/Google CHUNK 9]: ' item\n3.  Third item\n    1.  Nested first item\n    2.  Nested second item\n\n---\n\n'
-app-1  | [WORKER/Google CHUNK 10]: '### Links\nHere is an [inline link to Google](https://www.google.com).\n\nHere is a reference-'
-app-1  | [WORKER/Google CHUNK 11]: 'style link to [OpenAI][1].\nYou can define the reference link later in the document, like this:\n'
-app-1  | [WORKER/Google CHUNK 12]: '[1]: https://www.openai.com\n\n---\n\n### Images\n'
-app-1  | [WORKER/Google CHUNK 13]: '![An image of the octocat,'
-app-1  | [WORKER/Google CHUNK 14]: ' the GitHub mascot](https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.'
-app-1  | [WORKER/Google CHUNK 15]: 'png)'
-app-1  | [WORKER/Google CHUNK 16]: '\n\n---\n\n### Code\n\nYou can format code inline, like `const greeting = "Hello, World!";`.\n\n'
-app-1  | [WORKER/Google CHUNK 17]: 'Or in a fenced code block:\n```javascript\n// Javascript code block\nfunction greet(name) {\n  '
-app-1  | [WORKER/Google CHUNK 18]: "console.log(`Hello, ${name}!`);\n}\n\ngreet('Markdown');\n```\n\n```python\n#"
-app-1  | [WORKER/Google CHUNK 19]: ' Python code block\ndef add(a, b):\n  return a + b\n\nprint(add(5, 3'
-app-1  | [WORKER/Google CHUNK 20]: '))\n```\n\n---\n\n### Blockquotes\n> This is a blockquote. It can be used to quote text'
-app-1  | [WORKER/Google CHUNK 21]: ' from another source.\n>\n> > This is a nested blockquote.\n\n---\n\n### Horizontal Rules\nYou'
-app-1  | [WORKER/Google CHUNK 22]: ' can create a horizontal rule to separate content using three or more hyphens, asterisks, or underscores.\n\n---\n\n'
-app-1  | [WORKER/Google CHUNK 23]: '***\n\n___\n\n---\n\n### Tables\n| Header 1 | Header 2 | Header 3 |\n| :'
-app-1  | [WORKER/Google CHUNK 24]: '--- | :------: | ---: |\n| Left-aligned | Center-aligned | Right-aligned |\n| Cell'
-app-1  | [WORKER/Google CHUNK 25]: ' 1 | Cell 2 | Cell 3 |\n| Cell 4 | Cell 5 | Cell 6'
-app-1  | [WORKER/Google CHUNK 26]: ' |\n\n---\n\n### Task Lists\n- [x] Completed task\n- [ ] Incomplete task\n- [ ] Another incomplete'
-app-1  | [WORKER/Google CHUNK 27]: ' task\n_ANSWER_END_'
-
-ANd it seems like the heading look all the same, maybe okay?
-
-And the  ordered and unordered list look also the same, hsould not the ordered list have numbers in it?
-
-Or am I mistaken, the katex work fine.

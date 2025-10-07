@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import datetime
 import shutil
 from typing import Optional, Dict, Any, List
-
+import httpx
 
 from fastapi import (
     FastAPI,
@@ -175,6 +175,89 @@ async def update_session_name(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected error occurred.")
     finally:
         if conn: conn.close()
+
+@app.get("/preview/{project_id}/{path:path}", tags=["Preview"])
+async def preview_proxy(project_id: str, path: str, request: Request):
+    if project_id not in state.preview_routes:
+        return await generate_preview_error_page(project_id, "Preview server is not running or has been stopped.")
+
+    base_url = state.preview_routes[project_id]
+    target_path = path if path else ""
+    target_url = f"{base_url}/{target_path}"
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            proxied_request = client.build_request(
+                method=request.method,
+                url=target_url,
+                headers={k: v for k, v in request.headers.items() if k.lower() not in ['host', 'cookie', 'connection']},
+                params=request.query_params,
+            )
+            
+            # Add a small delay to give the server inside the container a moment to start up
+            await asyncio.sleep(1)
+
+            proxied_response = await client.send(proxied_request)
+            
+            content = await proxied_response.aread()
+
+            excluded_headers = ["content-encoding", "content-length", "transfer-encoding", "connection"]
+            headers = {
+                name: value for name, value in proxied_response.headers.items()
+                if name.lower() not in excluded_headers
+            }
+            
+            return Response(
+                content=content,
+                status_code=proxied_response.status_code,
+                headers=headers,
+            )
+        
+        except (httpx.ConnectError, httpx.ReadError, httpx.ReadTimeout) as exc:
+            error_message = f"Could not communicate with the preview server: {exc.__class__.__name__}. It might still be starting up. Please wait a moment and refresh."
+            return await generate_preview_error_page(project_id, error_message)
+        except Exception as exc:
+            traceback.print_exc()
+            error_message = f"An unexpected proxy error occurred: {exc}"
+            return await generate_preview_error_page(project_id, error_message)
+
+async def generate_preview_error_page(project_id: str, error_detail: str) -> HTMLResponse:
+    container_logs = "Could not retrieve container logs."
+    try:
+        preview_info = state.running_previews.get(project_id)
+        if preview_info and (container := preview_info.get("container")):
+            await asyncio.to_thread(container.reload)
+            logs_bytes = await asyncio.to_thread(container.logs, tail=50) 
+            container_logs = utils.strip_ansi_codes(logs_bytes.decode('utf-8', 'replace').strip())
+    except Exception as log_exc:
+        container_logs = f"Failed to retrieve container logs: {log_exc}"
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>502 Bad Gateway</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f8f9fa; color: #212529; margin: 2em; line-height: 1.6; }}
+            .container {{ max-width: 800px; margin: auto; background: white; padding: 2em; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+            h1 {{ color: #dc3545; border-bottom: 1px solid #dee2e6; padding-bottom: 0.5rem; margin-bottom: 1rem;}}
+            p {{ margin-bottom: 1rem; }}
+            pre {{ background-color: #e9ecef; padding: 1em; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; font-family: "SF Mono", "Fira Code", "Fira Mono", "Roboto Mono", monospace; font-size: 0.9em; }}
+            strong {{ color: #343a40; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Preview Error</h1>
+            <p><strong>Error:</strong> {utils.escape_html(error_detail)}</p>
+            <p><strong>Recent Container Logs:</strong></p>
+            <pre>{utils.escape_html(container_logs)}</pre>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content, status_code=502)
 
 @app.get("/login", response_class=HTMLResponse, name="get_login_page_route", tags=["Pages"])
 async def get_login_page_route(
@@ -1369,6 +1452,7 @@ async def websocket_endpoint(
         return
 
     await websocket.accept()
+    websocket.scope['client_id'] = client_js_id # Make client ID available to other parts of the app
     
     queue = asyncio.Queue()
     connection = state.Connection(websocket=websocket, queue=queue)
@@ -1378,16 +1462,11 @@ async def websocket_endpoint(
         try:
             while True:
                 received_data = await ws.receive_text()
-                print(f"[WS-READER / {client_js_id}] Received raw data: {received_data}")
-                
                 message_data = json.loads(received_data)
                 message_type = message_data.get("type")
                 payload = message_data.get("payload")
 
-                print(f"[WS-READER / {client_js_id}] Parsed message type: '{message_type}'")
-
                 if message_type == "chat_message" and payload:
-                    print(f"[WS-READER / {client_js_id}] Identified 'chat_message', creating task...")
                     asyncio.create_task(handle_chat_message(
                         session_id_ws, client_js_id, current_ws_user, payload, websocket
                     ))
@@ -1436,110 +1515,109 @@ async def websocket_endpoint(
         print(f"WebSocket endpoint error for client {client_js_id}: {e}")
     finally:
         print(f"Client {client_js_id} (User {user_id}) connection closing.")
+
+        # --- NEW CLEANUP LOGIC ---
+        # Find and stop all containers started by this specific client
+        async with state.running_containers_lock:
+            running_ids = [pid for pid, info in state.running_containers.items() if info.get("client_id") == client_js_id]
+        for pid in running_ids:
+            print(f"Cleaning up running container {pid} for disconnected client {client_js_id}")
+            await docker_utils.stop_container(pid)
+
+        async with state.running_previews_lock:
+            preview_ids = [pid for pid, info in state.running_previews.items() if info.get("client_id") == client_js_id]
+        for pid in preview_ids:
+            print(f"Cleaning up preview container {pid} for disconnected client {client_js_id}")
+            await docker_utils.stop_container(pid)
+        # --- END OF NEW LOGIC ---
+
         reader_task.cancel()
         writer_task.cancel()
         await state.disconnect(session_id_ws, connection)
 
 async def handle_code_related_message(message_type: str, payload: dict, websocket: WebSocket, client_id: str, session_id: str):
-    if message_type == "run_code" and payload:
-        project_data = payload.get("project_data")
-        # This is the temporary ID for the run block, not the persistent project ID
-        run_block_id = payload.get("project_id")
-        # This is the TRUE persistent project ID from the project explorer
-        persistent_project_id = payload.get("persistent_project_id")
-        language = payload.get("language")
+    user = await auth.get_user_by_session_token_internal(websocket.cookies.get(auth.SESSION_COOKIE_NAME))
+    if not user:
+        return
 
-        if not all([project_data, run_block_id, language]): return
+    project_path = None
+    try:
+        if message_type == "run_code" and payload:
+            project_data = payload.get("project_data")
+            run_block_id = payload.get("project_id")
+            persistent_project_id = payload.get("persistent_project_id")
+            language = payload.get("language")
 
-        project_path, error = await asyncio.to_thread(
-            project_utils.create_project_directory_and_files, project_data
-        )
-        if error or not project_path:
-            await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Failed to create project files: {error}"})
-            return
+            if not all([project_data, run_block_id, language, persistent_project_id]):
+                return
 
-        lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
-        if not lang_config:
-            await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Language '{language}' is not configured."})
+            project_path, error = await asyncio.to_thread(
+                project_utils.create_project_directory_and_files, project_data
+            )
+            if error or not project_path:
+                await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Failed to create project files: {error}"})
+                return
+            
+            lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
+            if not lang_config:
+                await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Language '{language}' is not configured."})
+                return
+
+            is_preview = lang_config.get("is_preview_server", False)
+
+            if is_preview:
+                await docker_utils.handle_preview_server(
+                    websocket=websocket,
+                    project_id=run_block_id,
+                    persistent_project_id=persistent_project_id,
+                    project_path=project_path,
+                    run_command="sh run.sh",
+                    lang_config=lang_config,
+                    local_docker_client=docker_utils.get_docker_client()
+                )
+                project_path = None
+            else:
+                task = asyncio.create_task(
+                    docker_utils.run_code_in_docker(
+                        websocket=websocket, client_id=client_id, project_id=run_block_id,
+                        project_data=project_data, project_path=project_path,
+                        run_command="sh run.sh", lang_config=lang_config
+                    )
+                )
+                async with state.running_code_tasks_lock:
+                    state.running_code_tasks[run_block_id] = task
+                
+                project_path = None
+
+        elif message_type == "stop_code" and payload:
+            if project_id := payload.get("project_id"):
+                async with state.running_code_tasks_lock:
+                    task_to_cancel = state.running_code_tasks.pop(project_id, None)
+                if task_to_cancel:
+                    print(f"[Handler] Received stop for {project_id}. Cancelling task.")
+                    task_to_cancel.cancel()
+                else:
+                    print(f"[Handler] Received stop for {project_id}, but no task found. Stopping container directly.")
+                    await docker_utils.stop_container(project_id)
+                    await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "exit_code": -1, "error": "Stopped by user."})
+
+        elif message_type == "code_input" and payload:
+            await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
+        
+        elif message_type == "save_code_content" and payload:
+            await asyncio.to_thread(
+                database.save_edited_code_content,
+                payload['session_id'], payload['code_block_id'], payload['language'], payload['code_content']
+            )
+            state.remove_memory_for_client(payload['session_id'])
+        
+        elif message_type == "save_code_result" and payload:
+            payload['session_id'] = session_id
+            await asyncio.to_thread(database.save_code_execution_result, **payload)
+            state.remove_memory_for_client(session_id)
+    finally:
+        if project_path and os.path.exists(project_path):
             shutil.rmtree(project_path)
-            return
-
-        exit_code, full_output, error_message = await docker_utils.run_code_in_docker(
-            websocket=websocket, client_id=client_id, project_id=run_block_id,
-            project_data=project_data, project_path=project_path,
-            run_command="sh run.sh", lang_config=lang_config
-        )
-
-        final_payload = {"project_id": run_block_id, "exit_code": exit_code}
-        if error_message:
-            final_payload["error"] = error_message
-        await utils.send_ws_message(websocket, "code_finished", final_payload)
-
-        if exit_code == 0 and full_output is not None and persistent_project_id:
-            user = await auth.get_user_by_session_token_internal(websocket.cookies.get(auth.SESSION_COOKIE_NAME))
-            if not user: return
-
-            # Unpack the original repo, add output, commit, and repack
-            conn = None
-            try:
-                conn = database.get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("SELECT git_repo_blob FROM projects WHERE id = ?", (persistent_project_id,))
-                project_row = cursor.fetchone()
-
-                if project_row:
-                    original_blob = project_row["git_repo_blob"]
-                    temp_repo_path, unpack_error = project_utils.unpack_git_repo_to_temp_dir(original_blob)
-                    if unpack_error: raise Exception(unpack_error)
-
-                    try:
-                        commit_error = await asyncio.to_thread(
-                            project_utils.add_output_and_commit, temp_repo_path, full_output, user["name"]
-                        )
-                        if commit_error: raise Exception(commit_error)
-
-                        new_repo_blob, repack_error = project_utils.repack_repo_from_path(temp_repo_path)
-                        if repack_error: raise Exception(repack_error)
-
-                        cursor.execute("UPDATE projects SET git_repo_blob = ? WHERE id = ?", (new_repo_blob, persistent_project_id))
-                        conn.commit()
-
-                        full_project_data_response = await get_project_details(persistent_project_id, user)
-                        await state.broadcast(session_id, {
-                            "type": "project_updated",
-                            "payload": {
-                                "project_id": persistent_project_id,
-                                "project_data": full_project_data_response.model_dump()
-                            }
-                        })
-                    finally:
-                        shutil.rmtree(os.path.dirname(temp_repo_path))
-            except Exception as e:
-                print(f"ERROR during output commit: {e}")
-                traceback.print_exc()
-            finally:
-                if conn: conn.close()
-
-        shutil.rmtree(project_path)
-
-    elif message_type == "stop_code" and payload:
-        if project_id := payload.get("project_id"):
-            await docker_utils.stop_container(project_id)
-
-    elif message_type == "code_input" and payload:
-        await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
-
-    elif message_type == "save_code_content" and payload:
-        await asyncio.to_thread(
-            database.save_edited_code_content,
-            payload['session_id'], payload['code_block_id'], payload['language'], payload['code_content']
-        )
-        state.remove_memory_for_client(payload['session_id'])
-
-    elif message_type == "save_code_result" and payload:
-        payload['session_id'] = session_id
-        await asyncio.to_thread(database.save_code_execution_result, **payload)
-        state.remove_memory_for_client(session_id)
 
 @app.get("/api/sessions", response_model=List[models.SessionResponseModel], tags=["Sessions"])
 async def get_user_sessions(

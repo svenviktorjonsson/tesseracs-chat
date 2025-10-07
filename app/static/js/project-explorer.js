@@ -396,6 +396,9 @@ class ProjectExplorer extends HTMLElement {
             if (nodeA.type !== nodeB.type) return nodeA.type === 'folder' ? -1 : 1;
             return a.localeCompare(b);
         }).forEach(name => {
+            if (name === '_run_output.log') {
+                return;
+            }
             const node = treeNode.children[name];
             const newPath = `${currentPath}${name}${node.type === 'folder' ? '/' : ''}`;
             const li = document.createElement('li');

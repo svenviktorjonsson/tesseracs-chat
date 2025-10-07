@@ -93,6 +93,7 @@ document.addEventListener('fileToggle', (event) => {
 
     const codeBlocksInScope = turnContainer.querySelectorAll('.block-container[data-path]');
     
+    // This part hides/shows the code blocks themselves
     codeBlocksInScope.forEach(block => {
         const blockPath = block.dataset.path;
         let shouldToggle = recursive ? blockPath.startsWith(path) : blockPath === path;
@@ -100,6 +101,19 @@ document.addEventListener('fileToggle', (event) => {
             block.style.display = isChecked ? '' : 'none';
         }
     });
+
+    // This new part specifically links run.sh to its output
+    if (path === './run.sh' && !recursive) {
+        const runBlock = turnContainer.querySelector('.block-container[data-path="./run.sh"]');
+        if (runBlock) {
+            const runBlockId = runBlock.id;
+            const outputBlockId = `output-for-${runBlockId}`;
+            const outputBlock = document.getElementById(outputBlockId);
+            if (outputBlock) {
+                outputBlock.style.display = isChecked ? '' : 'none';
+            }
+        }
+    }
 });
 
 document.addEventListener('downloadClicked', (event) => {
@@ -520,19 +534,23 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
     const rawLang = (language || 'plaintext').trim().toLowerCase();
     const canonicalLang = LANGUAGE_ALIASES[rawLang] || 'plaintext';
     const prismLang = PRISM_LANGUAGE_MAP[canonicalLang] || canonicalLang;
-    const blockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
+
     const container = document.createElement('div');
     container.classList.add('block-container');
-    container.id = blockId;
+    // ID is now set by the caller
     container.dataset.language = canonicalLang;
     container.dataset.originalContent = originalCodeForDataset;
+
     const codeHeader = document.createElement('div');
     codeHeader.classList.add('block-header');
+
     if (promptingUserId !== null) {
         const prompterColor = window.participantInfo?.[promptingUserId]?.color || '#dbeafe';
         const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
         codeHeader.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
     }
+
+    // The rest of the function for creating buttons and elements remains the same...
     const codeButtonsDiv = document.createElement('div');
     codeButtonsDiv.classList.add('block-buttons');
     const runStopBtn = document.createElement('button');
@@ -584,12 +602,16 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
         try { Prism.highlightElement(codeElement); } catch (e) { console.error(`Prism highlight error:`, e); }
     }
 
+    // This ID is temporary and will be overwritten by the caller for stability
+    const tempBlockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
+
     toggleCodeBtn.addEventListener('click', () => { const isHidden = preElement.classList.toggle('hidden'); toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide'; });
     copyCodeBtn.addEventListener('click', async () => { try { await navigator.clipboard.writeText(codeElement.textContent || ''); copyCodeBtn.textContent = 'Copied!'; setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500); } catch (err) { console.error('Failed to copy code: ', err); } });
-    restoreBtn.addEventListener('click', async () => { const originalContent = container.dataset.originalContent; const sessionId = getSessionIdFromPath(); if (!sessionId || !window.csrfTokenRaw) return; try { const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${blockId}`, { method: 'DELETE', headers: { 'X-CSRF-Token': window.csrfTokenRaw } }); if (response.ok) { const cursorPos = getCursorPosition(codeElement); codeElement.textContent = originalContent; if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length)); } catch (e) { console.error(`Prism highlight error:`, e); } } saveCodeBlockState(blockId, originalContent); } else { const error = await response.json(); alert(`Failed to restore code block: ${error.detail || 'Server error'}`); } } catch (error) { console.error("Error restoring code block:", error); alert("An error occurred while restoring the code block."); } });
-    codeElement.addEventListener('keydown', (event) => { handleCodeBlockKeydown(event, blockId); });
-    codeElement.addEventListener('blur', () => { const content = codeElement.textContent || ''; saveCodeBlockContent(blockId, content); });
-    codeElement.addEventListener('input', () => { const cursorPos = getCursorPosition(codeElement); const content = codeElement.textContent || ''; setTimeout(() => { if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, cursorPos); } catch (e) { console.error(`Prism highlight error:`, e); } } }, 10); saveCodeBlockState(blockId, content); });
+    restoreBtn.addEventListener('click', async () => { const originalContent = container.dataset.originalContent; const sessionId = getSessionIdFromPath(); if (!sessionId || !window.csrfTokenRaw) return; try { const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${container.id}`, { method: 'DELETE', headers: { 'X-CSRF-Token': window.csrfTokenRaw } }); if (response.ok) { const cursorPos = getCursorPosition(codeElement); codeElement.textContent = originalContent; if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length)); } catch (e) { console.error(`Prism highlight error:`, e); } } saveCodeBlockState(container.id, originalContent); } else { const error = await response.json(); alert(`Failed to restore code block: ${error.detail || 'Server error'}`); } } catch (error) { console.error("Error restoring code block:", error); alert("An error occurred while restoring the code block."); } });
+    codeElement.addEventListener('keydown', (event) => { handleCodeBlockKeydown(event, container.id); });
+    codeElement.addEventListener('blur', () => { const content = codeElement.textContent || ''; saveCodeBlockContent(container.id, content); });
+    codeElement.addEventListener('input', () => { const cursorPos = getCursorPosition(codeElement); const content = codeElement.textContent || ''; setTimeout(() => { if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, cursorPos); } catch (e) { console.error(`Prism highlight error:`, e); } } }, 10); saveCodeBlockState(container.id, content); });
+
     return container;
 }
 
@@ -697,18 +719,19 @@ function handleStructuredMessage(messageData) {
     const outputBlockId = `output-for-${projectId}`;
     let outputContainer = document.getElementById(outputBlockId);
 
-    // This function is now simplified, as createOrClearOutputContainer handles creation
-    if (!outputContainer) {
-        // If an output message arrives but there's no container, create it.
-        outputContainer = createOrClearOutputContainer(projectId);
+    if (!outputContainer && type !== 'code_output') {
+        return; 
     }
     
     switch (type) {
         case 'code_output': {
+            if (!outputContainer) {
+                outputContainer = createOrClearOutputContainer(projectId);
+            }
             const outputPre = outputContainer.querySelector('.block-output-console pre');
             if (outputPre) {
                 addCodeOutput(outputPre, payload.stream, payload.data);
-                outputContainer.style.display = ''; // Ensure it's visible
+                outputContainer.style.display = '';
             }
             break;
         }
@@ -720,14 +743,24 @@ function handleStructuredMessage(messageData) {
             const { exit_code, error } = payload;
             let finishMessage = `Finished (Exit: ${exit_code})`;
             let statusClass = (exit_code === 0) ? 'success' : 'error';
+
             if (error) {
-                finishMessage = 'Failed';
+                finishMessage = (error === "Stopped by user.") ? "Stopped" : "Failed";
                 statusClass = 'error';
-                const outputPre = outputContainer.querySelector('.block-output-console pre');
-                if (outputPre) addCodeOutput(outputPre, 'stderr', `Error: ${error}`);
+                if (outputContainer) {
+                    const outputPre = outputContainer.querySelector('.block-output-console pre');
+                    if (outputPre) addCodeOutput(outputPre, 'stderr', `Error: ${error}`);
+                }
             }
             
-            updateHeaderStatus(outputContainer, finishMessage, statusClass);
+            if (outputContainer) {
+                const isPreview = outputContainer.querySelector('iframe');
+                if (isPreview) {
+                    outputContainer.style.display = 'none';
+                }
+                updateHeaderStatus(outputContainer, finishMessage, statusClass);
+            }
+
             if (codeContainer) {
                 const runStopBtn = codeContainer.querySelector('.run-code-btn');
                 if (runStopBtn) {
@@ -741,13 +774,20 @@ function handleStructuredMessage(messageData) {
     }
 }
 
-function createOrClearOutputContainer(projectId, title, promptingUserId) {
+function createOrClearOutputContainer(projectId, codeContainer, title, promptingUserId) {
     const outputBlockId = `output-for-${projectId}`;
     let outputContainer = document.getElementById(outputBlockId);
-    const codeContainer = document.getElementById(projectId);
+
     if (outputContainer) {
         const outputPre = outputContainer.querySelector('.block-output-console pre');
         if (outputPre) outputPre.innerHTML = '';
+        const outputHeader = outputContainer.querySelector('.block-header');
+        if (outputHeader) {
+            outputHeader.innerHTML = createOutputHeaderHTML(title, promptingUserId, 'Ready', 'idle');
+            const consoleDiv = outputContainer.querySelector('.block-output-console');
+            outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = consoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
+            outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { const text = outputContainer.querySelector('pre')?.textContent || ''; await navigator.clipboard.writeText(text); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
+        }
     } else {
         outputContainer = document.createElement('div');
         outputContainer.id = outputBlockId;
@@ -764,13 +804,15 @@ function createOrClearOutputContainer(projectId, title, promptingUserId) {
         outputConsoleDiv.appendChild(outputPre);
         outputContainer.appendChild(outputHeader);
         outputContainer.appendChild(outputConsoleDiv);
+
+        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = outputConsoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
+        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { await navigator.clipboard.writeText(outputPre.textContent || ''); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
+        
         if (codeContainer) {
             codeContainer.insertAdjacentElement('afterend', outputContainer);
         } else {
             chatHistory.appendChild(outputContainer);
         }
-        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = outputConsoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
-        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { await navigator.clipboard.writeText(outputPre.textContent || ''); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
     }
     outputContainer.style.display = '';
     return outputContainer;
@@ -862,6 +904,11 @@ async function handleRunStopCodeClick(event) {
     const status = button.dataset.status;
 
     if (status === 'running' || status === 'previewing') {
+        const outputBlockId = `output-for-${runBlockId}`;
+        const outputContainer = document.getElementById(outputBlockId);
+        if (outputContainer) {
+            updateHeaderStatus(outputContainer, 'Stopping...', 'stopping');
+        }
         if (websocket && websocket.readyState === WebSocket.OPEN) {
             websocket.send(JSON.stringify({ type: 'stop_code', payload: { project_id: runBlockId } }));
         }
@@ -874,10 +921,10 @@ async function handleRunStopCodeClick(event) {
         alert("Error: Could not find project data for this execution.");
         return;
     }
-
+    
     const persistentProjectId = explorer.projectData.projectId || explorer.projectData.id;
     const projectData = explorer.projectData;
-
+    
     const updatedProjectData = JSON.parse(JSON.stringify(projectData));
     const allCodeBlocksInTurn = turnContainer.querySelectorAll('.block-container[id^="code-block-turn"]');
 
@@ -894,7 +941,7 @@ async function handleRunStopCodeClick(event) {
 
     let mainLanguage = 'bash';
     const languagePriority = ['html', 'csharp', 'java', 'go', 'rust', 'python', 'cpp', 'c', 'typescript', 'javascript'];
-    const projectLanguages = new Set(updatedProjectData.files.map(file => file.language));
+    const projectLanguages = new Set(updatedProjectData.files.map(file => file.language || ''));
     for (const lang of languagePriority) {
         if (projectLanguages.has(lang)) {
             mainLanguage = lang;
@@ -903,20 +950,28 @@ async function handleRunStopCodeClick(event) {
     }
 
     if (websocket && websocket.readyState === WebSocket.OPEN) {
-        const titleElement = container.querySelector('.block-title .title-text');
-        const title = titleElement ? titleElement.textContent : 'run.sh';
-        const promptingUserId = JSON.parse(turnContainer.dataset.projectData).prompting_user_id || null;
-        const outputContainer = createOrClearOutputContainer(runBlockId, title, promptingUserId);
-        updateHeaderStatus(outputContainer, 'Starting...', 'running');
-        button.dataset.status = 'running';
+        const langConfigResponse = await fetch('/static/languages.json');
+        const langConfigs = await langConfigResponse.json();
+        const isPreviewServer = langConfigs[mainLanguage] && langConfigs[mainLanguage].is_preview_server;
+
+        button.dataset.status = isPreviewServer ? 'previewing' : 'running';
         button.innerHTML = `<svg viewBox="0 0 100 100" fill="currentColor" width="1em" height="1em" style="display: block;"><rect width="100" height="100" rx="15"/></svg>`;
         button.title = 'Stop Execution';
+
+        if (!isPreviewServer) {
+            const titleElement = container.querySelector('.block-title .title-text');
+            const title = titleElement ? titleElement.textContent : 'run.sh';
+            const promptingUserId = JSON.parse(turnContainer.dataset.projectData).prompting_user_id || null;
+            const outputContainer = createOrClearOutputContainer(runBlockId, container, title, promptingUserId);
+            updateHeaderStatus(outputContainer, 'Running...', 'running');
+        }
+
         websocket.send(JSON.stringify({
             type: 'run_code',
             payload: {
                 project_data: updatedProjectData,
                 project_id: runBlockId,
-                persistent_project_id: persistentProjectId, // Send the persistent ID
+                persistent_project_id: persistentProjectId,
                 language: mainLanguage
             }
         }));
@@ -973,13 +1028,17 @@ function addCodeOutput(outputPreElement, streamType, text, language) {
     }
     
     requestAnimationFrame(() => {
-        const scroller = outputPreElement.parentElement;
-        if (scroller) {
+        const internalScroller = outputPreElement.parentElement;
+        if (internalScroller) {
             // This scrolls the inside of the output pane
-            scroller.scrollTop = scroller.scrollHeight;
+            internalScroller.scrollTop = internalScroller.scrollHeight;
         }
-        // This new line scrolls the main chat window
-        scrollToBottom('auto'); 
+
+        // This scrolls the main chat window just enough to see the output container
+        const outputContainer = internalScroller.parentElement;
+        if (outputContainer) {
+            outputContainer.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+        }
     });
 }
 
@@ -1176,6 +1235,7 @@ async function loadAndDisplayChatHistory(sessionId) {
     }
 }
 
+
 async function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
     if (!parentElement || !msg) return;
 
@@ -1240,18 +1300,12 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
     if (hasProject) {
         turnContainer.dataset.projectId = msg.project_id;
         turnContainer.dataset.projectName = msg.project_name;
-
-        if (senderType === 'system' && msg.content && msg.content.includes("added the file")) {
-            const match = msg.content.match(/'([^']+)'/);
-            if (match) {
-                const newFilename = match[1];
-                msg.project_files.forEach(f => f.checked = true);
-                const newFile = msg.project_files.find(f => f.path.endsWith('/' + newFilename) || f.path === './' + newFilename);
-                if (newFile) {
-                    newFile.checked = false;
-                }
-            }
-        }
+        
+        turnContainer.dataset.projectData = JSON.stringify({
+            name: msg.project_name || "Code Project",
+            files: msg.project_files,
+            prompting_user_id: msg.prompting_user_id
+        });
 
         const explorer = document.createElement('project-explorer');
         explorer.projectData = {
@@ -1265,39 +1319,109 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
         const codeBlocksArea = document.createElement('div');
         codeBlocksArea.className = 'code-blocks-area';
         
-        turnContainer.dataset.projectData = JSON.stringify({
-            name: msg.project_name || "Code Project",
-            files: msg.project_files,
-            prompting_user_id: msg.prompting_user_id
-        });
-        
+        const outputLogFile = msg.project_files.find(f => f.path.endsWith('_run_output.log'));
+        const outputContent = outputLogFile ? outputLogFile.content : null;
+        let runBlockElement = null;
+
         msg.project_files.forEach((file, index) => {
-            const isChecked = file.checked === undefined ? true : file.checked;
+            if (file.path.endsWith('_run_output.log')) return;
+
             const codeBlockIndex = index + 1;
             const isRunnable = file.path.endsWith('run.sh');
-            const blockId = `code-block-turn${msg.turn_id}-${codeBlockIndex}`;
-            const finalCodeContent = editedCodeBlocks[blockId] || file.content;
+            const safeBtoa = btoa(file.path).replace(/[/+=]/g, '');
+            const stableId = `code-block-turn${msg.turn_id}-${safeBtoa}`;
+            const finalCodeContent = editedCodeBlocks[stableId] || file.content;
+
             const block = createCodeBlock(
                 file.language, finalCodeContent, file.content,
                 msg.turn_id, codeBlockIndex, codeBlocksArea,
                 isRunnable, msg.prompting_user_id
             );
+
             if (block) {
+                block.id = stableId;
                 block.dataset.path = file.path;
                 block.querySelector('.block-title .title-text').textContent = file.path;
-                initializeCodeBlockHistory(blockId, finalCodeContent);
-                if (!isChecked) {
-                    block.style.display = 'none';
+                initializeCodeBlockHistory(block.id, finalCodeContent);
+                if (isRunnable) {
+                    runBlockElement = block;
                 }
             }
         });
         turnContainer.appendChild(codeBlocksArea);
+
+        if (runBlockElement && outputContent !== null) {
+            const outputContainer = createOrClearOutputContainer(runBlockElement.id, runBlockElement, "run.sh", msg.prompting_user_id);
+            const outputPre = outputContainer.querySelector('pre');
+            if (outputPre) {
+                outputPre.innerHTML = '';
+                const outputSpan = document.createElement('span');
+                outputSpan.className = 'stdout-output';
+                outputSpan.textContent = outputContent;
+                outputPre.appendChild(outputSpan);
+            }
+            updateHeaderStatus(outputContainer, 'Finished (from history)', 'success');
+        }
     }
 
     if (turnContainer.hasChildNodes()) {
         parentElement.appendChild(turnContainer);
     }
-    console.log('Correct renderSingleMessage is running for sender:', msg.sender_type);
+}
+
+function handleProjectPreviewReady(payload) {
+    const { project_id, url } = payload;
+    const runBlockContainer = document.getElementById(project_id);
+    if (!runBlockContainer) return;
+
+    const outputBlockId = `output-for-${project_id}`;
+    let previewContainer = document.getElementById(outputBlockId);
+    
+    if (previewContainer) {
+        previewContainer.innerHTML = ''; 
+    } else {
+        previewContainer = document.createElement('div');
+        previewContainer.id = outputBlockId;
+        previewContainer.className = 'block-container';
+        runBlockContainer.insertAdjacentElement('afterend', previewContainer);
+    }
+    
+    previewContainer.style.display = 'block';
+
+    const turnContainer = runBlockContainer.closest('.ai-turn-container');
+    const promptingUserId = turnContainer ? (JSON.parse(turnContainer.dataset.projectData).prompting_user_id || null) : null;
+    
+    const prompterColor = window.participantInfo?.[promptingUserId]?.color || '#dbeafe';
+    const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
+    const gradient = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
+
+    previewContainer.innerHTML = `
+        <div class="block-header" style="background: ${gradient};">
+            <div class="header-left block-buttons">
+                <span class="block-title">Preview</span>
+                <button id="refresh-${project_id}" class="block-action-btn">Refresh</button>
+                <button id="hide-${project_id}" class="block-action-btn">Hide</button>
+            </div>
+            <div class="header-right">
+                <span class="block-status success">Preview Running</span>
+            </div>
+        </div>
+        <iframe id="iframe-${project_id}" src="${url}" style="width: 100%; height: 500px; border: none; border-top: 1px solid #d1d5db; background-color: white;"></iframe>
+    `;
+
+    const iframe = previewContainer.querySelector(`#iframe-${project_id}`);
+    const refreshBtn = previewContainer.querySelector(`#refresh-${project_id}`);
+    const hideBtn = previewContainer.querySelector(`#hide-${project_id}`);
+
+    refreshBtn.addEventListener('click', () => {
+        iframe.contentWindow.location.reload();
+    });
+    
+    hideBtn.addEventListener('click', () => {
+        const isHidden = previewContainer.style.display === 'none';
+        previewContainer.style.display = isHidden ? 'block' : 'none';
+        hideBtn.textContent = isHidden ? 'Show' : 'Hide';
+    });
 }
 
 function handleProjectHeader(payload) {
@@ -1568,6 +1692,7 @@ function connectWebSocket() {
                         }
                     }
                     break;
+                case 'project_preview_ready': handleProjectPreviewReady(messageData.payload); break;
                 case 'participant_typing': handleTypingIndicators(messageData.payload); break;
                 case 'participants_update': updateAndDisplayParticipants(messageData.payload); break;
                 case 'session_deleted': const chatTitle = document.getElementById('chat-session-title'); if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`; const banner = document.createElement('div'); banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold'; banner.textContent = 'The host has deleted this session. The chat is now read-only.'; chatHistory.prepend(banner); setInputDisabledState(true, false); break;
@@ -1589,19 +1714,29 @@ function handleAnswerChunk(payload) {
 
     const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
     if (loadingDots) {
-        currentStreamingAnswerElement.innerHTML = ''; // Clear the dots
+        currentStreamingAnswerElement.innerHTML = '';
     }
     
-    // This is the fix for the [object Object] bug.
-    // We now directly use the payload, which the server has corrected to be a simple string.
     const currentContent = (currentStreamingAnswerElement.dataset.rawContent || '') + payload;
     currentStreamingAnswerElement.dataset.rawContent = currentContent;
     renderMarkdownAndKatex(currentContent, currentStreamingAnswerElement);
     
-    scrollToBottom('auto');
+    requestAnimationFrame(() => {
+        currentStreamingAnswerElement.scrollIntoView({ behavior: 'auto', block: 'end' });
+    });
 }
 
-
+function createPreviewHeaderHTML(title, promptingUserId) {
+    return `
+        <div class="block-buttons">
+            <button class="refresh-btn header-btn" title="Refresh Preview">Refresh</button>
+            <button class="publish-btn header-btn" title="Publish (coming soon)">Publish</button>
+            <button class="toggle-output-btn header-btn">Hide</button>
+        </div>
+        <span class="block-title" style="color: #374151;">Preview of ${escapeHTML(title)}</span>
+        <span class="block-status running">Starting...</span>
+    `;
+}
 
 function handleStartFileStream(payload) {
     const turnContainer = currentStreamingExplorer.closest('.ai-turn-container');
@@ -1639,10 +1774,33 @@ function handleStartFileStream(payload) {
 
 function handleFileChunk(payload) {
     if (!currentStreamingFile || !currentStreamingFile.codeElement) return;
-    
-    const codeElement = currentStreamingFile.codeElement;
-    codeElement.textContent += payload.content;
 
+    const codeElement = currentStreamingFile.codeElement;
+
+    // Initialize a raw content store on the element itself
+    if (typeof codeElement.dataset.rawContent === 'undefined') {
+        codeElement.dataset.rawContent = '';
+    }
+
+    // Append new text to our raw content store
+    codeElement.dataset.rawContent += payload.content;
+
+    // Use Prism's core highlighting function on the full string
+    if (typeof Prism !== 'undefined') {
+        const language = codeElement.className.replace('language-', '');
+        const grammar = Prism.languages[language];
+        if (grammar) {
+            // This highlights the text in memory and returns an HTML string
+            const highlightedHtml = Prism.highlight(codeElement.dataset.rawContent, grammar, language);
+            // This replaces the content in one single, non-flickering operation
+            codeElement.innerHTML = highlightedHtml;
+        } else {
+            // Fallback for unknown languages
+            codeElement.textContent = codeElement.dataset.rawContent;
+        }
+    }
+
+    // --- The rest of the function remains the same ---
     const turnContainer = currentStreamingFile.container.closest('.ai-turn-container');
     if (turnContainer) {
         const projectData = JSON.parse(turnContainer.dataset.projectData);
@@ -1658,14 +1816,9 @@ function handleFileChunk(payload) {
         currentStreamingExplorer.updateFileSize(currentStreamingFile.path, currentStreamingFile.size);
     }
 
-    clearTimeout(currentStreamingFile.highlightTimeout);
-    currentStreamingFile.highlightTimeout = setTimeout(() => {
-        const cursorPos = getCursorPosition(codeElement);
-        Prism.highlightElement(codeElement);
-        if (document.activeElement === codeElement) {
-            setCursorPosition(codeElement, cursorPos);
-        }
-    }, 50);
+    requestAnimationFrame(() => {
+        currentStreamingFile.container.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+    });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -1685,22 +1838,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         const codeBlocksArea = turnContainer.querySelector('.code-blocks-area');
         if (!codeBlocksArea) return;
 
-        const runBlock = codeBlocksArea.querySelector('.run-code-btn')?.closest('.block-container');
-        const runBlockId = runBlock ? runBlock.id : null;
-
         codeBlocksArea.innerHTML = '';
 
         const turnId = turnContainer.dataset.turnId;
         const projectDataStr = turnContainer.dataset.projectData;
         const promptingUserId = projectDataStr ? JSON.parse(projectDataStr).prompting_user_id : null;
 
-        let outputContent = null;
+        const outputLogFile = files.find(f => f.path.endsWith('_run_output.log'));
+        const outputContent = outputLogFile ? outputLogFile.content : null;
+
+        let runBlockId = null;
 
         files.forEach((file, index) => {
-            if (file.path === './_run_output.log') {
-                outputContent = file.content;
-                return; // Don't render this file as a code block
+            if (file.path.endsWith('_run_output.log')) {
+                return;
             }
+            
             const codeBlockIndex = index + 1;
             const isRunnable = file.path.endsWith('run.sh');
             const block = createCodeBlock(
@@ -1708,9 +1861,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 turnId, codeBlockIndex, codeBlocksArea,
                 isRunnable, promptingUserId
             );
+
             if (block) {
+                const stableId = `code-block-turn${turnId}-${btoa(file.path)}`;
+                block.id = stableId;
                 block.dataset.path = file.path;
                 block.querySelector('.block-title .title-text').textContent = file.path;
+
+                if (isRunnable) {
+                    runBlockId = block.id;
+                }
+
+                initializeCodeBlockHistory(block.id, file.content);
+
                 if (file.checked === false) {
                     block.style.display = 'none';
                 }
@@ -1718,18 +1881,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         if (runBlockId && outputContent !== null) {
-            const runBlockTitle = "run.sh"; // Assume this for now
+            const runBlockTitle = "run.sh";
             const outputContainer = createOrClearOutputContainer(runBlockId, runBlockTitle, promptingUserId);
             const outputPre = outputContainer.querySelector('pre');
+            
             if (outputPre) {
-                outputPre.textContent = outputContent;
+                outputPre.innerHTML = '';
+                const outputSpan = document.createElement('span');
+                outputSpan.className = 'stdout-output';
+                outputSpan.textContent = outputContent;
+                outputPre.appendChild(outputSpan);
             }
             updateHeaderStatus(outputContainer, 'Finished (from history)', 'success');
         }
     });
 
     if (chatForm && messageInput && sendButton && stopAiButton) {
-        // ... (The rest of the event listener remains exactly the same) ...
         let typingTimeout;
         const sendTypingSignal = (isTyping) => {
             if (websocket && websocket.readyState === WebSocket.OPEN) {

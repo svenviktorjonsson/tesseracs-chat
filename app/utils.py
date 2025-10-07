@@ -5,6 +5,7 @@ from fastapi.websockets import WebSocketState
 import html
 import traceback
 from typing import Any
+import re
 
 def escape_html(s: str) -> str:
     """
@@ -13,6 +14,12 @@ def escape_html(s: str) -> str:
     if not isinstance(s, str):
         s = str(s) # Ensure it's a string
     return html.escape(s)
+
+
+def strip_ansi_codes(text: str) -> str:
+    """Removes ANSI escape codes (used for terminal colors) from a string."""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
 
 def is_valid_email(email: str) -> bool:
     """
