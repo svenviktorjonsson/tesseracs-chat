@@ -12,8 +12,6 @@ Relevant files and folders (excluding specified patterns):
 ├── project_content.txt
 ├── pyproject.toml
 ├── tailwind.config.js
-├── testing_docker.py
-├── testing_docker_stream.py
 ├── watcher.py
 ├── write_project_content_to_file.py
 ├── app/
@@ -22,6 +20,7 @@ Relevant files and folders (excluding specified patterns):
 │   ├── config.py
 │   ├── database.py
 │   ├── docker_utils.py
+│   ├── docker_worker.py
 │   ├── email_utils.py
 │   ├── encryption_utils.py
 │   ├── llm.py
@@ -63,12 +62,7 @@ Relevant files and folders (excluding specified patterns):
 │   ├── rust/
 ├── jobs/
 │   ├── requests/
-│   │   ├── 54e0237d-63dd-4125-90d9-34818f17f8a7-web-1758183300755-2zkmt-1.json
-│   │   ├── 54e0237d-63dd-4125-90d9-34818f17f8a7-web-1758183920003-944ue-1.json
-│   │   ├── 9f8c3c7b-cfa0-428d-8232-151bfda7a869-web-1758182149582-hdtro-1.json
-│   │   ├── 9f8c3c7b-cfa0-428d-8232-151bfda7a869-web-1758182826202-l0hjn-1.json
 │   ├── responses/
-│   │   ├── 156765f4-b485-419a-974b-fcfc7f1003a9-web-1758179537295-9ljpt-1.json
 ├── tests/
 │   ├── test_docker_utils.py
 
@@ -91,18 +85,19 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      - ./:/app
-      - ./tesseracs_chat.db:/app/tesseracs_chat.db
+      - ./app:/app/app
+      - db_data:/data
       - ./jobs:/app/jobs
       - ./.data/projects:/projects
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
     command: >
-      sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app --http httptools"
+      sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --http httptools"
 
 volumes:
   db_data:
+
 
 === fetch_assets.py ===
 import os
@@ -357,8 +352,6 @@ Relevant files and folders (excluding specified patterns):
 ├── project_content.txt
 ├── pyproject.toml
 ├── tailwind.config.js
-├── testing_docker.py
-├── testing_docker_stream.py
 ├── watcher.py
 ├── write_project_content_to_file.py
 ├── app/
@@ -367,6 +360,7 @@ Relevant files and folders (excluding specified patterns):
 │   ├── config.py
 │   ├── database.py
 │   ├── docker_utils.py
+│   ├── docker_worker.py
 │   ├── email_utils.py
 │   ├── encryption_utils.py
 │   ├── llm.py
@@ -408,12 +402,7 @@ Relevant files and folders (excluding specified patterns):
 │   ├── rust/
 ├── jobs/
 │   ├── requests/
-│   │   ├── 54e0237d-63dd-4125-90d9-34818f17f8a7-web-1758183300755-2zkmt-1.json
-│   │   ├── 54e0237d-63dd-4125-90d9-34818f17f8a7-web-1758183920003-944ue-1.json
-│   │   ├── 9f8c3c7b-cfa0-428d-8232-151bfda7a869-web-1758182149582-hdtro-1.json
-│   │   ├── 9f8c3c7b-cfa0-428d-8232-151bfda7a869-web-1758182826202-l0hjn-1.json
 │   ├── responses/
-│   │   ├── 156765f4-b485-419a-974b-fcfc7f1003a9-web-1758179537295-9ljpt-1.json
 ├── tests/
 │   ├── test_docker_utils.py
 
@@ -436,18 +425,19 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      - ./:/app
-      - ./tesseracs_chat.db:/app/tesseracs_chat.db
+      - ./app:/app/app
+      - db_data:/data
       - ./jobs:/app/jobs
       - ./.data/projects:/projects
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
     command: >
-      sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app --http httptools"
+      sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --http httptools"
 
 volumes:
   db_data:
+
 
 === fetch_assets.py ===
 
@@ -463,11 +453,12 @@ version = "1.1.0"
 description = "Web chat interface using FastAPI"
 readme = "Readme.md"
 authors = [
-    { name = "Viktor Jonsson", email = "viktor.jonsson@tesseracs.com" },
+    { name = "Viktor Jonsson", email = "info@tesseracs.com" },
 ]
 dependencies = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.29.0",
+    "pydantic[email]",
     "langchain~=0.2.0",
     "langchain-core~=0.2.0",
     "langchain-community~=0.2.0",
@@ -481,7 +472,6 @@ dependencies = [
     "docker>=7.1.0",
     "requests>=2.32.3",
     "python-multipart>=0.0.20",
-    "fastapi-mail>=1.4.2",
     "cryptography>=43.0,<44.0",
     "passlib[bcrypt]>=1.7.4",
     "bcrypt==4.0.1",
@@ -501,6 +491,8 @@ dev = [
 # This tells the build system where to find the application package
 packages = ["app"]
 
+
+
 === tailwind.config.js ===
 /** @type {import('tailwindcss').Config} */
 module.exports = {
@@ -518,339 +510,6 @@ module.exports = {
     },
     plugins: [],
   }
-
-=== testing_docker.py ===
-import docker
-import os
-import shutil
-import tempfile
-import traceback
-import asyncio
-import struct
-import socket
-
-# --- Windows Pipe Compatibility ---
-# This block is necessary to gracefully handle the "pipe has been ended" error on Windows.
-try:
-    import pywintypes
-    PIPE_ENDED_ERROR = pywintypes.error
-except ImportError:
-    # If not on Windows, create a dummy exception class to avoid import errors.
-    class DummyPipeEndedError(Exception): pass
-    PIPE_ENDED_ERROR = DummyPipeEndedError
-
-
-# Initialize the Docker client globally
-print("Main - Initializing global Docker client...")
-docker_client = docker.from_env()
-print("Main - ✅ Global Docker client initialized.")
-
-
-def sync_run_docker_logic(project_path: str):
-    """
-    This function now mimics the app's create/start/attach logic.
-    """
-    container = None
-    socket_obj = None
-    try:
-        command_to_run = ["sh", "run.sh"]
-        print(f"Thread - 🚀 Creating container with command: {' '.join(command_to_run)}")
-        
-        container = docker_client.containers.create(
-            image="tesseracs-python",
-            command=command_to_run,
-            volumes={project_path: {'bind': '/app', 'mode': 'rw'}},
-            working_dir='/app',
-            stdin_open=False, tty=False, detach=True,
-        )
-
-        print("Thread - Attaching socket...")
-        socket_obj = container.attach_socket(params={"stdout": 1, "stderr": 1, "stream": 1})
-        
-        print("Thread - Starting container...")
-        container.start()
-        
-        raw_sock = socket_obj
-        raw_sock.settimeout(5.0)
-        full_output_parts = []
-        buffer = b''
-        
-        print("Thread - Reading from stream...")
-        while True:
-            try:
-                raw_data = raw_sock.recv(1024)
-                if not raw_data:
-                    break
-                buffer += raw_data
-                
-                while len(buffer) >= 8:
-                    header = buffer[:8]
-                    size = struct.unpack('>L', header[4:])[0]
-
-                    if len(buffer) < 8 + size:
-                        break
-
-                    payload = buffer[8 : 8 + size].decode('utf-8', 'replace')
-                    full_output_parts.append(payload)
-                    buffer = buffer[8 + size:]
-            except socket.timeout:
-                break
-            # --- THE FIX ---
-            # We now catch the specific "pipe ended" error and treat it
-            # as a clean exit, just like a timeout.
-            except (ConnectionResetError, BrokenPipeError, PIPE_ENDED_ERROR):
-                break
-
-        print("Thread - Finished reading stream.")
-        result = container.wait()
-        exit_code = result.get("StatusCode", -1)
-        logs = "".join(full_output_parts)
-        
-        return exit_code, logs
-
-    finally:
-        if socket_obj:
-            socket_obj.close()
-        if container:
-            try:
-                stale_container = docker_client.containers.get(container.id)
-                stale_container.remove(force=True)
-            except docker.errors.NotFound:
-                pass
-
-
-async def main():
-    """ Main async function to run the test """
-    print("--- Starting ATTACH SOCKET Minimal Docker Test ---")
-    project_path = None
-    try:
-        project_path = tempfile.mkdtemp()
-        print(f"✅ Created temporary project directory: {project_path}")
-
-        project_files = [
-            {"path": "main.py", "content": 'print("Hello from attach socket test!")'},
-            {"path": "run.sh", "content": "#!/bin/sh\npython3 main.py"}
-        ]
-        for file_info in project_files:
-            file_path = os.path.join(project_path, file_info["path"])
-            with open(file_path, "w", encoding="utf-8", newline='\n') as f:
-                f.write(file_info["content"])
-        
-        os.chmod(os.path.join(project_path, "run.sh"), 0o755)
-        print("✅ Project files created and run.sh set to executable.")
-
-        print("Main - 🏃‍♂️ Calling asyncio.to_thread to run Docker logic...")
-        exit_code, logs = await asyncio.to_thread(sync_run_docker_logic, project_path)
-        print("Main - ✅ asyncio.to_thread has finished.")
-
-        print("\n--- RESULTS ---")
-        print(f"📦 Exit Code: {exit_code}")
-        print(f"📜 Logs:\n{logs}")
-        print("---------------")
-
-    except Exception:
-        print("\n--- ❌ AN ERROR OCCURRED ---")
-        traceback.print_exc()
-        print("---------------------------")
-    
-    finally:
-        if project_path and os.path.exists(project_path):
-            shutil.rmtree(project_path)
-            print("✅ Temporary project directory cleaned up.")
-        
-        print("\n--- Test Finished ---")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
-
-=== testing_docker_stream.py ===
-import docker
-import os
-import shutil
-import tempfile
-import traceback
-import asyncio
-import struct
-import socket
-import time
-
-# --- Windows Pipe Compatibility ---
-try:
-    import pywintypes
-    PIPE_ENDED_ERROR = pywintypes.error
-except ImportError:
-    class DummyPipeEndedError(Exception): pass
-    PIPE_ENDED_ERROR = DummyPipeEndedError
-
-# Initialize the Docker client globally
-print("Main - Initializing global Docker client...")
-docker_client = docker.from_env()
-print("Main - ✅ Global Docker client initialized.")
-
-
-def sync_run_docker_logic(project_path: str):
-    """
-    This function now handles an interactive session with stdin and stdout.
-    """
-    container = None
-    socket_obj = None
-    try:
-        command_to_run = ["sh", "run.sh"]
-        print(f"Thread - 🚀 Creating container with command: {' '.join(command_to_run)}")
-        
-        container = docker_client.containers.create(
-            image="tesseracs-python",
-            command=command_to_run,
-            volumes={project_path: {'bind': '/app', 'mode': 'rw'}},
-            working_dir='/app',
-            # We need stdin_open=True to send data to the container.
-            stdin_open=True, tty=False, detach=True,
-        )
-
-        print("Thread - Attaching socket...")
-        # We need stdin=1 in the params to get a writable socket.
-        socket_obj = container.attach_socket(params={"stdin": 1, "stdout": 1, "stderr": 1, "stream": 1})
-        
-        print("Thread - Starting container...")
-        container.start()
-        
-        raw_sock = socket_obj
-        raw_sock.settimeout(1.0) # Use a 1s timeout for the interactive loop
-        full_output_parts = []
-        buffer = b''
-        input_sent = False
-        
-        print("Thread - Reading from stream...")
-        
-        while True:
-            # Check if the container is still running. If not, break the loop.
-            try:
-                container.reload()
-                if container.status != 'running' and not buffer:
-                    break
-            except docker.errors.NotFound:
-                break # Container was removed.
-
-            # 1. Try to read data from the container
-            try:
-                raw_data = raw_sock.recv(1024)
-                if raw_data:
-                    buffer += raw_data
-            except socket.timeout:
-                # It's normal to timeout if the container is just thinking.
-                pass
-            except (ConnectionResetError, BrokenPipeError, PIPE_ENDED_ERROR):
-                # This means the container closed the connection cleanly.
-                break
-
-            # 2. Process any complete messages in the buffer
-            while len(buffer) >= 8:
-                header = buffer[:8]
-                stream_type, size = struct.unpack('>BxxxL', header)
-
-                if len(buffer) < 8 + size:
-                    break # Not enough data for the full payload yet
-
-                payload = buffer[8 : 8 + size].decode('utf-8', 'replace')
-                full_output_parts.append(payload)
-                print(f"Thread - Received: {payload.strip()}")
-                
-                # 3. Check for the prompt and send a response if we haven't already
-                if "What's your name?" in payload and not input_sent:
-                    print("Thread - >>> PROMPT DETECTED! Sending input... <<<")
-                    # We must send a newline character to simulate pressing Enter.
-                    raw_sock.sendall("Gemini\n".encode('utf-8'))
-                    input_sent = True
-                
-                buffer = buffer[8 + size:]
-        
-        print("Thread - Finished reading stream.")
-        result = container.wait()
-        exit_code = result.get("StatusCode", -1)
-        logs = "".join(full_output_parts)
-        
-        return exit_code, logs
-
-    finally:
-        if socket_obj:
-            socket_obj.close()
-        if container:
-            try:
-                # Use the client to get a fresh container object before removing
-                stale_container = docker_client.containers.get(container.id)
-                stale_container.remove(force=True)
-            except docker.errors.NotFound:
-                pass # Already removed, which is fine.
-
-
-async def main():
-    """ Main async function to run the test """
-    print("--- Starting INTERACTIVE Minimal Docker Test ---")
-    project_path = None
-    try:
-        # THE FIX: Let tempfile choose the correct temp directory for the OS.
-        # This avoids passing a Linux path to the Windows Docker daemon.
-        project_path = tempfile.mkdtemp()
-        print(f"✅ Created temporary project directory: {project_path}")
-
-        # This script now includes a countdown to demonstrate streaming.
-        main_py_content = (
-            'import time\n'
-            'import sys\n\n'
-            'print("Container: Starting countdown...", flush=True)\n'
-            'for i in range(1, 6):\n'
-            '    print(f"Container: ...{i}", flush=True)\n'
-            '    time.sleep(0.5)\n'
-            'print("Container: Countdown finished!", flush=True)\n\n'
-            'print("Container: Hello! I will ask for your name in a moment.", flush=True)\n'
-            'time.sleep(1)\n'
-            'print("Container: What\'s your name? ", flush=True)\n\n'
-            'name = sys.stdin.readline().strip()\n\n'
-            'print(f"Container: Reading name... got \'{name}\'", flush=True)\n'
-            'time.sleep(1)\n'
-            'print(f"Container: Nice to meet you, {name}!", flush=True)\n'
-        )
-
-        project_files = [
-            {"path": "main.py", "content": main_py_content},
-            {"path": "run.sh", "content": "python3 main.py"}
-        ]
-        for file_info in project_files:
-            file_path = os.path.join(project_path, file_info["path"])
-            # Use newline='\n' to ensure Linux line endings
-            with open(file_path, "w", encoding="utf-8", newline='\n') as f:
-                f.write(file_info["content"])
-        
-        os.chmod(os.path.join(project_path, "run.sh"), 0o755)
-        print("✅ Project files created and run.sh set to executable.")
-
-        print("Main - 🏃‍♂️ Calling asyncio.to_thread to run Docker logic...")
-        exit_code, logs = await asyncio.to_thread(sync_run_docker_logic, project_path)
-        print("Main - ✅ asyncio.to_thread has finished.")
-
-        print("\n--- RESULTS ---")
-        print(f"📦 Exit Code: {exit_code}")
-        print(f"📜 Logs:\n{logs}")
-        print("---------------")
-
-    except Exception:
-        print("\n--- ❌ AN ERROR OCCURRED ---")
-        traceback.print_exc()
-        print("---------------------------")
-    
-    finally:
-        if project_path and os.path.exists(project_path):
-            shutil.rmtree(project_path)
-            print("✅ Temporary project directory cleaned up.")
-        
-        print("\n--- Test Finished ---")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
 
 === watcher.py ===
 import time
@@ -1618,10 +1277,8 @@ import secrets
 import datetime
 from typing import Dict,List,Any
 
-APP_DIR = Path(__file__).parent
-PROJECT_ROOT = APP_DIR.parent
 DATABASE_NAME = "tesseracs_chat.db"
-DATABASE_PATH = PROJECT_ROOT / DATABASE_NAME
+DATABASE_PATH = Path("/data") / DATABASE_NAME
 
 def get_db_connection():
     conn = sqlite3.connect(DATABASE_PATH)
@@ -1863,20 +1520,47 @@ import docker
 import os
 import shutil
 import socket
-import struct
 import traceback
 from pathlib import Path
 from typing import Dict, Any, List
-import time
+from multiprocessing import Process, Pipe
+from multiprocessing.connection import Connection
 
 from fastapi import WebSocket
 from docker.errors import DockerException
 
 from . import config, state
 from .utils import send_ws_message
+from .docker_worker import start_worker, STREAM_END_SIGNAL, ERROR_PREFIX
 
+worker_process: Process | None = None
+parent_conn: Connection | None = None
 
-# --- Docker Client Initialization ---
+def start_docker_worker():
+    global worker_process, parent_conn
+    if worker_process is None or not worker_process.is_alive():
+        print("DOCKER_UTILS: Starting Docker worker process...")
+        parent_conn, child_conn = Pipe()
+        worker_process = Process(target=start_worker, args=(child_conn,))
+        worker_process.start()
+        child_conn.close()
+        print(f"DOCKER_UTILS: Worker process started with PID {worker_process.pid}.")
+
+def shutdown_docker_worker():
+    global worker_process, parent_conn
+    print("DOCKER_UTILS: Shutting down Docker worker process...")
+    if parent_conn:
+        try:
+            parent_conn.send("EXIT")
+        except (BrokenPipeError, EOFError):
+            pass
+    if worker_process and worker_process.is_alive():
+        worker_process.join(timeout=5)
+        if worker_process.is_alive():
+            worker_process.terminate()
+            worker_process.join()
+    print("DOCKER_UTILS: Worker process shut down.")
+
 docker_client = None
 try:
     docker_client = docker.from_env()
@@ -1886,207 +1570,107 @@ except DockerException as e:
     print(f"❌ Could not connect to Docker daemon: {e}")
     docker_client = None
 
-# --- Windows Pipe Compatibility ---
-try:
-    import pywintypes
-    PIPE_ENDED_ERROR = pywintypes.error
-except ImportError:
-    class DummyPipeEndedError(Exception): pass
-    PIPE_ENDED_ERROR = DummyPipeEndedError
+async def run_code_in_docker(websocket: WebSocket, client_id: str, project_id: str,
+                             project_data: Dict[str, Any], project_path: str,
+                             run_command: str, lang_config: Dict[str, Any], loop):
+    if not parent_conn or not worker_process or not worker_process.is_alive():
+        return -1, None, "Docker worker process is not running."
 
+    job_payload = {
+        "type": "start",
+        "project_id": project_id,
+        "project_path": project_path,
+        "lang_config": lang_config,
+    }
 
+    queue = asyncio.Queue()
+    container_id = None
+    
+    def pipe_data_received():
+        try:
+            data = parent_conn.recv()
+            queue.put_nowait(data)
+        except Exception as e:
+            print(f"DOCKER_UTILS: Error reading from pipe: {e}")
+            queue.put_nowait(STREAM_END_SIGNAL)
+            
+    pipe_fileno = parent_conn.fileno()
+    loop.add_reader(pipe_fileno, pipe_data_received)
 
-# --- Helpers ---
-def get_current_container_network():
-    if not docker_client: return None
-    try:
-        container_id = socket.gethostname()
-        container = docker_client.containers.get(container_id)
-        networks = container.attrs['NetworkSettings']['Networks']
-        return next(iter(networks)) if networks else None
-    except Exception as e:
-        print(f"DOCKER_UTILS: Could not determine container's network: {e}")
-    return None
-
-def get_docker_client():
-    return docker_client
-
-# This is not used in non-tty mode, but we keep it for now.
-def detect_input_prompt(chunk_str: str) -> bool:
-    return False
-
-
-async def stream_output(websocket: WebSocket, project_id: str, container, socket_obj):
-    # On Windows, attach_socket returns an NpipeSocket which is the raw socket itself.
-    # It does not have a `_sock` attribute. We use the object directly.
-    raw_sock = socket_obj._sock if hasattr(socket_obj, "_sock") else socket_obj
-    buffer = b''
     full_output_parts = []
+    exit_code = -1
+    error_message = None
+
     try:
+        await loop.run_in_executor(None, parent_conn.send, job_payload)
+
         while True:
-            raw = await asyncio.to_thread(raw_sock.recv, 1024)
-            if not raw:
+            data = await queue.get()
+            if data == STREAM_END_SIGNAL:
+                break
+            if isinstance(data, str) and data.startswith(ERROR_PREFIX):
+                error_message = data[len(ERROR_PREFIX):]
+                full_output_parts.append(error_message)
                 break
             
-            buffer += raw
-            while len(buffer) >= 8:
-                header = buffer[:8]
-                stream_type, size = struct.unpack('>BxxxL', header)
-                if len(buffer) < 8 + size:
-                    break
-
-                payload = buffer[8:8+size].decode('utf-8', 'replace')
+            msg_type = data.get("type")
+            if msg_type == "container_started":
+                container_id = data.get("container_id")
+                if container_id and docker_client:
+                    try:
+                        container_obj = docker_client.containers.get(container_id)
+                        async with state.running_containers_lock:
+                            state.running_containers[project_id] = {"container": container_obj, "client_id": client_id}
+                    except Exception as e:
+                         print(f"DOCKER_UTILS: Could not get container object for {container_id}: {e}")
+            elif msg_type == "waiting_for_input":
+                await send_ws_message(websocket, "code_waiting_input", {"project_id": project_id})
+            elif msg_type == "chunk":
+                payload = data.get("data", "")
                 full_output_parts.append(payload)
-                stream = "stdout" if stream_type == 1 else "stderr"
-
                 await send_ws_message(websocket, "code_output", {
                     "project_id": project_id,
-                    "stream": stream,
+                    "stream": data.get("stream"),
                     "data": payload
                 })
-                buffer = buffer[8 + size:]
-    except (ConnectionResetError, BrokenPipeError, OSError, PIPE_ENDED_ERROR):
-        pass # These are expected when the container closes the stream.
-    except asyncio.CancelledError:
-        raise
-    finally:
-        return "".join(full_output_parts)
-
-
-def run_code_in_docker(websocket: WebSocket, client_id: str, project_id: str,
-                       project_data: Dict[str, Any], project_path: str,
-                       run_command: str, lang_config: Dict[str, Any], loop):
-    container = None
-    socket_obj = None
-    try:
-        # Command is now a list for robustness, avoiding shell parsing issues.
-        command_to_run = run_command.split()
-        
-        container_env = {"PYTHONUNBUFFERED": "1"} if lang_config.get("language") == "python" else {}
-
-        container = docker_client.containers.create(
-            image=lang_config["image"], command=command_to_run,
-            volumes={project_path: {'bind': '/app', 'mode': 'rw'}},
-            working_dir='/app', environment=container_env, mem_limit=config.DOCKER_MEM_LIMIT,
-            # stdin_open must be True for interactive sessions.
-            stdin_open=True, tty=False, detach=True,
-            labels={"managed-by": "tesseracs-chat"}
-        )
-
-        # Attach socket for interactive I/O. stream=True is important.
-        socket_obj = container.attach_socket(params={"stdin": 1, "stdout": 1, "stderr": 1, "stream": 1})
-        container.start()
-        
-        # Store the container and its socket so other functions can send input.
-        with state.running_containers_lock:
-            state.running_containers[project_id] = {"container": container, "client_id": client_id, "socket": socket_obj}
-
-        exit_code, full_output = _sync_stream_and_wait(container, socket_obj, project_id, loop, websocket)
-        return exit_code, full_output, None
+            elif msg_type == "exit_code":
+                exit_code = data.get("exit_code", -1)
 
     except Exception as e:
+        error_message = f"An unexpected error occurred in run_code_in_docker: {e}"
         traceback.print_exc()
-        return -1, None, f"An unexpected execution error occurred: {e}"
     finally:
-        # The cleanup logic will now be handled by stop_container, which is called
-        # after the websocket connection closes or the run finishes.
-        if container and not socket_obj: # Handle early failures
-             future = asyncio.run_coroutine_threadsafe(stop_container(project_id), loop)
-             try:
-                 future.result(timeout=10)
-             except Exception as e:
-                 print(f"[Cleanup-{project_id}] Error waiting for container cleanup future: {e}")
+        loop.remove_reader(pipe_fileno)
+        async with state.running_containers_lock:
+            state.running_containers.pop(project_id, None)
 
-def _sync_stream_and_wait(container, socket_obj, project_id, loop, websocket):
-    """
-    This function is now based on our proven standalone script.
-    It handles the interactive stream, decodes the Docker stream protocol,
-    and gracefully handles pipe closures on Windows.
-    """
-    raw_sock = socket_obj
-    raw_sock.settimeout(1.0)
-    full_output_parts = []
-    buffer = b''
-
-    try:
-        while True:
-            try:
-                container.reload()
-                if container.status != 'running' and not buffer:
-                    break # Process has finished and we've read all output.
-            except docker.errors.NotFound:
-                break # Container was removed.
-
-            try:
-                raw_data = raw_sock.recv(1024)
-                if raw_data:
-                    buffer += raw_data
-            except socket.timeout:
-                continue # It's okay to time out if the process is just running.
-            except (ConnectionResetError, BrokenPipeError, OSError, PIPE_ENDED_ERROR):
-                break # This is an expected, clean shutdown of the stream.
-
-            while len(buffer) >= 8:
-                header = buffer[:8]
-                stream_type, size = struct.unpack('>BxxxL', header)
-                if len(buffer) < 8 + size:
-                    break 
-
-                payload = buffer[8 : 8 + size].decode('utf-8', 'replace')
-                full_output_parts.append(payload)
-
-                stream_name = "stdout" if stream_type == 1 else "stderr"
-                asyncio.run_coroutine_threadsafe(
-                    send_ws_message(websocket, "code_output", {
-                        "project_id": project_id, "stream": stream_name, "data": payload
-                    }),
-                    loop
-                )
-                buffer = buffer[8 + size:]
-    finally:
-        print(f"[StreamSync-{project_id}] Stream finished. Waiting for container exit code.")
-        result = container.wait()
-        exit_code = result.get("StatusCode", 0)
-        return exit_code, "".join(full_output_parts)
+    return exit_code, "".join(full_output_parts), error_message
 
 async def send_input_to_container(project_id: str, user_input: str):
-    """
-    Sends a string of user input to a running container's stdin.
-    """
-    with state.running_containers_lock:
-        info = state.running_containers.get(project_id)
-    
-    if info and (sock := info.get("socket")):
-        try:
-            # Ensure input ends with a newline to be processed by most CLIs.
-            if not user_input.endswith('\n'):
-                user_input += '\n'
-            
-            await asyncio.to_thread(sock.sendall, user_input.encode('utf-8'))
-            return True
-        except Exception as e:
-            print(f"[Input-{project_id}] Error sending input to container: {e}")
-            return False
-    return False
+    if not parent_conn:
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, parent_conn.send, {"type": "input", "data": user_input})
+        return True
+    except Exception as e:
+        print(f"DOCKER_UTILS: Error sending input via pipe: {e}")
+        return False
 
 async def stop_container(project_id: str):
-    # FIX: Use a synchronous 'with' statement for the threading.Lock
-    with state.running_containers_lock:
+    async with state.running_containers_lock:
         info = state.running_containers.pop(project_id, None)
-    if info:
+    
+    if info and (container := info.get("container")):
         try:
-            container = info["container"]
-            try:
-                await asyncio.to_thread(container.reload)
-                if container.status == 'running': await asyncio.to_thread(container.kill)
-            except docker.errors.NotFound: pass 
+            await asyncio.to_thread(container.kill)
             await asyncio.to_thread(container.remove, force=True)
-            if (sock := info.get("socket")): sock.close()
+        except docker.errors.NotFound:
+            pass
         except Exception as e:
-            print(f"[Cleanup-{project_id}] Error during regular container cleanup: {e}")
-
-    # FIX: Also use a synchronous 'with' for the previews lock
-    with state.running_previews_lock:
+            print(f"[Cleanup-{project_id}] Error during container cleanup: {e}")
+    
+    async with state.running_previews_lock:
         preview_info = state.running_previews.pop(project_id, None)
     if preview_info:
         try:
@@ -2098,9 +1682,35 @@ async def stop_container(project_id: str):
         except Exception as e:
             print(f"[Cleanup-{project_id}] Error during preview container cleanup: {e}")
 
+def _get_host_path_from_container_path(container_path: str) -> str:
+    try:
+        container_id = socket.gethostname()
+        container = docker_client.containers.get(container_id)
+        mounts = container.attrs['Mounts']
+        for mount in sorted(mounts, key=lambda m: len(m['Destination']), reverse=True):
+            container_mount_point = mount['Destination']
+            host_mount_point = mount['Source']
+            if container_path.startswith(container_mount_point):
+                relative_path = os.path.relpath(container_path, container_mount_point)
+                host_path = os.path.join(host_mount_point, relative_path)
+                return host_path
+    except Exception as e:
+        print(f"[DOCKER_UTILS] ⚠️  Could not translate container path: {e}")
+    return container_path
+
+def get_current_container_network():
+    if not docker_client: return None
+    try:
+        container_id = socket.gethostname()
+        container = docker_client.containers.get(container_id)
+        networks = container.attrs['NetworkSettings']['Networks']
+        return next(iter(networks)) if networks else None
+    except Exception as e:
+        print(f"DOCKER_UTILS: Could not determine container's network: {e}")
+    return None
+
 async def handle_preview_server(websocket: WebSocket, project_id: str, persistent_project_id: str, project_path: str, lang_config: Dict[str, Any]):
     container_name = f"preview-{persistent_project_id}"
-
     try:
         existing_container = await asyncio.to_thread(docker_client.containers.get, container_name)
         await asyncio.to_thread(existing_container.remove, force=True)
@@ -2115,23 +1725,18 @@ async def handle_preview_server(websocket: WebSocket, project_id: str, persisten
         await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Could not determine the application's Docker network."})
         return
     
-    app_container_id = socket.gethostname()
-    app_container = await asyncio.to_thread(docker_client.containers.get, app_container_id)
-    mounts = app_container.attrs['Mounts']
-    projects_mount = next((m for m in mounts if m['Destination'] == '/projects'), None)
-    if not projects_mount:
-        raise Exception("Could not find the shared '/projects' volume mount for preview.")
-    host_base_path = projects_mount['Source']
-    project_dir_name = os.path.basename(project_path)
-    absolute_host_path_for_volume = f"{host_base_path}\\{project_dir_name}"
+    host_project_path = await asyncio.to_thread(_get_host_path_from_container_path, project_path)
+    if host_project_path == project_path:
+         await send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Could not translate container project path to a host path for preview."})
+         return
 
     try:
         container = await asyncio.to_thread(
             docker_client.containers.run,
             name=container_name, image=lang_config["image"], command=["sh", "run.sh"],
-            volumes={absolute_host_path_for_volume: {'bind': '/app', 'mode': 'rw'}},
+            volumes={host_project_path: {'bind': '/app', 'mode': 'rw'}},
             working_dir='/app', network=app_network, detach=True, remove=False,
-            stdin_open=False, tty=False, # Previews are not interactive
+            stdin_open=False, tty=False,
             mem_limit=config.DOCKER_MEM_LIMIT,
             labels={"managed-by": "tesseracs-chat-preview", "project_id": project_id}
         )
@@ -2147,7 +1752,6 @@ async def handle_preview_server(websocket: WebSocket, project_id: str, persisten
     except Exception as e:
         traceback.print_exc()
         await send_ws_message(websocket, "code_finished", { "project_id": project_id, "error": f"Failed to start preview server: {e}"})
-
 
 async def cleanup_dangling_containers():
     if not docker_client: return
@@ -2181,37 +1785,198 @@ async def background_scavenger_task(interval_seconds: int):
         await asyncio.sleep(interval_seconds)
         await scavenge_orphaned_containers()
 
+=== app/docker_worker.py ===
+import os
+import traceback
+import docker
+import socket
+import struct
+import select
+from multiprocessing.connection import Connection
+from typing import Dict, Any
+import app.config as config
+
+STREAM_END_SIGNAL = "__DOCKER_STREAM_END__"
+ERROR_PREFIX = "DOCKER_ERROR::"
+docker_client = None
+
+try:
+    import pywintypes
+    PIPE_ENDED_ERROR = pywintypes.error
+except ImportError:
+    class DummyPipeEndedError(Exception): pass
+    PIPE_ENDED_ERROR = DummyPipeEndedError
+
+def get_host_path_from_container_path(container_path: str) -> str:
+    try:
+        container_id = socket.gethostname()
+        container = docker_client.containers.get(container_id)
+        mounts = container.attrs['Mounts']
+        for mount in sorted(mounts, key=lambda m: len(m['Destination']), reverse=True):
+            container_mount_point = mount['Destination']
+            host_mount_point = mount['Source']
+            if container_path.startswith(container_mount_point):
+                relative_path = os.path.relpath(container_path, container_mount_point)
+                return os.path.join(host_mount_point, relative_path)
+    except Exception as e:
+        print(f"[Worker] Path translation error: {e}")
+    return container_path
+
+def process_job(conn: Connection, job: Dict[str, Any]):
+    container = None
+    socket_obj = None
+    try:
+        project_id = job["project_id"]
+        project_path = job["project_path"]
+        lang_config = job["lang_config"]
+        host_project_path = get_host_path_from_container_path(project_path)
+        
+        # --- THE FIX IS HERE ---
+        # We create a compound command that runs the user's script first,
+        # then always runs the permission fix afterward.
+        # The semicolon (;) ensures the chown command runs even if run.sh fails.
+        cleanup_command = "sh run.sh; chown -R 1000:1000 /app"
+        
+        container = docker_client.containers.create(
+            image=lang_config["image"],
+            command=["sh", "-c", cleanup_command], # This now runs our compound command
+            volumes={host_project_path: {'bind': '/app', 'mode': 'rw'}},
+            working_dir='/app',
+            stdin_open=True, tty=False, detach=True,
+            mem_limit=config.DOCKER_MEM_LIMIT,
+            labels={"managed-by": "tesseracs-chat"}
+        )
+        # --- END FIX ---
+
+        socket_obj = container.attach_socket(params={"stdin": 1, "stdout": 1, "stderr": 1, "stream": 1})
+        container.start()
+
+        conn.send({"type": "container_started", "container_id": container.id, "project_id": project_id})
+
+        raw_sock = socket_obj._sock if hasattr(socket_obj, '_sock') else socket_obj
+        raw_sock.setblocking(False)
+        
+        buffer = b''
+        read_sockets = [raw_sock, conn]
+        waiting_signal_sent = False
+
+        while read_sockets:
+            is_running = True
+            try:
+                container.reload()
+                if container.status != 'running':
+                    is_running = False
+            except docker.errors.NotFound:
+                is_running = False
+
+            if not is_running and not buffer and not (conn in read_sockets and conn.poll()):
+                break
+            
+            readable, _, _ = select.select(read_sockets, [], [], 1.0)
+
+            if not readable and is_running:
+                if not waiting_signal_sent:
+                    conn.send({"type": "waiting_for_input", "project_id": project_id})
+                    waiting_signal_sent = True
+                continue
+            
+            for s in readable:
+                if s is conn:
+                    try:
+                        msg = conn.recv()
+                        if msg.get("type") == "input":
+                            waiting_signal_sent = False
+                            user_input = msg.get("data", "")
+                            if not user_input.endswith('\n'): user_input += '\n'
+                            if raw_sock in read_sockets:
+                                raw_sock.sendall(user_input.encode('utf-8'))
+                    except (EOFError, BrokenPipeError):
+                        if conn in read_sockets: read_sockets.remove(conn)
+
+                if s is raw_sock:
+                    try:
+                        raw_data = s.recv(4096)
+                        if not raw_data:
+                            if s in read_sockets: read_sockets.remove(s)
+                        else:
+                            buffer += raw_data
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    except (ConnectionResetError, BrokenPipeError, PIPE_ENDED_ERROR):
+                        if s in read_sockets: read_sockets.remove(s)
+
+            while len(buffer) >= 8:
+                header = buffer[:8]
+                stream_type, size = struct.unpack('>BxxxL', header)
+                if len(buffer) < 8 + size: break
+                payload = buffer[8 : 8 + size].decode('utf-8', 'replace')
+                conn.send({"type": "chunk", "stream": "stdout" if stream_type == 1 else "stderr", "data": payload})
+                buffer = buffer[8 + size:]
+        
+        result = container.wait()
+        conn.send({"type": "exit_code", "exit_code": result.get("StatusCode", -1)})
+
+    except Exception:
+        conn.send(f"{ERROR_PREFIX}{traceback.format_exc()}")
+    finally:
+        if socket_obj: 
+            socket_obj.close()
+        
+        if container:
+            try:
+                container.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+        
+        conn.send(STREAM_END_SIGNAL)
+
+def start_worker(conn: Connection):
+    global docker_client
+    docker_client = docker.from_env()
+    
+    while True:
+        try:
+            job = conn.recv()
+            if job == "EXIT": break
+            if job.get("type") == "start":
+                process_job(conn, job)
+        except (EOFError, BrokenPipeError):
+            break
+        except Exception:
+            try: conn.send(f"{ERROR_PREFIX}{traceback.format_exc()}")
+            except Exception: pass
+    print("[Worker Process]: Exiting.")
+
 
 
 === app/email_utils.py ===
 # app/email_utils.py
-from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
-from pathlib import Path
+import smtplib
+import ssl
 import traceback
-from . import config # Import your config module
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from pathlib import Path
+from . import config
 
-# --- Email Configuration ---
-# Create the ConnectionConfig using settings from config.py
-# This configuration is used to connect to the email server.
-conf = ConnectionConfig(
-    MAIL_USERNAME=config.MAIL_CONFIG.get("MAIL_USERNAME"),
-    MAIL_PASSWORD=config.MAIL_CONFIG.get("MAIL_PASSWORD"),
-    MAIL_FROM=config.MAIL_CONFIG.get("MAIL_FROM"),
-    MAIL_PORT=config.MAIL_CONFIG.get("MAIL_PORT", 587), # Default to 587 if not in config
-    MAIL_SERVER=config.MAIL_CONFIG.get("MAIL_SERVER"),
-    MAIL_FROM_NAME=config.MAIL_CONFIG.get("MAIL_FROM_NAME"),
-    MAIL_STARTTLS=config.MAIL_CONFIG.get("MAIL_STARTTLS", True), # Default to True
-    MAIL_SSL_TLS=config.MAIL_CONFIG.get("MAIL_SSL_TLS", False),   # Default to False
-    USE_CREDENTIALS=config.MAIL_CONFIG.get("USE_CREDENTIALS", True),
-    VALIDATE_CERTS=config.MAIL_CONFIG.get("VALIDATE_CERTS", True) # Default to True
-)
-
-# Initialize FastMail instance with the configuration
-fm = FastMail(conf)
-
-# Define the base path for email templates
-# config.APP_DIR should point to the 'app' directory.
 EMAIL_TEMPLATES_DIR = config.APP_DIR / "static" / "email_templates"
+
+def create_smtp_server():
+    """Creates and returns an SMTP server instance based on config."""
+    mail_config = config.MAIL_CONFIG
+    if mail_config.get("MAIL_SSL_TLS"):
+        context = ssl.create_default_context()
+        server = smtplib.SMTP_SSL(mail_config["MAIL_SERVER"], mail_config["MAIL_PORT"], context=context)
+    else:
+        server = smtplib.SMTP(mail_config["MAIL_SERVER"], mail_config["MAIL_PORT"])
+    
+    if mail_config.get("MAIL_STARTTLS"):
+        server.starttls()
+        
+    if mail_config.get("USE_CREDENTIALS"):
+        server.login(mail_config["MAIL_USERNAME"], mail_config["MAIL_PASSWORD"])
+        
+    return server
 
 async def send_registration_password_email(
     recipient_email: str,
@@ -2219,58 +1984,50 @@ async def send_registration_password_email(
     generated_password: str,
     login_url: str
 ) -> bool:
-    """
-    Sends the generated password to a new user using an HTML template.
-    The password sent is the user's actual password.
-    """
-    # Basic check for essential mail server configuration
-    if not conf.MAIL_FROM or not conf.MAIL_SERVER:
-        print("EMAIL ERROR: Mail configuration (MAIL_FROM, MAIL_SERVER) is incomplete. Cannot send registration password email.")
+    if not config.MAIL_CONFIG.get("MAIL_FROM") or not config.MAIL_CONFIG.get("MAIL_SERVER"):
+        print("EMAIL ERROR: Mail configuration is incomplete.")
         return False
 
-    template_path = EMAIL_TEMPLATES_DIR / "registration_email.html"
     subject = "Welcome to Tesseracs Chat - Your Account Details"
+    template_path = EMAIL_TEMPLATES_DIR / "registration_email.html"
 
     try:
-        # Read the HTML template from file
         with open(template_path, "r", encoding="utf-8") as f:
             html_template = f.read()
 
-        # Replace placeholders in the template
-        # Ensure all placeholders match those in the HTML template
         html_body = html_template.replace("{{ recipient_name }}", recipient_name)
-        html_body = html_body.replace("{{ email }}", recipient_email) # Changed from {{ recipient_email }} for consistency
+        html_body = html_body.replace("{{ email }}", recipient_email)
         html_body = html_body.replace("{{ password }}", generated_password)
         html_body = html_body.replace("{{ login_url }}", login_url)
 
-    except FileNotFoundError:
-        print(f"EMAIL ERROR: Registration email template not found at {template_path}")
-        return False
+        text_body = f"""
+        Hello {recipient_name},
+
+        Welcome to Tesseracs Chat! Your account has been created.
+        Email: {recipient_email}
+        Password: {generated_password}
+
+        You can log in at: {login_url}
+        """
+
+        message = MIMEMultipart("alternative")
+        message["Subject"] = subject
+        message["From"] = f"{config.MAIL_CONFIG['MAIL_FROM_NAME']} <{config.MAIL_CONFIG['MAIL_FROM']}>"
+        message["To"] = recipient_email
+
+        message.attach(MIMEText(text_body, "plain"))
+        message.attach(MIMEText(html_body, "html"))
+
+        with create_smtp_server() as server:
+            server.sendmail(config.MAIL_CONFIG["MAIL_FROM"], recipient_email, message.as_string())
+            
+        print(f"EMAIL: Registration email successfully sent to {recipient_email}.")
+        return True
+
     except Exception as e:
-        print(f"EMAIL ERROR: Failed to read or process registration email template: {e}")
+        print(f"EMAIL ERROR: Failed to send registration email: {e}")
         traceback.print_exc()
         return False
-
-    # Create the email message schema
-    message = MessageSchema(
-        subject=subject,
-        recipients=[recipient_email],
-        body=html_body,
-        subtype="html"
-    )
-
-    try:
-        # Attempt to send the email
-        print(f"EMAIL: Attempting to send registration password to {recipient_email} via {conf.MAIL_SERVER}:{conf.MAIL_PORT}")
-        await fm.send_message(message)
-        print(f"EMAIL: Registration password email successfully sent to {recipient_email}.")
-        return True  # Indicate success
-    except Exception as e:
-        # Log any errors during email sending
-        print(f"EMAIL ERROR: Failed to send registration password email to {recipient_email}")
-        print(f"EMAIL ERROR DETAILS: {type(e).__name__} - {e}")
-        traceback.print_exc()
-        return False # Indicate failure
 
 async def send_password_reset_email(
     recipient_email: str,
@@ -2278,58 +2035,50 @@ async def send_password_reset_email(
     new_password: str,
     login_url: str
 ) -> bool:
-    """
-    Sends an email containing a newly generated password after a reset request,
-    using an HTML template.
-    """
-    # Basic check for essential mail server configuration
-    if not conf.MAIL_FROM or not conf.MAIL_SERVER:
-        print("EMAIL ERROR: Mail configuration (MAIL_FROM, MAIL_SERVER) is incomplete. Cannot send password reset email.")
+    if not config.MAIL_CONFIG.get("MAIL_FROM") or not config.MAIL_CONFIG.get("MAIL_SERVER"):
+        print("EMAIL ERROR: Mail configuration is incomplete.")
         return False
 
-    template_path = EMAIL_TEMPLATES_DIR / "password_reset_email.html"
     subject = "Your Tesseracs Chat Password Has Been Reset"
-
+    template_path = EMAIL_TEMPLATES_DIR / "password_reset_email.html"
+    
     try:
-        # Read the HTML template from file
         with open(template_path, "r", encoding="utf-8") as f:
             html_template = f.read()
 
-        # Replace placeholders in the template
-        # Ensure all placeholders match those in the HTML template
         html_body = html_template.replace("{{ recipient_name }}", recipient_name)
-        html_body = html_body.replace("{{ email }}", recipient_email) # Changed from {{ recipient_email }} for consistency
+        html_body = html_body.replace("{{ email }}", recipient_email)
         html_body = html_body.replace("{{ password }}", new_password)
         html_body = html_body.replace("{{ login_url }}", login_url)
 
-    except FileNotFoundError:
-        print(f"EMAIL ERROR: Password reset email template not found at {template_path}")
-        return False
-    except Exception as e:
-        print(f"EMAIL ERROR: Failed to read or process password reset email template: {e}")
-        traceback.print_exc()
-        return False
+        text_body = f"""
+        Hello {recipient_name},
 
-    # Create the email message schema
-    message = MessageSchema(
-        subject=subject,
-        recipients=[recipient_email],
-        body=html_body,
-        subtype="html"
-    )
+        Your password for Tesseracs Chat has been reset.
+        Your new password is: {new_password}
 
-    try:
-        # Attempt to send the email
-        print(f"EMAIL: Attempting to send password reset to {recipient_email} via {conf.MAIL_SERVER}:{conf.MAIL_PORT}")
-        await fm.send_message(message)
+        You can log in at: {login_url}
+        """
+
+        message = MIMEMultipart("alternative")
+        message["Subject"] = subject
+        message["From"] = f"{config.MAIL_CONFIG['MAIL_FROM_NAME']} <{config.MAIL_CONFIG['MAIL_FROM']}>"
+        message["To"] = recipient_email
+
+        message.attach(MIMEText(text_body, "plain"))
+        message.attach(MIMEText(html_body, "html"))
+
+        with create_smtp_server() as server:
+            server.sendmail(config.MAIL_CONFIG["MAIL_FROM"], recipient_email, message.as_string())
+
         print(f"EMAIL: Password reset email successfully sent to {recipient_email}.")
-        return True # Indicate success
+        return True
+
     except Exception as e:
-        # Log any errors during email sending
-        print(f"EMAIL ERROR: Failed to send password reset email to {recipient_email}")
-        print(f"EMAIL ERROR DETAILS: {type(e).__name__} - {e}")
+        print(f"EMAIL ERROR: Failed to send password reset email: {e}")
         traceback.print_exc()
-        return False # Indicate failure
+        return False
+
 
 
 === app/encryption_utils.py ===
@@ -4487,7 +4236,7 @@ async def websocket_endpoint(
         return
 
     await websocket.accept()
-    websocket.scope['client_id'] = client_js_id # Make client ID available to other parts of the app
+    websocket.scope['client_id'] = client_js_id
     
     queue = asyncio.Queue()
     connection = state.Connection(websocket=websocket, queue=queue)
@@ -4516,8 +4265,8 @@ async def websocket_endpoint(
                         exclude_websocket=websocket
                     )
 
-                elif message_type in ["run_code", "stop_code", "code_input", "save_code_content", "save_code_result"]:
-                    asyncio.create_task(handle_code_related_message(
+                elif message_type in ["run_code", "stop_code", "code_input", "save_code_content", "save_code_run", "commit_project_changes", "delete_message"]:
+                    asyncio.create_task(handle_action_message(
                         message_type, payload, websocket, client_js_id, session_id_ws
                     ))
                 else:
@@ -4551,8 +4300,6 @@ async def websocket_endpoint(
     finally:
         print(f"Client {client_js_id} (User {user_id}) connection closing.")
 
-        # --- NEW CLEANUP LOGIC ---
-        # Find and stop all containers started by this specific client
         async with state.running_containers_lock:
             running_ids = [pid for pid, info in state.running_containers.items() if info.get("client_id") == client_js_id]
         for pid in running_ids:
@@ -4564,14 +4311,12 @@ async def websocket_endpoint(
         for pid in preview_ids:
             print(f"Cleaning up preview container {pid} for disconnected client {client_js_id}")
             await docker_utils.stop_container(pid)
-        # --- END OF NEW LOGIC ---
 
         reader_task.cancel()
         writer_task.cancel()
         await state.disconnect(session_id_ws, connection)
 
-
-async def handle_code_related_message(message_type: str, payload: dict, websocket: WebSocket, client_id: str, session_id: str):
+async def handle_action_message(message_type: str, payload: dict, websocket: WebSocket, client_id: str, session_id: str):
     user = await auth.get_user_by_session_token_internal(websocket.cookies.get(auth.SESSION_COOKIE_NAME))
     if not user:
         return
@@ -4587,7 +4332,6 @@ async def handle_code_related_message(message_type: str, payload: dict, websocke
 
         async def run_and_process_task():
             project_path = None
-            exit_code, full_output, error_message = -1, "", "Task setup failed."
             is_preview = False
             try:
                 project_path, error = await asyncio.to_thread(
@@ -4598,8 +4342,6 @@ async def handle_code_related_message(message_type: str, payload: dict, websocke
                     await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": error_message})
                     return
                 
-                await asyncio.sleep(1)
-
                 lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
                 if not lang_config:
                     raise Exception(f"Language '{language}' is not configured.")
@@ -4612,26 +4354,24 @@ async def handle_code_related_message(message_type: str, payload: dict, websocke
                         project_path=project_path, lang_config=lang_config
                     )
                 else:
-                    # --- START OF FIX ---
-                    # Get the current event loop and pass it to the background thread.
-                    current_loop = asyncio.get_running_loop()
-                    exit_code, full_output, error_message = await asyncio.to_thread(
-                        docker_utils.run_code_in_docker,
+                    loop = asyncio.get_running_loop()
+                    exit_code, full_output, error_message = await docker_utils.run_code_in_docker(
                         websocket, client_id, run_block_id, project_data, project_path,
-                        "sh run.sh", lang_config, current_loop
+                        "sh run.sh", lang_config, loop
                     )
-                    # --- END OF FIX ---
+                    
+                    final_payload = {"project_id": run_block_id, "exit_code": exit_code, "full_output": full_output}
+                    if error_message:
+                        final_payload["error"] = error_message
+                    
+                    await utils.send_ws_message(websocket, "code_finished", final_payload)
                     
                     if full_output and not error_message and exit_code == 0:
-                        await handle_code_related_message(
+                        asyncio.create_task(handle_action_message(
                             'save_code_run',
                             {'project_id': persistent_project_id, 'output': full_output},
                             websocket, client_id, session_id
-                        )
-
-                    final_payload = {"project_id": run_block_id, "exit_code": exit_code, "full_output": full_output}
-                    if error_message: final_payload["error"] = error_message
-                    await utils.send_ws_message(websocket, "code_finished", final_payload)
+                        ))
 
             except asyncio.CancelledError:
                 error_message = "Stopped by user."
@@ -4641,11 +4381,8 @@ async def handle_code_related_message(message_type: str, payload: dict, websocke
                 traceback.print_exc()
                 await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": error_message})
             finally:
-                # All cleanup is now handled here.
-                if not is_preview:
-                    await docker_utils.stop_container(run_block_id)
                 if project_path and os.path.exists(project_path) and not is_preview:
-                    shutil.rmtree(project_path)
+                    await asyncio.to_thread(shutil.rmtree, project_path)
                 async with state.running_code_tasks_lock:
                     state.running_code_tasks.pop(run_block_id, None)
 
@@ -4659,6 +4396,9 @@ async def handle_code_related_message(message_type: str, payload: dict, websocke
                 task_to_cancel = state.running_code_tasks.pop(project_id, None)
             if task_to_cancel:
                 task_to_cancel.cancel()
+            
+            await docker_utils.stop_container(project_id)
+            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Stopped by user."})
     
     elif message_type == "code_input" and payload:
         await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
@@ -4778,10 +4518,53 @@ async def handle_code_related_message(message_type: str, payload: dict, websocke
         )
         state.remove_memory_for_client(payload['session_id'])
     
-    elif message_type == "save_code_result" and payload:
-        payload['session_id'] = session_id
-        await asyncio.to_thread(database.save_code_execution_result, **payload)
-        state.remove_memory_for_client(session_id)
+    elif message_type == "delete_message" and payload:
+        message_id = payload.get("message_id")
+        if not message_id:
+            return
+
+        conn = database.get_db_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # --- THE FIX: Use 'chat_messages' instead of 'messages' ---
+            cursor.execute("""
+                SELECT m.id, m.user_id, m.sender_type, m.project_id, s.host_id
+                FROM chat_messages m 
+                JOIN sessions s ON m.session_id = s.id
+                WHERE m.id = ?
+            """, (message_id,))
+            message = cursor.fetchone()
+
+            if not message:
+                return
+
+            is_host = user["id"] == message["host_id"]
+            is_my_message = user["id"] == message["user_id"]
+            is_ai_message = message["sender_type"] == "ai"
+
+            if not (is_host or is_my_message or is_ai_message):
+                return
+            
+            if project_id_to_delete := message["project_id"]:
+                print(f"Deleting associated project {project_id_to_delete}...")
+                cursor.execute("DELETE FROM projects WHERE id = ?", (project_id_to_delete,))
+
+            # --- THE FIX: Use 'chat_messages' here as well ---
+            cursor.execute("DELETE FROM chat_messages WHERE id = ?", (message_id,))
+            conn.commit()
+            print(f"User {user['id']} deleted message {message_id}.")
+
+            state.remove_memory_for_client(session_id)
+
+            await state.broadcast(session_id, {
+                "type": "message_deleted",
+                "payload": {"message_id": message_id, "user_id": user["id"]}
+            })
+
+        finally:
+            conn.close()
+
 
 @app.get("/api/sessions", response_model=List[models.SessionResponseModel], tags=["Sessions"])
 async def get_user_sessions(
@@ -4957,13 +4740,11 @@ async def startup_event():
     database.init_db()
     print("Database initialization check complete.")
     
-    # --- ADD THIS BLOCK ---
     print("Starting background container scavenger...")
-    # Run the scavenger every 10 minutes (600 seconds)
     scavenger_interval = 600 
     asyncio.create_task(docker_utils.background_scavenger_task(scavenger_interval))
-    # --- END OF BLOCK ---
 
+    docker_utils.start_docker_worker()
     llm.start_llm_worker()
 
     try:
@@ -4976,6 +4757,8 @@ async def startup_event():
 def shutdown_event():
     print("Application shutdown: Stopping LLM worker...")
     llm.shutdown_llm_worker()
+    print("Application shutdown: Stopping Docker worker...")
+    docker_utils.shutdown_docker_worker()
 
 if config.STATIC_DIR and config.STATIC_DIR.is_dir():
     dist_dir = config.STATIC_DIR / "dist"
@@ -5859,18 +5642,17 @@ import os
 import subprocess
 import shutil
 from pathlib import Path
-import threading
 
 client_memory: Dict[str, ConversationBufferMemory] = {}
 running_containers: Dict[str, Dict[str, Any]] = {}
-running_containers_lock = threading.Lock()
+running_containers_lock = asyncio.Lock()
 active_ai_streams: Dict[str, asyncio.Event] = {}
-active_ai_streams_lock = threading.Lock()
+active_ai_streams_lock = asyncio.Lock()
 running_previews: Dict[str, Dict[str, Any]] = {}
-running_previews_lock = threading.Lock()
+running_previews_lock = asyncio.Lock()
 preview_routes: Dict[str, str] = {}
 running_code_tasks: Dict[str, asyncio.Task] = {}
-running_code_tasks_lock = threading.Lock()
+running_code_tasks_lock = asyncio.Lock()
 
 def _get_memory_from_db_sync(session_id: str) -> Optional[ConversationBufferMemory]:
     conn = None
@@ -5919,7 +5701,6 @@ def _get_memory_from_db_sync(session_id: str) -> Optional[ConversationBufferMemo
 
                                 project_context_parts = [
                                     ai_content,
-                                    # --- THIS IS THE FIX ---
                                     f"\n\n--- PROJECT CONTEXT (ID: {msg['project_id']}) ---",
                                     "Commit History:",
                                     commit_history,
@@ -6516,6 +6297,7 @@ html, body {
     max-width: 90%;
     border-radius: 0.5rem;
     width: fit-content;
+    position: relative;
 }
 
 /* --- AI Message Markdown Content (Comprehensive Styling) --- */
@@ -6642,22 +6424,47 @@ html, body {
 .run-code-btn[data-status="stopping"] { color: #f59e0b; cursor: wait; animation: spin 1s linear infinite; }
 .run-code-btn[data-status="stopping"]:hover { color: #d97706; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.block-container > pre[class*="language-"] { margin: 0; border: 1px solid #d1d5db; border-top: none; border-bottom: none !important; overflow: hidden; }
-.block-container > pre[class*="language-"] > code[class*="language-"] { outline: none; white-space: pre-wrap !important; word-wrap: break-word !important; display: block; min-height: 1.5em; padding: 0.5em; }
-.block-container > pre[class*="language-"] > code[class*="language-"]:focus { background-color: rgba(0, 0, 0, 0.03); }
-.block-output-console { background-color: #1f2937; color: #f3f4f6; padding: 0; border: 1px solid #4b5563; border-top: none !important; border-bottom-left-radius: 0.375rem; border-bottom-right-radius: 0.375rem; max-height: 250px; overflow-y: auto; font-family: monospace; font-size: 0.85em; line-height: 1.4; }
-.block-output-console pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; color: inherit; border: none !important; padding: 0.5rem; background-color: transparent; outline: none !important; }
-.block-output-console span { display: inline; white-space: pre-wrap; }
-.block-output-console span.stdout-output { color: #ffffff; }
-.block-output-console span.stderr-output { color: #f87171; }
-.block-output-console .console-input {
-    background: transparent;
-    border: none;
-    outline: none;
-    color: #f3f4f6;
-    font: inherit;
-    width: 90%;
+/* This new rule sets a consistent font size and line height for all code blocks */
+.block-container > pre[class*="language-"] {
+    font-size: 14px;
+    line-height: 1.5;
 }
+
+/* This is the consolidated and cleaned-up rule for the code element itself */
+.block-container > pre[class*="language-"] > code[class*="language-"] {
+    outline: none; 
+    white-space: pre-wrap !important; 
+    word-wrap: break-word !important; 
+    display: block; 
+    min-height: 1.5em; 
+    padding: 0.5em;
+    caret-color: white; /* Makes the cursor visible when editing */
+}
+
+.block-container > pre[class*="language-"] > code[class*="language-"]:focus {
+    background-color: rgba(0, 0, 0, 0.03);
+}
+
+/* This is the new, correct rule for the output area */
+.console-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    background-color: #1f2937;
+    color: #f3f4f6;
+    font-family: monospace;
+    font-size: 14px; /* This now matches the code blocks */
+    line-height: 1.5; /* Matching line height for consistency */
+    border: none;
+    padding: 0.5rem;
+    min-height: 100px;
+    resize: vertical;
+    caret-color: #f3f4f6;
+}
+
+.console-textarea:focus {
+    outline: none;
+}
+
 .block-container > pre.hidden, .block-output-console.hidden, .block-header.hidden { display: none !important; }
 .block-header.header-is-sticky-js { box-shadow: none !important; margin-top: 0 !important; }
 .mpld3-plot-container { background-color: white !important; border: 1px solid #d1d5db; border-top: none !important; border-bottom-left-radius: 0.375rem; border-bottom-right-radius: 0.375rem; padding: 0 !important; margin: 0; overflow: visible !important; min-height: 500px; display: flex; justify-content: center; align-items: center; width: 100%; box-sizing: border-box; }
@@ -6701,6 +6508,96 @@ span[data-katex-rendered="true"] .katex { line-height: normal; vertical-align: b
 #sidebar-toggle-icon.collapsed { transform: rotate(180deg); }
 .run-code-btn[data-status="previewing"] { color: #dc2626; }
 .run-code-btn[data-status="previewing"]:hover { color: #b91c1c; }
+
+
+.console-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    background-color: #1f2937;
+    color: #f3f4f6;
+    font-family: monospace;
+    font-size: 14px; /* Explicit size for consistency */
+    line-height: 1.5;
+    border: none;
+    padding: 0.5rem;
+    min-height: 100px;
+    resize: vertical;
+    caret-color: #f3f4f6;
+}
+
+.console-textarea:focus {
+    outline: none; /* Remove the default browser focus ring */
+}
+
+/* --- Styles for Message Deletion --- */
+
+/* Container for the delete button */
+.delete-btn-container {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+}
+
+/* Show the button when hovering over the message bubble */
+.message-item:hover .delete-btn-container,
+.ai-turn-container:hover .delete-btn-container {
+    opacity: 1;
+}
+
+.message-item {
+    position: relative;
+}
+
+/* The delete button itself */
+.delete-message-btn {
+    background-color: #fee2e2; /* red-100 */
+    color: #ef4444; /* red-500 */
+    border: 1px solid #fecaca; /* red-200 */
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    font-size: 14px;
+    font-weight: bold;
+    line-height: 22px;
+    text-align: center;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+.delete-message-btn:hover {
+    background-color: #ef4444; /* red-500 */
+    color: white;
+}
+
+/* The placeholder for a deleted message */
+.deleted-message-placeholder {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: fit-content;
+    padding: 0.5rem 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: 0.5rem;
+    background-color: #f3f4f6; /* gray-100 */
+    color: #9ca3af; /* gray-400 */
+    font-style: italic;
+    font-size: 0.9em;
+}
+
+/* The 'x' button to dismiss the placeholder */
+.dismiss-deleted-btn {
+    margin-left: 1rem;
+    cursor: pointer;
+    font-style: normal;
+    font-weight: bold;
+    color: #6b7280; /* gray-500 */
+}
+
+.dismiss-deleted-btn:hover {
+    color: #1f2937; /* gray-800 */
+}
 
 === app/static/languages.json ===
 {
@@ -7257,6 +7154,21 @@ let currentStreamingExplorer = null;
 let currentEditingAnswer = { id: null, element: null };
 let currentEditingFile = { path: null, element: null };
 let currentEditingProject = { originalTurnContainer: null };
+// --- Add these with your other State Variables ---
+let isParsingBlock = false;
+let currentBlockType = null;
+let jsonBuffer = "";
+let contentBuffer = "";
+
+let currentExtendingFile = { codeElement: null, path: null };
+
+// Add this new helper function anywhere in script.js
+function resetParser() {
+    isParsingBlock = false;
+    currentBlockType = null;
+    jsonBuffer = "";
+    contentBuffer = "";
+}
 
 document.addEventListener('fileToggle', (event) => {
     const { path, isChecked, recursive, turnContainer } = event.detail;
@@ -7669,6 +7581,10 @@ function handleTypingIndicators(payload) {
 function addUserMessage(text) {
     if (!chatHistory) return;
 
+    const turnContainer = document.createElement('div');
+    turnContainer.className = 'ai-turn-container';
+    turnContainer.style.position = 'relative';
+
     const messageElement = document.createElement('div');
     messageElement.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'self-end', 'ml-auto');
     
@@ -7691,7 +7607,8 @@ function addUserMessage(text) {
     contentElem.textContent = text.replace(/@\w+/g, '').trim();
     messageElement.appendChild(contentElem);
 
-    chatHistory.appendChild(messageElement);
+    turnContainer.appendChild(messageElement);
+    chatHistory.appendChild(turnContainer);
     setTimeout(() => scrollToBottom('smooth'), 50);
 }
 
@@ -7713,7 +7630,80 @@ function updateParticipantListUI(active_user_id = null) {
     });
 }
 
+function processStreamChunk(chunk) {
+    let text = contentBuffer + chunk;
+    contentBuffer = ""; // Clear the buffer now that we're processing it
 
+    while (text.length > 0) {
+        if (!isParsingBlock) {
+            const match = text.match(/_([A-Z_]+)_START_/);
+            if (match) {
+                // We found the start of a new command block.
+                const plainTextBefore = text.substring(0, match.index);
+                if (plainTextBefore) {
+                    handleAnswerChunk(plainTextBefore); // Render any conversational text
+                }
+
+                isParsingBlock = true;
+                currentBlockType = match[1];
+                jsonBuffer = ""; // Reset JSON buffer for the new block
+                text = text.substring(match.index + match[0].length);
+            } else {
+                // No more commands in this chunk, render the rest as plain text.
+                handleAnswerChunk(text);
+                return;
+            }
+        }
+
+        if (isParsingBlock) {
+            // We are inside a block, looking for the end of its JSON part.
+            const jsonEndMatch = text.match(/_JSON_END_/);
+            if (jsonEndMatch) {
+                jsonBuffer += text.substring(0, jsonEndMatch.index);
+                text = text.substring(jsonEndMatch.index + jsonEndMatch[0].length);
+
+                try {
+                    const jsonData = JSON.parse(jsonBuffer);
+                    if (currentBlockType === 'FILE' || currentBlockType === 'UPDATE_FILE') {
+                        handleStartFileStream({ turn_id: currentTurnId, ...jsonData });
+                    }
+                } catch (e) {
+                    console.error("Parser JSON Error:", e, "Buffer:", jsonBuffer);
+                }
+                
+                // The JSON is done. Now we are in the content part of the block.
+                const endTag = `_${currentBlockType}_END_`;
+                const endTagIndex = text.indexOf(endTag);
+
+                if (endTagIndex !== -1) {
+                    // The end tag is in this same chunk.
+                    const content = text.substring(0, endTagIndex);
+                    
+                    if (currentBlockType === 'FILE' || currentBlockType === 'UPDATE_FILE') {
+                        if (content) handleFileChunk({ content: content });
+                        handleEndFileStream({ turn_id: currentTurnId });
+                    } else { // For UPDATE_PROJECT, etc.
+                        if (content) handleAnswerChunk(content);
+                    }
+                    
+                    text = text.substring(endTagIndex + endTag.length);
+                    resetParser(); // This block is fully complete. Reset for the next one.
+                } else {
+                    // The end tag is NOT in this chunk. The rest of the chunk is content.
+                    // IMPORTANT: We must re-scan this content for nested blocks.
+                    isParsingBlock = false; // Temporarily exit block mode to find nested blocks
+                    contentBuffer = text;   // Buffer the content to re-process
+                    text = ""; // Exit the while loop for this chunk
+                }
+
+            } else {
+                // The _JSON_END_ tag is not in this chunk. Buffer for JSON and wait for the next chunk.
+                jsonBuffer += text;
+                return;
+            }
+        }
+    }
+}
 
 function handleEndAnswerStream(payload) {
     if (currentStreamingAnswerElement && currentStreamingAnswerElement.dataset.rawContent) {
@@ -7837,7 +7827,7 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
     container.classList.add('block-container');
     container.dataset.language = canonicalLang;
     container.dataset.originalContent = originalCodeForDataset;
-    container.dataset.edited = 'false'; // Track edited state
+    container.dataset.edited = 'false';
 
     const codeHeader = document.createElement('div');
     codeHeader.classList.add('block-header');
@@ -7920,17 +7910,30 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
     });
     
     codeElement.addEventListener('input', () => {
-        const isEdited = codeElement.textContent !== container.dataset.originalContent;
+        const cursorPosition = getCursorPosition(codeElement);
+        const currentText = codeElement.textContent || '';
+        
+        if (typeof Prism !== 'undefined') {
+            Prism.highlightElement(codeElement);
+        }
+        
+        setCursorPosition(codeElement, cursorPosition);
+        
+        const isEdited = currentText !== container.dataset.originalContent;
         container.dataset.edited = isEdited.toString();
         updateProjectCommitState(container);
 
         clearTimeout(codeElement._saveTimeout);
         codeElement._saveTimeout = setTimeout(() => {
             const blockId = container.id;
-            const content = codeElement.textContent || '';
             console.log(`[FRONTEND-TRACE] Debounced save triggered for block ${blockId}`);
-            saveCodeBlockContent(blockId, content);
+            saveCodeBlockContent(blockId, currentText);
         }, 2000);
+    });
+
+    // --- THE FIX: Attach the keydown listener to handle Ctrl+Z and Ctrl+Y ---
+    codeElement.addEventListener('keydown', (e) => {
+        handleCodeBlockKeydown(e, container.id);
     });
 
     return container;
@@ -7963,40 +7966,45 @@ function handleCodeWaitingInput(payload) {
     const outputContainer = document.getElementById(outputBlockId);
     if (!outputContainer) return;
 
-    const outputPre = outputContainer.querySelector('.block-output-console pre');
-    if (!outputPre) return;
+    const textarea = outputContainer.querySelector('.console-textarea');
+    if (!textarea) return;
 
-    // Check if an input already exists to prevent duplicates
-    if (outputPre.querySelector('.console-input')) return;
+    // 1. Store the content length BEFORE the user can type.
+    const textBeforeInput = textarea.value.length;
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'console-input';
-    input.spellcheck = false;
+    // 2. Unlock the textarea and focus it.
+    textarea.readOnly = false;
+    textarea.focus();
 
-    input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            const value = input.value;
+    // 3. CRITICAL: Move the cursor to the very end of the text.
+    textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+
+    const handleEnter = (e) => {
+        // We only care about the "Enter" key, and not when "Shift" is also pressed.
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault(); // Stop "Enter" from adding a newline itself.
+
+            const currentText = textarea.value;
+            // 4. Extract ONLY the text the user just typed.
+            const userInput = currentText.substring(textBeforeInput);
 
             if (websocket && websocket.readyState === WebSocket.OPEN) {
                 websocket.send(JSON.stringify({
                     type: 'code_input',
-                    payload: { project_id: project_id, input: value }
+                    payload: { project_id: project_id, input: userInput.trimEnd() } // Send the clean input
                 }));
             }
 
-            // Simply remove the input field. The terminal's echo will appear shortly.
-            input.remove();
+            // 5. Add the final newline and lock the textarea again.
+            textarea.value += '\n';
+            textarea.readOnly = true;
+
+            // 6. Clean up the listener to prevent it from firing again.
+            textarea.removeEventListener('keydown', handleEnter);
         }
-    });
+    };
 
-    outputPre.appendChild(input);
-
-    // This timeout ensures the element is in the DOM before we try to focus it.
-    setTimeout(() => {
-        input.focus();
-    }, 0);
+    textarea.addEventListener('keydown', handleEnter);
 }
 
 function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
@@ -8064,7 +8072,7 @@ function handleStructuredMessage(messageData) {
     let outputContainer = document.getElementById(outputBlockId);
 
     if (!outputContainer && type !== 'code_output') {
-        return; 
+        return;
     }
     
     switch (type) {
@@ -8073,11 +8081,15 @@ function handleStructuredMessage(messageData) {
                 const codeBlock = document.getElementById(projectId);
                 outputContainer = createOrClearOutputContainer(projectId, codeBlock);
             }
-            const outputPre = outputContainer.querySelector('.block-output-console pre');
-            if (outputPre) {
-                addCodeOutput(outputPre, payload.stream, payload.data);
+            // --- THE FIX IS HERE ---
+            // Find the new '.console-textarea' instead of the old 'pre' tag.
+            const textarea = outputContainer.querySelector('.console-textarea');
+            if (textarea) {
+                // Call the updated addCodeOutput function.
+                addCodeOutput(textarea, payload.data);
                 outputContainer.style.display = '';
             }
+            // --- END FIX ---
             break;
         }
         case 'code_waiting_input': {
@@ -8094,8 +8106,8 @@ function handleStructuredMessage(messageData) {
                 finishMessage = (error === "Stopped by user.") ? "Stopped" : "Failed";
                 statusClass = 'error';
                 if (outputContainer) {
-                    const outputPre = outputContainer.querySelector('.block-output-console pre');
-                    if (outputPre) addCodeOutput(outputPre, 'stderr', `\n[Program finished with error: ${error}]`);
+                    const textarea = outputContainer.querySelector('.console-textarea');
+                    if (textarea) addCodeOutput(textarea, `\n[Program finished with error: ${error}]`);
                 }
             } else if (full_output && persistent_project_id && websocket && websocket.readyState === WebSocket.OPEN) {
                 console.log(`[FRONTEND-TRACE] Sending 'save_code_run' for project ${persistent_project_id}`);
@@ -8134,35 +8146,45 @@ function createOrClearOutputContainer(projectId, codeContainer, title, prompting
     let outputContainer = document.getElementById(outputBlockId);
 
     if (outputContainer) {
-        const outputPre = outputContainer.querySelector('.block-output-console pre');
-        if (outputPre) outputPre.innerHTML = '';
-        const outputHeader = outputContainer.querySelector('.block-header');
-        if (outputHeader) {
-            outputHeader.innerHTML = createOutputHeaderHTML(title, promptingUserId, 'Ready', 'idle');
-            const consoleDiv = outputContainer.querySelector('.block-output-console');
-            outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = consoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
-            outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { const text = outputContainer.querySelector('pre')?.textContent || ''; await navigator.clipboard.writeText(text); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
+        const textarea = outputContainer.querySelector('.console-textarea');
+        if (textarea) {
+            textarea.value = '';
+            textarea.readOnly = true;
         }
     } else {
         outputContainer = document.createElement('div');
         outputContainer.id = outputBlockId;
         outputContainer.className = 'block-container';
+
         const outputHeader = document.createElement('div');
         outputHeader.className = 'block-header';
         outputHeader.innerHTML = createOutputHeaderHTML(title, promptingUserId);
         const prompterColor = window.participantInfo?.[promptingUserId]?.color || '#dbeafe';
         const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
         outputHeader.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
+
         const outputConsoleDiv = document.createElement('div');
         outputConsoleDiv.className = 'block-output-console';
-        const outputPre = document.createElement('pre');
-        outputConsoleDiv.appendChild(outputPre);
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'console-textarea';
+        textarea.spellcheck = false;
+        textarea.readOnly = true; // Start in a locked, read-only state
+
+        outputConsoleDiv.appendChild(textarea);
         outputContainer.appendChild(outputHeader);
         outputContainer.appendChild(outputConsoleDiv);
 
-        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = outputConsoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
-        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { await navigator.clipboard.writeText(outputPre.textContent || ''); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
-        
+        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+            const isHidden = outputConsoleDiv.classList.toggle('hidden');
+            e.target.textContent = isHidden ? 'Show' : 'Hide';
+        });
+        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
+            await navigator.clipboard.writeText(textarea.value || '');
+            e.target.textContent = 'Copied!';
+            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+        });
+
         if (codeContainer) {
             codeContainer.insertAdjacentElement('afterend', outputContainer);
         } else {
@@ -8363,57 +8385,12 @@ function updateHeaderStatus(outputContainer, statusText, statusClass) {
 }
 
 
-function addCodeOutput(outputPreElement, streamType, text, language) {
-    if (!outputPreElement || !text) return;
+function addCodeOutput(textarea, text) {
+    if (!textarea || !text) return;
 
-    if (language === 'html' && streamType !== 'stderr') {
-        if (!outputPreElement.htmlBuffer) {
-            outputPreElement.htmlBuffer = '';
-        }
-        outputPreElement.htmlBuffer += text;
-        return;
-    }
-
-    const spanClass = streamType === 'stderr' ? 'stderr-output' : 'stdout-output';
-    let lastSpan = outputPreElement.lastChild;
-
-    if (lastSpan && lastSpan.nodeName === 'SPAN' && lastSpan.classList.contains(spanClass)) {
-        lastSpan.textContent += text;
-    } else {
-        const newSpan = document.createElement('span');
-        newSpan.className = spanClass;
-        newSpan.textContent = text;
-        outputPreElement.appendChild(newSpan);
-    }
-
-    function scrollToMessage(messageId) {
-    const targetElement = document.querySelector(`.ai-turn-container[data-message-id='${messageId}']`);
-    if (targetElement) {
-        targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        // Add a temporary highlight to draw attention
-        targetElement.style.transition = 'background-color 0.5s ease';
-        targetElement.style.backgroundColor = 'rgba(250, 235, 160, 0.5)'; // A light yellow highlight
-        setTimeout(() => {
-            targetElement.style.backgroundColor = '';
-        }, 2000);
-    } else {
-        console.warn(`Could not find message with ID ${messageId} to scroll to.`);
-    }
-}
-    
-    requestAnimationFrame(() => {
-        const internalScroller = outputPreElement.parentElement;
-        if (internalScroller) {
-            // This scrolls the inside of the output pane
-            internalScroller.scrollTop = internalScroller.scrollHeight;
-        }
-
-        // This scrolls the main chat window just enough to see the output container
-        const outputContainer = internalScroller.parentElement;
-        if (outputContainer) {
-            outputContainer.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-        }
-    });
+    textarea.value += text;
+    // Auto-scroll to the bottom as new output arrives
+    textarea.scrollTop = textarea.scrollHeight;
 }
 
 function performUndo(blockId) {
@@ -8541,23 +8518,16 @@ function restoreCodeExecutionResult(result) {
     updateHeaderStatus(outputContainer, statusText, statusClass);
 }
 
-
-
 async function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
-    // --- START: ADDED LOGGING ---
-    console.log(`--- FRONTEND LOG 2: Rendering message ID ${msg.id}. Has project_files:`, msg.project_files ? `Yes (${msg.project_files.length} files)` : 'No', msg);
-    // --- END: ADDED LOGGING ---
-
     if (!parentElement || !msg) return;
 
-    // --- Renders "link" placeholders for updated content ---
     let linkData;
     try {
         if (typeof msg.content === 'string' && msg.content.startsWith('{"type":"link"')) {
             const parsed = JSON.parse(msg.content);
             if (parsed && parsed.type === 'link') linkData = parsed;
         }
-    } catch (e) { /* Not a JSON link */ }
+    } catch (e) {}
 
     if (linkData) {
         const linkContainer = document.createElement('div');
@@ -8584,7 +8554,6 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
     
     const hasContent = contentToRender.trim().length > 0;
 
-    // --- Render the Text Bubble (if there is content to render) ---
     if (hasContent) {
         const messageBubble = document.createElement('div');
         const contentElem = document.createElement('div');
@@ -8616,6 +8585,11 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
             messageBubble.appendChild(contentElem);
         }
 
+        const deleteBtn = createDeleteButton(msg.id, msg.user_id);
+        if (deleteBtn) {
+            messageBubble.appendChild(deleteBtn);
+        }
+
         if (msg.sender_type !== 'system') {
             messageBubble.appendChild(senderElem);
             messageBubble.appendChild(contentElem);
@@ -8624,7 +8598,6 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
         turnContainer.appendChild(messageBubble);
     }
 
-    // --- Render the Project Components (if they exist) ---
     if (hasProject) {
         turnContainer.dataset.projectId = msg.project_id;
         turnContainer.dataset.projectName = msg.project_name;
@@ -8680,13 +8653,9 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
 
         if (runBlockElement && outputContent !== null) {
             const outputContainer = createOrClearOutputContainer(runBlockElement.id, runBlockElement, "run.sh", msg.prompting_user_id);
-            const outputPre = outputContainer.querySelector('pre');
-            if (outputPre) {
-                outputPre.innerHTML = '';
-                const outputSpan = document.createElement('span');
-                outputSpan.className = 'stdout-output';
-                outputSpan.textContent = outputContent;
-                outputPre.appendChild(outputSpan);
+            const textarea = outputContainer.querySelector('.console-textarea');
+            if (textarea) {
+                textarea.value = outputContent;
             }
             updateHeaderStatus(outputContainer, 'Finished (from history)', 'success');
         }
@@ -8842,6 +8811,7 @@ function stickHeader(header, scrollerRect) {
 }
 
 function handleAiThinking(payload) {
+    resetParser();
     const { turn_id, prompting_user_id, prompting_user_name } = payload;
     let turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turn_id}']`);
     if (turnContainer) return; // Already exists
@@ -8879,6 +8849,7 @@ function handleAiThinking(payload) {
 }
 
 async function handleAiStreamEnd(payload) {
+    resetParser();
     console.log("AI stream ended. Final payload received:", payload);
     finalizeTurnOnErrorOrClose();
 
@@ -8969,11 +8940,10 @@ function connectWebSocket() {
 
             if (event.data.startsWith("<ERROR>")) { addErrorMessage(event.data.substring(7)); finalizeTurnOnErrorOrClose(); return; }
             
-            // This switch statement correctly handles the structured messages from the backend
             switch (messageData.type) {
                 case 'ai_thinking': handleAiThinking(messageData.payload); break;
                 case 'project_header': handleProjectHeader(messageData.payload); break;
-                case 'ai_chunk': handleAnswerChunk(messageData.payload); break;
+                case 'ai_chunk': handleAnswerChunk({ isRaw: true, content: messageData.payload }); break;
                 case 'end_answer_stream': handleEndAnswerStream(messageData.payload); break;
                 case 'start_file_stream': handleStartFileStream(messageData.payload); break;
                 case 'file_chunk': handleFileChunk(messageData.payload); break;
@@ -8984,17 +8954,27 @@ function connectWebSocket() {
                 case 'end_answer_update': handleEndAnswerStream(messageData.payload); break;
                 case 'project_edit_start': handleProjectEditStart(messageData.payload); break;
                 case 'project_update_start': handleProjectUpdateStart(messageData.payload); break;
+                
+                // --- FIXED ---
                 case 'end_project_edit':
-                    console.log("Project edit block finished.");
-                    currentEditingProject.originalTurnContainer = null;
+                    handleEndProjectEdit(messageData.payload);
                     break;
-                case 'end_project_update': console.log("Project update block finished."); break;
+
+                case 'end_project_update': 
+                    console.log("Project update block finished."); 
+                    break;
+                
                 case 'file_update_start': handleFileUpdateStart(messageData.payload); break;
                 case 'file_extend_start': handleFileExtendStart(messageData.payload); break;
                 case 'file_edit_start': handleFileEditStart(messageData.payload); break;
                 case 'file_edit_content': handleFileEditContent(messageData.payload); break;
                 case 'end_file_update': handleEndFileStream(messageData.payload); break;
-                case 'end_file_extend': handleEndFileStream(messageData.payload); break;
+
+                // --- FIXED ---
+                case 'end_file_extend':
+                    handleEndFileExtend(messageData.payload);
+                    break;
+
                 case 'ai_stream_end': handleAiStreamEnd(messageData.payload); break;
                 case 'new_message':
                     if (messageData.payload) {
@@ -9012,7 +8992,41 @@ function connectWebSocket() {
                 case 'project_preview_ready': handleProjectPreviewReady(messageData.payload); break;
                 case 'participant_typing': handleTypingIndicators(messageData.payload); break;
                 case 'participants_update': updateAndDisplayParticipants(messageData.payload); break;
-                case 'session_deleted': const chatTitle = document.getElementById('chat-session-title'); if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`; const banner = document.createElement('div'); banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold'; banner.textContent = 'The host has deleted this session. The chat is now read-only.'; chatHistory.prepend(banner); setInputDisabledState(true, false); break;
+                case 'session_deleted': 
+                    const chatTitle = document.getElementById('chat-session-title'); 
+                    if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`; 
+                    const banner = document.createElement('div'); 
+                    banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold'; 
+                    banner.textContent = 'The host has deleted this session. The chat is now read-only.'; 
+                    chatHistory.prepend(banner); 
+                    setInputDisabledState(true, false); 
+                    break;
+                case 'message_deleted': {
+                    const { message_id, user_id } = messageData.payload;
+                    const turnContainer = document.querySelector(`.ai-turn-container[data-message-id='${message_id}']`);
+                    
+                    if (turnContainer && window.currentUserInfo && window.currentUserInfo.id === user_id) {
+                        const placeholder = document.createElement('div');
+                        placeholder.className = 'deleted-message-placeholder';
+                        
+                        const text = document.createElement('span');
+                        text.textContent = '(message has been deleted)';
+                        
+                        const dismissBtn = document.createElement('span');
+                        dismissBtn.className = 'dismiss-deleted-btn';
+                        dismissBtn.innerHTML = '&times;';
+                        dismissBtn.title = 'Dismiss';
+                        dismissBtn.onclick = () => placeholder.remove();
+                        
+                        placeholder.appendChild(text);
+                        placeholder.appendChild(dismissBtn);
+                        
+                        turnContainer.replaceWith(placeholder);
+                    } else if (turnContainer) {
+                        turnContainer.remove();
+                    }
+                    break;
+                }
                 default: handleStructuredMessage(messageData); break;
             }
         };
@@ -9023,27 +9037,72 @@ function connectWebSocket() {
     }
 }
 
-function handleAnswerChunk(payload) {
-    if (!currentStreamingAnswerElement) {
-        console.warn("handleAnswerChunk called without a valid streaming element.");
-        return; 
+function createDeleteButton(messageId, messageUserId, turnContainer) {
+    // Permission Check:
+    // - window.isHost is a new variable we'll need to set.
+    // - currentUserInfo.id must match the message's author.
+    // - AI messages (messageUserId is null/undefined) can be deleted by anyone.
+    const isHost = window.isHost === true;
+    const isMyMessage = window.currentUserInfo && window.currentUserInfo.id === messageUserId;
+    const isAiMessage = !messageUserId;
+
+    if (!isHost && !isMyMessage && !isAiMessage) {
+        return null; // Don't create the button if user doesn't have permission
     }
 
-    const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
-    if (loadingDots) {
-        currentStreamingAnswerElement.innerHTML = '';
-    }
-    
-    const currentContent = (currentStreamingAnswerElement.dataset.rawContent || '') + payload;
-    currentStreamingAnswerElement.dataset.rawContent = currentContent;
-    renderMarkdownAndKatex(currentContent, currentStreamingAnswerElement);
-    
-    requestAnimationFrame(() => {
-        // Add a safety check before scrolling
-        if (currentStreamingAnswerElement) {
-            currentStreamingAnswerElement.scrollIntoView({ behavior: 'auto', block: 'end' });
+    const container = document.createElement('div');
+    container.className = 'delete-btn-container';
+
+    const button = document.createElement('button');
+    button.className = 'delete-message-btn';
+    button.innerHTML = '&times;';
+    button.title = 'Delete Message';
+
+    button.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm('Are you sure you want to permanently delete this message? This cannot be undone.')) {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                console.log(`[FRONTEND-TRACE] Sending 'delete_message' for ID: ${messageId}`);
+                websocket.send(JSON.stringify({
+                    type: 'delete_message',
+                    payload: { message_id: messageId }
+                }));
+            }
         }
     });
+
+    container.appendChild(button);
+    return container;
+}
+
+function handleAnswerChunk(payload) {
+    // This function now has two roles, determined by the 'isRaw' flag.
+    if (payload.isRaw) {
+        // 1. If it's a raw chunk from the websocket, send it to the parser.
+        processStreamChunk(payload.content);
+    } else {
+        // 2. If it's plain text from the parser, render it to the screen.
+        if (!currentStreamingAnswerElement) {
+            console.warn("handleAnswerChunk called to render text, but no valid streaming element exists.");
+            return;
+        }
+
+        const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
+        if (loadingDots) {
+            currentStreamingAnswerElement.innerHTML = '';
+        }
+        
+        // This is your existing rendering logic, which is correct for plain text.
+        const currentContent = (currentStreamingAnswerElement.dataset.rawContent || '') + payload;
+        currentStreamingAnswerElement.dataset.rawContent = currentContent;
+        renderMarkdownAndKatex(currentContent, currentStreamingAnswerElement);
+        
+        requestAnimationFrame(() => {
+            if (currentStreamingAnswerElement) {
+                currentStreamingAnswerElement.scrollIntoView({ behavior: 'auto', block: 'end' });
+            }
+        });
+    }
 }
 
 function handleStartFileStream(payload) {
@@ -9052,7 +9111,6 @@ function handleStartFileStream(payload) {
         return;
     }
 
-    // Add file to the explorer UI immediately
     if (currentStreamingExplorer) {
         currentStreamingExplorer.addFile({
             path: payload.path,
@@ -9065,20 +9123,33 @@ function handleStartFileStream(payload) {
 
     streamingCodeBlockCounter++;
     const isRunnable = payload.path.endsWith('run.sh');
-    const promptingUserId = payload.prompting_user_id; 
+    const promptingUserId = payload.prompting_user_id;
     const turnIdSuffix = payload.turn_id;
 
     const newBlock = createCodeBlock(
-        payload.language || 'plaintext', '', '', turnIdSuffix, 
+        payload.language || 'plaintext', '', '', turnIdSuffix,
         streamingCodeBlockCounter, currentCodeBlocksArea, isRunnable,
         promptingUserId
     );
-    newBlock.dataset.path = payload.path;
-    newBlock.querySelector('.block-title .title-text').textContent = payload.path;
 
-    currentStreamingFile = { 
-        container: newBlock, 
-        codeElement: newBlock.querySelector('code'), 
+    // --- THE FIX IS HERE ---
+    // We were missing this logic to assign a stable ID to the new block.
+    if (newBlock) {
+        const safeBtoa = btoa(payload.path).replace(/[/+=]/g, '');
+        const stableId = `code-block-turn${turnIdSuffix}-${safeBtoa}`;
+        newBlock.id = stableId; // This is the critical missing line.
+
+        newBlock.dataset.path = payload.path;
+        newBlock.querySelector('.block-title .title-text').textContent = payload.path;
+
+        // Also initialize its history for undo/redo functionality
+        initializeCodeBlockHistory(newBlock.id, '');
+    }
+    // --- END FIX ---
+
+    currentStreamingFile = {
+        container: newBlock,
+        codeElement: newBlock.querySelector('code'),
         path: payload.path,
         size: 0,
         language: payload.language || 'plaintext'
@@ -9221,7 +9292,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         chatForm.addEventListener('submit', (event) => {
             event.preventDefault();
-            if(typingTimeout) {
+            if (typingTimeout) {
                 clearTimeout(typingTimeout);
                 typingTimeout = null;
                 sendTypingSignal(false);
@@ -9233,7 +9304,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
             try {
-                addUserMessage(userMessage);
                 messageInput.value = '';
                 const mentionRegex = /@(\w+)/gi;
                 const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
@@ -11018,6 +11088,12 @@ export async function updateAndDisplayParticipants(participants) {
         li.appendChild(nameSpan);
         participantList.appendChild(li);
     });
+
+    if (window.currentUserInfo && window.currentUserInfo.id === hostId) {
+        window.isHost = true;
+    } else {
+        window.isHost = false;
+    }
 }
 
 export function connectToLobbySocket() {
@@ -11590,24 +11666,6 @@ export function initializeSidebarToggle() {
 }
 
 
-=== jobs/requests/54e0237d-63dd-4125-90d9-34818f17f8a7-web-1758183300755-2zkmt-1.json ===
-{"session_id": "54e0237d-63dd-4125-90d9-34818f17f8a7", "user_id": 1, "user_name": "Viktor Jonsson", "user_input_raw": "what is the capital of sweden?@ai", "turn_id": 1, "reply_to_id": null, "stream_id": "54e0237d-63dd-4125-90d9-34818f17f8a7-web-1758183300755-2zkmt-1"}
-
-=== jobs/requests/54e0237d-63dd-4125-90d9-34818f17f8a7-web-1758183920003-944ue-1.json ===
-{"session_id": "54e0237d-63dd-4125-90d9-34818f17f8a7", "user_id": 1, "user_name": "Viktor Jonsson", "user_input_raw": "what is the capital of sweden?@ai", "turn_id": 1, "reply_to_id": null, "stream_id": "54e0237d-63dd-4125-90d9-34818f17f8a7-web-1758183920003-944ue-1"}
-
-=== jobs/requests/9f8c3c7b-cfa0-428d-8232-151bfda7a869-web-1758182149582-hdtro-1.json ===
-{"session_id": "9f8c3c7b-cfa0-428d-8232-151bfda7a869", "user_id": 1, "user_name": "Viktor Jonsson", "user_input_raw": "what is 4+4@ai", "turn_id": 1, "reply_to_id": null, "stream_id": "9f8c3c7b-cfa0-428d-8232-151bfda7a869-web-1758182149582-hdtro-1"}
-
-=== jobs/requests/9f8c3c7b-cfa0-428d-8232-151bfda7a869-web-1758182826202-l0hjn-1.json ===
-{"session_id": "9f8c3c7b-cfa0-428d-8232-151bfda7a869", "user_id": 1, "user_name": "Viktor Jonsson", "user_input_raw": "what is 4+4@ai", "turn_id": 1, "reply_to_id": null, "stream_id": "9f8c3c7b-cfa0-428d-8232-151bfda7a869-web-1758182826202-l0hjn-1"}
-
-=== jobs/responses/156765f4-b485-419a-974b-fcfc7f1003a9-web-1758179537295-9ljpt-1.json ===
-{"type": "chunk", "content": "_ANSWER_START_\n{}\n_JSON_END_\n3 + 4 = 7\n_ANSWER_"}
-{"type": "chunk", "content": "END_"}
-{"type": "end_stream", "payload": {"message_id": 25, "turn_id": 1}}
-
-
 === tests/test_docker_utils.py ===
 import asyncio
 import os
@@ -11615,93 +11673,143 @@ import shutil
 import tempfile
 import pytest
 from unittest.mock import MagicMock
+from fastapi.websockets import WebSocketState
 
-# Since we are testing docker_utils, we need to import it.
-# We also need the config for language settings.
 from app import docker_utils, config, state
 
-# A mock WebSocket class to simulate the behavior of a real WebSocket connection
-# for testing purposes without needing a live connection.
+@pytest.fixture(scope="module", autouse=True)
+def manage_docker_worker():
+    docker_utils.start_docker_worker()
+    yield
+    docker_utils.shutdown_docker_worker()
+
 class MockWebSocket:
     def __init__(self):
         self.sent_messages = []
+        self.scope = {"client_id": "pytest_client"}
+        self.client_state = WebSocketState.CONNECTED
     
     async def send_json(self, message):
         self.sent_messages.append(message)
 
-# --- Test Configurations for Different Languages ---
+# --- Test Case Data ---
 
-# 1. Python Project Configuration (Scripting Language)
-python_main_py_content = (
-    'import time\n'
-    'import sys\n\n'
-    'print("Container: Starting countdown...", flush=True)\n'
-    'for i in range(1, 4):\n'
-    '    print(f"Container: ...{i}", flush=True)\n'
-    '    time.sleep(0.2)\n'
-    'print("Container: What is your name?", flush=True)\n\n'
-    'name = sys.stdin.readline().strip()\n\n'
-    'print(f"Container: Hello, {name}!", flush=True)\n'
-)
-python_project_data = {
+# 1. Fast, non-interactive "Hello World"
+helloworld_py_content = 'print("Hello, World!")'
+helloworld_project_data = {
     "files": [
-        {"path": "main.py", "content": python_main_py_content},
+        {"path": "main.py", "content": helloworld_py_content},
         {"path": "run.sh", "content": "python3 main.py"}
     ]
 }
 
-# 2. C++ Project Configuration (Compiled Language)
-cpp_main_cpp_content = (
-    '#include <iostream>\n'
-    '#include <string>\n'
-    '#include <thread>\n'
-    '#include <chrono>\n\n'
-    'int main() {\n'
+# 2. Interactive Python with streaming
+interactive_py_content = (
+    'import time\nimport sys\n\n'
+    'print("Container: Starting python countdown...", flush=True)\n'
+    'for i in range(1, 6):\n'
+    '    print(f"Container: ...{i}", flush=True)\n'
+    '    time.sleep(0.2)\n'
+    'print("Container: What is your name? ", flush=True)\n'
+    'name = sys.stdin.readline().strip()\n'
+    'print(f"Container: Hello, {name}!", flush=True)\n'
+)
+interactive_py_project_data = {
+    "files": [
+        {"path": "main.py", "content": interactive_py_content},
+        {"path": "run.sh", "content": "python3 main.py"}
+    ]
+}
+
+# 3. Interactive C++ with streaming
+interactive_cpp_content = (
+    '#include <iostream>\n#include <string>\n#include <thread>\n#include <chrono>\n\n'
+    'int main() { \n'
     '    std::cout << "Container: Starting C++ countdown..." << std::flush;\n'
-    '    for (int i = 1; i <= 3; ++i) {\n'
+    '    for (int i = 1; i <= 5; ++i) {\n'
     '        std::cout << "\\nContainer: ..." << i << std::flush;\n'
     '        std::this_thread::sleep_for(std::chrono::milliseconds(200));\n'
     '    }\n'
-    '    std::cout << "\\nContainer: What is your name?" << std::flush;\n'
-    '    std::string name;\n'
-    '    std::getline(std::cin, name);\n'
-    '    std::cout << "\\nContainer: Hello, " << name << "!" << std::endl;\n'
-    '    return 0;\n'
-    '}\n'
+    '    std::cout << "\\nContainer: What is your name? " << std::flush; \n'
+    '    std::string name; \n'
+    '    std::getline(std::cin, name); \n'
+    '    std::cout << "\\nContainer: Hello, " << name << "!" << std::endl; \n'
+    '    return 0; \n'
+    '}'
 )
-cpp_run_sh_content = (
+interactive_cpp_run_sh = (
     '#!/bin/sh\n'
-    '# Compile the C++ code first\n'
     'g++ -std=c++11 main.cpp -o main_app\n'
-    '# Check if compilation was successful before running\n'
     'if [ $? -ne 0 ]; then\n'
     '  echo "C++ compilation failed!"\n'
     '  exit 1\n'
     'fi\n'
-    '# Execute the compiled binary\n'
     './main_app\n'
 )
-cpp_project_data = {
+interactive_cpp_project_data = {
     "files": [
-        {"path": "main.cpp", "content": cpp_main_cpp_content},
-        {"path": "run.sh", "content": cpp_run_sh_content}
+        {"path": "main.cpp", "content": interactive_cpp_content},
+        {"path": "run.sh", "content": interactive_cpp_run_sh}
     ]
 }
+
+@pytest.mark.asyncio
+async def test_fast_execution():
+    """
+    Tests a simple, non-interactive script that finishes very quickly
+    to ensure there are no race conditions or hangs.
+    """
+    lang_config = config.SUPPORTED_LANGUAGES.get("python")
+    project_data = helloworld_project_data
+    language = "python-fast"
+    
+    project_path = None
+    mock_ws = MockWebSocket()
+    loop = asyncio.get_running_loop()
+
+    try:
+        SHARED_PROJECTS_DIR_IN_CONTAINER = "/projects"
+        os.makedirs(SHARED_PROJECTS_DIR_IN_CONTAINER, exist_ok=True)
+        project_path = tempfile.mkdtemp(dir=SHARED_PROJECTS_DIR_IN_CONTAINER)
+
+        for file_info in project_data["files"]:
+            file_path = os.path.join(project_path, file_info["path"])
+            with open(file_path, "w", encoding="utf-8", newline='\n') as f:
+                f.write(file_info["content"])
+        os.chmod(os.path.join(project_path, "run.sh"), 0o755)
+
+        project_id = f"fast_exec_test_{language}"
+        
+        exit_code, full_output, error_message = await docker_utils.run_code_in_docker(
+            websocket=mock_ws,
+            client_id="test_client_id",
+            project_id=project_id,
+            project_data=project_data,
+            project_path=project_path,
+            run_command="sh run.sh",
+            lang_config=lang_config,
+            loop=loop
+        )
+        
+        assert error_message is None, f"Execution returned an error: {error_message}"
+        assert exit_code == 0, f"Expected exit code 0, but got {exit_code}. Logs:\n{full_output}"
+        assert "Hello, World!" in full_output, f"Expected 'Hello, World!' not found. Logs:\n{full_output}"
+
+    finally:
+        await docker_utils.stop_container(project_id)
+        if project_path and os.path.exists(project_path):
+            shutil.rmtree(project_path)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "language, project_data",
     [
-        ("python", python_project_data),
-        ("cpp", cpp_project_data),
+        ("python", interactive_py_project_data),
+        ("cpp", interactive_cpp_project_data),
     ]
 )
 async def test_interactive_code_execution(language, project_data):
-    """
-    Tests the full interactive loop for different languages.
-    It verifies streaming output, prompt detection, user input, and final output.
-    """
     lang_config = config.SUPPORTED_LANGUAGES.get(language)
     assert lang_config is not None, f"Language config for '{language}' not found."
     
@@ -11710,15 +11818,16 @@ async def test_interactive_code_execution(language, project_data):
     loop = asyncio.get_running_loop()
 
     try:
-        # 1. Create the temporary project directory in a safe, neutral location.
-        project_path = tempfile.mkdtemp(dir="/tmp")
+        SHARED_PROJECTS_DIR_IN_CONTAINER = "/projects"
+        os.makedirs(SHARED_PROJECTS_DIR_IN_CONTAINER, exist_ok=True)
+        project_path = tempfile.mkdtemp(dir=SHARED_PROJECTS_DIR_IN_CONTAINER)
+
         for file_info in project_data["files"]:
             file_path = os.path.join(project_path, file_info["path"])
             with open(file_path, "w", encoding="utf-8", newline='\n') as f:
                 f.write(file_info["content"])
         os.chmod(os.path.join(project_path, "run.sh"), 0o755)
 
-        # 2. Start the code execution in a background task so the test can interact with it.
         project_id = f"interactive_test_{language}"
         
         execution_finished = asyncio.Event()
@@ -11728,8 +11837,7 @@ async def test_interactive_code_execution(language, project_data):
 
         async def run_and_monitor():
             nonlocal exit_code, full_output, error_message
-            exit_code, full_output, error_message = await asyncio.to_thread(
-                docker_utils.run_code_in_docker,
+            exit_code, full_output, error_message = await docker_utils.run_code_in_docker(
                 websocket=mock_ws,
                 client_id="test_client_id",
                 project_id=project_id,
@@ -11743,7 +11851,6 @@ async def test_interactive_code_execution(language, project_data):
 
         exec_task = asyncio.create_task(run_and_monitor())
         
-        # 3. In parallel, wait for the prompt and send the input.
         async def interact():
             while not exec_task.done():
                 for msg in mock_ws.sent_messages:
@@ -11754,18 +11861,16 @@ async def test_interactive_code_execution(language, project_data):
         
         interact_task = asyncio.create_task(interact())
 
-        # 4. Wait for both tasks to complete with a generous timeout.
         await asyncio.wait_for(execution_finished.wait(), timeout=20)
         interact_task.cancel()
 
-        # 5. Assert the results
         assert error_message is None, f"Execution returned an error: {error_message}"
         assert exit_code == 0, f"Expected exit code 0, but got {exit_code}. Logs:\n{full_output}"
+        
         assert "Hello, Tester!" in full_output, f"Expected interactive output not found. Logs:\n{full_output}"
-        assert "Container: ...3" in full_output, f"Expected streaming output not found. Logs:\n{full_output}"
+        assert "Container: ...5" in full_output, f"Expected streaming output not found. Logs:\n{full_output}"
 
     finally:
-        # Cleanup: Stop the container and remove the temp directory
         await docker_utils.stop_container(project_id)
         if project_path and os.path.exists(project_path):
             shutil.rmtree(project_path)

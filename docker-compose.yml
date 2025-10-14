@@ -9,8 +9,8 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      - ./:/app
-      - ./tesseracs_chat.db:/app/tesseracs_chat.db
+      - ./app:/app/app
+      - db_data:/data
       - ./jobs:/app/jobs
       - ./.data/projects:/projects
       - /var/run/docker.sock:/var/run/docker.sock

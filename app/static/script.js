@@ -1,3 +1,5 @@
+// [REPLACE] in app/static/script.js
+
 // --- JS Imports ---
 import { marked } from 'marked';
 import katex from 'katex';
@@ -33,9 +35,6 @@ const sendButton = document.getElementById('send-button');
 const thinkCheckbox = document.getElementById('think-checkbox');
 const stopAiButton = document.getElementById('stop-ai-button');
 
-
-
-
 const LANGUAGE_ALIASES = {
     'python': 'python', 'py': 'python',
     'javascript': 'javascript', 'js': 'javascript',
@@ -70,9 +69,6 @@ const PRISM_LANGUAGE_MAP = {
 let websocket;
 const clientId = `web-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 let currentTurnId = 0;
-let projectDataCache = {};
-let currentAiTurnContainer = null;
-let currentAnswerElement = null;
 let currentCodeBlocksArea = null;
 let streamingCodeBlockCounter = 0;
 let currentStreamingAnswerElement = null;
@@ -82,14 +78,10 @@ let currentStreamingFile = {
     path: null
 };
 let currentStreamingExplorer = null;
-let currentEditingAnswer = { id: null, element: null };
-let currentEditingFile = { path: null, element: null };
+let currentEditingAnswer = { id: null, element: null, buffer: '' };
+let currentEditingFile = { path: null, element: null, buffer: '' };
 let currentEditingProject = { originalTurnContainer: null };
-// --- Add these with your other State Variables ---
-let isParsingBlock = false;
-let currentBlockType = null;
-let jsonBuffer = "";
-let contentBuffer = "";
+let currentExtendingFile = { codeElement: null, path: null };
 
 document.addEventListener('fileToggle', (event) => {
     const { path, isChecked, recursive, turnContainer } = event.detail;
@@ -205,7 +197,6 @@ document.addEventListener('commit-project-changes', (event) => {
         alert('Error: WebSocket is not connected. Cannot commit changes.');
     }
 });
-
 
 function escapeHTML(str) {
     if (str === null || str === undefined) return '';
@@ -365,14 +356,6 @@ function setInputDisabledState(inputsDisabled, aiResponding) {
     }
 }
 
-function handleAnswerEditStart(payload) {
-    const originalMessage = document.querySelector(`[data-message-id='${payload.answer_to_edit_id}'] .message-content`);
-    if (originalMessage) {
-        currentEditingAnswer = { id: payload.answer_to_edit_id, element: originalMessage };
-        console.log("Preparing to edit answer ID:", payload.answer_to_edit_id);
-    }
-}
-
 function handleAnswerUpdateStart(payload) {
     // For a full update, we just start a new AI turn container.
     // The "move-and-link" logic will be handled when history is reloaded.
@@ -421,11 +404,41 @@ function handleProjectEditStart(payload) {
 
 function handleProjectUpdateStart(payload) {
     console.log("Starting update for project ID:", payload.project_to_edit_id);
-    // Reuses the same logic as starting a new project
-    const turnId = currentTurnId;
-    const promptingUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
-    const promptingUserName = window.currentUserInfo ? window.currentUserInfo.name : "User";
-    handleAiThinking({ turn_id: turnId, prompting_user_id: promptingUserId, prompting_user_name: promptingUserName });
+    const { turn_id, project_to_edit_id, prompting_user_id, prompting_user_name } = payload;
+
+    // Use handleAiThinking to create the initial bubble
+    handleAiThinking({ turn_id, prompting_user_id, prompting_user_name });
+    
+    // Now, find that newly created container to add the project elements to it
+    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turn_id}']`);
+    if (!turnContainer) {
+        console.error("handleProjectUpdateStart: Could not find the turn container for turn_id", turn_id);
+        return;
+    }
+
+    const originalTurnContainer = document.querySelector(`.ai-turn-container[data-project-id='${project_to_edit_id}']`);
+    const originalProjectName = originalTurnContainer ? originalTurnContainer.dataset.projectName : "Updated Project";
+
+    turnContainer.dataset.projectData = JSON.stringify({
+        name: originalProjectName,
+        files: [],
+        prompting_user_id: prompting_user_id
+    });
+
+    const explorer = document.createElement('project-explorer');
+    explorer.projectData = {
+        projectId: null,
+        projectName: originalProjectName,
+        files: [],
+        commits: []
+    };
+    turnContainer.appendChild(explorer);
+    currentStreamingExplorer = explorer;
+
+    const codeBlocksArea = document.createElement('div');
+    codeBlocksArea.className = 'code-blocks-area';
+    turnContainer.appendChild(codeBlocksArea);
+    currentCodeBlocksArea = codeBlocksArea;
 }
 
 function handleFileUpdateStart(payload) {
@@ -436,20 +449,6 @@ function handleFileUpdateStart(payload) {
 function handleFileExtendStart(payload) {
     // This also reuses the file stream logic. The frontend just needs to display the appended content.
     handleStartFileStream(payload);
-}
-
-function handleFileEditStart(payload) {
-    if (!currentEditingProject.originalTurnContainer) {
-        console.error("Cannot start file edit: no original project container is being tracked.");
-        return;
-    }
-    const fileBlock = currentEditingProject.originalTurnContainer.querySelector(`.block-container[data-path='${payload.path}']`);
-    if (fileBlock) {
-        currentEditingFile = { path: payload.path, element: fileBlock.querySelector('code') };
-        console.log("Found file to edit:", payload.path);
-    } else {
-        console.error("Could not find file block with path:", payload.path);
-    }
 }
 
 function handleFileEditContent(payload) {
@@ -499,35 +498,6 @@ function handleTypingIndicators(payload) {
     }
 }
 
-function addUserMessage(text) {
-    if (!chatHistory) return;
-
-    const messageElement = document.createElement('div');
-    messageElement.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col', 'self-end', 'ml-auto');
-    
-    const currentUser = window.currentUserInfo;
-    const participantData = currentUser && window.participantInfo ? window.participantInfo[currentUser.id] : null;
-
-    if (participantData && participantData.color) {
-        messageElement.style.backgroundColor = participantData.color;
-    } else {
-        messageElement.classList.add('bg-gray-200');
-    }
-
-    const senderElem = document.createElement('p');
-    senderElem.classList.add('font-semibold', 'text-sm', 'mb-1', 'text-gray-800');
-    senderElem.textContent = escapeHTML(currentUser ? currentUser.name : 'User');
-    messageElement.appendChild(senderElem);
-
-    const contentElem = document.createElement('div');
-    contentElem.classList.add('text-gray-800', 'text-sm', 'message-content');
-    contentElem.textContent = text.replace(/@\w+/g, '').trim();
-    messageElement.appendChild(contentElem);
-
-    chatHistory.appendChild(messageElement);
-    setTimeout(() => scrollToBottom('smooth'), 50);
-}
-
 function updateParticipantListUI(active_user_id = null) {
     const participants = document.querySelectorAll('#participant-list li[id^="participant-"]');
     participants.forEach(p => {
@@ -547,122 +517,75 @@ function updateParticipantListUI(active_user_id = null) {
 }
 
 function processStreamChunk(chunk) {
-    const startRegex = /_(\w+)_START_/;
-    const jsonEndRegex = /_JSON_END_/;
-    const fileEndRegex = /_FILE_END_/;
-    const updateEndRegex = /_UPDATE_FILE_END_/;
-    const projectEndRegex = /_UPDATE_PROJECT_END_/;
+    let text = contentBuffer + chunk;
+    contentBuffer = ""; // Clear the buffer now that we're processing it
 
-    let remainingChunk = chunk;
-
-    while (remainingChunk.length > 0) {
+    while (text.length > 0) {
         if (!isParsingBlock) {
-            const match = remainingChunk.match(startRegex);
+            const match = text.match(/_([A-Z_]+)_START_/);
             if (match) {
-                // We found the start of a new command block
-                const plainText = remainingChunk.substring(0, match.index);
-                if (plainText) {
-                    handleAnswerChunk(plainText); // Process any text before the block
+                // We found the start of a new command block.
+                const plainTextBefore = text.substring(0, match.index);
+                if (plainTextBefore) {
+                    handleAnswerChunk(plainTextBefore); // Render any conversational text
                 }
 
                 isParsingBlock = true;
-                currentBlockType = match[1]; // e.g., "UPDATE_PROJECT", "FILE", "UPDATE_FILE"
-                jsonBuffer = "";
-                contentBuffer = "";
-                
-                // Call the appropriate start handler
-                if (currentBlockType === 'UPDATE_PROJECT') {
-                    // This is where we would trigger a UI change if needed, but the main work is parsing the JSON
-                    console.log("[PARSER] Detected Project Update start.");
-                }
-
-                remainingChunk = remainingChunk.substring(match.index + match[0].length);
+                currentBlockType = match[1];
+                jsonBuffer = ""; // Reset JSON buffer for the new block
+                text = text.substring(match.index + match[0].length);
             } else {
-                // No command blocks found, process the rest as plain text
-                handleAnswerChunk(remainingChunk);
-                remainingChunk = "";
+                // No more commands in this chunk, render the rest as plain text.
+                handleAnswerChunk(text);
+                return;
             }
-        } else {
-            // We are inside a command block, looking for an end token
-            let endMatch = null;
-            let isJsonBlock = true;
+        }
 
-            switch (currentBlockType) {
-                case 'UPDATE_PROJECT':
-                    endMatch = remainingChunk.match(jsonEndRegex);
-                    break;
-                case 'FILE':
-                case 'UPDATE_FILE':
-                    endMatch = remainingChunk.match(jsonEndRegex);
-                    if (!endMatch) {
-                        // If we haven't found JSON_END, we are still in the JSON part
-                        jsonBuffer += remainingChunk;
-                        remainingChunk = "";
-                        continue;
-                    }
-                    break;
-                default:
-                    // Fallback for unknown block types
-                    isParsingBlock = false;
-                    continue;
-            }
+        if (isParsingBlock) {
+            // We are inside a block, looking for the end of its JSON part.
+            const jsonEndMatch = text.match(/_JSON_END_/);
+            if (jsonEndMatch) {
+                jsonBuffer += text.substring(0, jsonEndMatch.index);
+                text = text.substring(jsonEndMatch.index + jsonEndMatch[0].length);
 
-            if (endMatch) {
-                // We found the end of the JSON part
-                jsonBuffer += remainingChunk.substring(0, endMatch.index);
                 try {
                     const jsonData = JSON.parse(jsonBuffer);
-                    
-                    // --- Trigger Actions Based on JSON ---
-                    if (currentBlockType === 'FILE') {
-                        handleStartFileStream({ turn_id: currentTurnId, ...jsonData });
-                    } else if (currentBlockType === 'UPDATE_FILE') {
-                        // For updates, we just start a new file stream for the new content
+                    if (currentBlockType === 'FILE' || currentBlockType === 'UPDATE_FILE') {
                         handleStartFileStream({ turn_id: currentTurnId, ...jsonData });
                     }
-
                 } catch (e) {
-                    console.error("Error parsing JSON from stream:", e, "Buffer:", jsonBuffer);
+                    console.error("Parser JSON Error:", e, "Buffer:", jsonBuffer);
                 }
-
-                remainingChunk = remainingChunk.substring(endMatch.index + endMatch[0].length);
-
-                // Now look for the content part and its end
-                let contentEndMatch;
-                if (currentBlockType === 'FILE') contentEndMatch = remainingChunk.match(fileEndRegex);
-                else if (currentBlockType === 'UPDATE_FILE') contentEndMatch = remainingChunk.match(updateEndRegex);
                 
-                if (contentEndMatch) {
-                    const content = remainingChunk.substring(0, contentEndMatch.index);
-                    if (content) handleFileChunk({ content: content });
-                    
-                    // End the file stream
-                    handleEndFileStream({ turn_id: currentTurnId });
+                // The JSON is done. Now we are in the content part of the block.
+                const endTag = `_${currentBlockType}_END_`;
+                const endTagIndex = text.indexOf(endTag);
 
-                    remainingChunk = remainingChunk.substring(contentEndMatch.index + contentEndMatch[0].length);
-                    isParsingBlock = false; // Finished with this block
+                if (endTagIndex !== -1) {
+                    // The end tag is in this same chunk.
+                    const content = text.substring(0, endTagIndex);
+                    
+                    if (currentBlockType === 'FILE' || currentBlockType === 'UPDATE_FILE') {
+                        if (content) handleFileChunk({ content: content });
+                        handleEndFileStream({ turn_id: currentTurnId });
+                    } else { // For UPDATE_PROJECT, etc.
+                        if (content) handleAnswerChunk(content);
+                    }
+                    
+                    text = text.substring(endTagIndex + endTag.length);
+                    resetParser(); // This block is fully complete. Reset for the next one.
                 } else {
-                    // The content is not finished in this chunk, so buffer it
-                    contentBuffer += remainingChunk;
-                    remainingChunk = "";
+                    // The end tag is NOT in this chunk. The rest of the chunk is content.
+                    // IMPORTANT: We must re-scan this content for nested blocks.
+                    isParsingBlock = false; // Temporarily exit block mode to find nested blocks
+                    contentBuffer = text;   // Buffer the content to re-process
+                    text = ""; // Exit the while loop for this chunk
                 }
 
             } else {
-                // Still inside a block, but no end token found in this chunk
-                if (isJsonBlock) {
-                    jsonBuffer += remainingChunk;
-                } else {
-                    contentBuffer += remainingChunk;
-                }
-                remainingChunk = "";
-            }
-            
-            // Final check for the overall project update end
-            const projectEndMatch = remainingChunk.match(projectEndRegex);
-            if (projectEndMatch) {
-                console.log("[PARSER] Detected Project Update end.");
-                isParsingBlock = false; // Reset for the next message
-                remainingChunk = remainingChunk.substring(projectEndMatch.index + projectEndMatch[0].length);
+                // The _JSON_END_ tag is not in this chunk. Buffer for JSON and wait for the next chunk.
+                jsonBuffer += text;
+                return;
             }
         }
     }
@@ -681,14 +604,6 @@ function handleEndFileStream(payload) {
         Prism.highlightElement(currentStreamingFile.codeElement);
     }
     currentStreamingFile = { container: null, codeElement: null, path: null, fileData: null };
-    
-    const turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${payload.turn_id}']`);
-    const fileBlocks = turnContainer ? turnContainer.querySelectorAll('.block-container') : [];
-    const projectData = projectDataCache[payload.turn_id];
-
-    if (projectData && fileBlocks.length === projectData.files.length) {
-         updateParticipantListUI(null);
-    }
 }
 
 function finalizeTurnOnErrorOrClose() {
@@ -1322,8 +1237,6 @@ async function handleRunStopCodeClick(event) {
     }
 }
 
-
-
 function updateHeaderStatus(outputContainer, statusText, statusClass) {
     const statusSpan = outputContainer.querySelector('.block-status');
     if (statusSpan) {
@@ -1346,7 +1259,6 @@ function updateHeaderStatus(outputContainer, statusText, statusClass) {
         }
     }
 }
-
 
 function addCodeOutput(textarea, text) {
     if (!textarea || !text) return;
@@ -1459,30 +1371,7 @@ function saveCodeBlockState(blockId, content) {
     }, 2000);
 }
 
-function restoreCodeExecutionResult(result) {
-    // Only create an output block if there's actual terminal output to show.
-    if (!result.output_content) {
-        return;
-    }
-
-    const codeContainer = document.getElementById(result.code_block_id);
-    if (!codeContainer) return;
-
-    // Create or clear the output container for the historical output
-    const outputContainer = createOrClearOutputContainer(result.code_block_id);
-    const outputPre = outputContainer.querySelector('.block-output-console pre');
-
-    if (outputPre) {
-        outputPre.textContent = result.output_content;
-    }
-
-    const statusText = result.error_message ? 'Failed' : `Finished (Exit: ${result.exit_code})`;
-    const statusClass = result.error_message || result.exit_code !== 0 ? 'error' : 'success';
-    updateHeaderStatus(outputContainer, statusText, statusClass);
-}
-
 async function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
-    console.log(`--- FRONTEND LOG 2: Rendering message ID ${msg.id}. Has project_files:`, msg.project_files ? `Yes (${msg.project_files.length} files)` : 'No', msg);
     if (!parentElement || !msg) return;
 
     let linkData;
@@ -1491,7 +1380,7 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
             const parsed = JSON.parse(msg.content);
             if (parsed && parsed.type === 'link') linkData = parsed;
         }
-    } catch (e) { /* Not a JSON link */ }
+    } catch (e) {}
 
     if (linkData) {
         const linkContainer = document.createElement('div');
@@ -1547,6 +1436,11 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
             messageBubble.className = 'system-message';
             contentElem.textContent = contentToRender;
             messageBubble.appendChild(contentElem);
+        }
+
+        const deleteBtn = createDeleteButton(msg.id, msg.user_id);
+        if (deleteBtn) {
+            messageBubble.appendChild(deleteBtn);
         }
 
         if (msg.sender_type !== 'system') {
@@ -1610,20 +1504,14 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
         });
         turnContainer.appendChild(codeBlocksArea);
 
-        // --- THE FIX IS HERE ---
         if (runBlockElement && outputContent !== null) {
-            // Create the output container using our updated function.
             const outputContainer = createOrClearOutputContainer(runBlockElement.id, runBlockElement, "run.sh", msg.prompting_user_id);
-            // Find the new '.console-textarea' instead of the old 'pre' tag.
             const textarea = outputContainer.querySelector('.console-textarea');
             if (textarea) {
-                // Set the value of the textarea directly.
                 textarea.value = outputContent;
             }
-            // Update the header status to show it's from history.
             updateHeaderStatus(outputContainer, 'Finished (from history)', 'success');
         }
-        // --- END FIX ---
     }
 
     if (turnContainer.hasChildNodes()) {
@@ -1775,6 +1663,37 @@ function stickHeader(header, scrollerRect) {
     header.dataset.stickyId = stickyId;
 }
 
+function unstickHeader(header) {
+    if (!header || !header.classList.contains('header-is-sticky-js')) return;
+
+    const stickyId = header.dataset.stickyId;
+    if (stickyId) {
+        const stickyClone = document.getElementById(stickyId);
+        if (stickyClone) {
+            // Clean up button observers
+            const cloneButtons = stickyClone.querySelectorAll('button');
+            cloneButtons.forEach(btn => {
+                if (btn._syncObserver) {
+                    btn._syncObserver.disconnect();
+                    delete btn._syncObserver;
+                }
+            });
+            
+            // NEW: Clean up status observer
+            const cloneStatusSpan = stickyClone.querySelector('.block-status');
+            if (cloneStatusSpan && cloneStatusSpan._syncObserver) {
+                cloneStatusSpan._syncObserver.disconnect();
+                delete cloneStatusSpan._syncObserver;
+            }
+            
+            stickyClone.remove();
+        }
+    }
+
+    header.classList.remove('header-is-sticky-js');
+    delete header.dataset.stickyId;
+}
+
 function handleAiThinking(payload) {
     const { turn_id, prompting_user_id, prompting_user_name } = payload;
     let turnContainer = document.querySelector(`.ai-turn-container[data-turn-id='${turn_id}']`);
@@ -1851,175 +1770,69 @@ async function handleAiStreamEnd(payload) {
     currentCodeBlocksArea = null;
 }
 
-function unstickHeader(header) {
-    if (!header || !header.classList.contains('header-is-sticky-js')) return;
+function handleEndProjectEdit(payload) {
+    console.log("Project edit block finished.");
+    currentEditingProject.originalTurnContainer = null;
+}
 
-    const stickyId = header.dataset.stickyId;
-    if (stickyId) {
-        const stickyClone = document.getElementById(stickyId);
-        if (stickyClone) {
-            // Clean up button observers
-            const cloneButtons = stickyClone.querySelectorAll('button');
-            cloneButtons.forEach(btn => {
-                if (btn._syncObserver) {
-                    btn._syncObserver.disconnect();
-                    delete btn._syncObserver;
-                }
-            });
-            
-            // NEW: Clean up status observer
-            const cloneStatusSpan = stickyClone.querySelector('.block-status');
-            if (cloneStatusSpan && cloneStatusSpan._syncObserver) {
-                cloneStatusSpan._syncObserver.disconnect();
-                delete cloneStatusSpan._syncObserver;
-            }
-            
-            stickyClone.remove();
+function handleEndFileEdit(payload) {
+    if (currentEditingFile.element && currentEditingFile.buffer) {
+        try {
+            const edits = JSON.parse(currentEditingFile.buffer);
+            handleFileEditContent(edits); // Reuse existing logic
+        } catch (e) {
+            console.error("Failed to parse edit JSON for file:", currentEditingFile.path, e);
+            currentEditingFile.element.textContent += "\n\n--- PARSE ERROR: FAILED TO APPLY EDITS ---";
         }
     }
-
-    header.classList.remove('header-is-sticky-js');
-    delete header.dataset.stickyId;
+    currentEditingFile = { path: null, element: null, buffer: '' };
 }
 
-function connectWebSocket() {
-    let sessionId = getSessionIdFromPath();
-    if (!sessionId) {
-        addErrorMessage("Cannot connect to chat: Invalid session ID in URL.");
-        setInputDisabledState(true, false);
-        return;
-    }
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws/${sessionId}/${clientId}`;
-    try {
-        const ws = new WebSocket(wsUrl);
-        websocket = ws;
-        ws.onopen = () => { console.log("[WS_CLIENT] WebSocket connection opened."); setInputDisabledState(false, false); addSystemMessage("Connected to the server."); };
-        ws.onmessage = (event) => {
-            if (typeof event.data !== 'string') return;
-            const messageData = JSON.parse(event.data);
-            
-            console.log("[WebSocket Client] Received message:", messageData);
-
-            if (event.data.startsWith("<ERROR>")) { addErrorMessage(event.data.substring(7)); finalizeTurnOnErrorOrClose(); return; }
-            
-            // This switch statement correctly handles the structured messages from the backend
-            switch (messageData.type) {
-                case 'ai_thinking': handleAiThinking(messageData.payload); break;
-                case 'project_header': handleProjectHeader(messageData.payload); break;
-                case 'ai_chunk': handleAnswerChunk(messageData.payload); break;
-                case 'end_answer_stream': handleEndAnswerStream(messageData.payload); break;
-                case 'start_file_stream': handleStartFileStream(messageData.payload); break;
-                case 'file_chunk': handleFileChunk(messageData.payload); break;
-                case 'end_file_stream': handleEndFileStream(messageData.payload); break;
-                case 'answer_edit_start': handleAnswerEditStart(messageData.payload); break;
-                case 'answer_update_start': handleAnswerUpdateStart(messageData.payload); break;
-                case 'answer_edit_content': handleAnswerEditContent(messageData.payload); break;
-                case 'end_answer_update': handleEndAnswerStream(messageData.payload); break;
-                case 'project_edit_start': handleProjectEditStart(messageData.payload); break;
-                case 'project_update_start': handleProjectUpdateStart(messageData.payload); break;
-                case 'end_project_edit':
-                    console.log("Project edit block finished.");
-                    currentEditingProject.originalTurnContainer = null;
-                    break;
-                case 'end_project_update': console.log("Project update block finished."); break;
-                case 'file_update_start': handleFileUpdateStart(messageData.payload); break;
-                case 'file_extend_start': handleFileExtendStart(messageData.payload); break;
-                case 'file_edit_start': handleFileEditStart(messageData.payload); break;
-                case 'file_edit_content': handleFileEditContent(messageData.payload); break;
-                case 'end_file_update': handleEndFileStream(messageData.payload); break;
-                case 'end_file_extend': handleEndFileStream(messageData.payload); break;
-                case 'ai_stream_end': handleAiStreamEnd(messageData.payload); break;
-                case 'new_message':
-                    if (messageData.payload) {
-                        renderSingleMessage(messageData.payload, chatHistory, true, {});
-                    }
-                    scrollToBottom('smooth');
-                    break;
-                case 'project_updated':
-                    if (messageData.payload && messageData.payload.project_id) {
-                        const { project_id, project_data } = messageData.payload;
-                        const explorer = document.querySelector(`.ai-turn-container[data-project-id="${project_id}"] project-explorer`);
-                        if (explorer) explorer.updateData(project_data);
-                    }
-                    break;
-                case 'project_preview_ready': handleProjectPreviewReady(messageData.payload); break;
-                case 'participant_typing': handleTypingIndicators(messageData.payload); break;
-                case 'participants_update': updateAndDisplayParticipants(messageData.payload); break;
-                case 'session_deleted': const chatTitle = document.getElementById('chat-session-title'); if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`; const banner = document.createElement('div'); banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold'; banner.textContent = 'The host has deleted this session. The chat is now read-only.'; chatHistory.prepend(banner); setInputDisabledState(true, false); break;
-                default: handleStructuredMessage(messageData); break;
-            }
-        };
-        ws.onclose = (event) => { console.error(`[WS_CLIENT] WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`); };
-        ws.onerror = (event) => { console.error("[WS_CLIENT] WebSocket error:", event); };
-    } catch (error) {
-        console.error("WebSocket creation error:", error);
-    }
-}
-
-function handleAnswerChunk(payload) {
-    if (!currentStreamingAnswerElement) {
-        console.warn("handleAnswerChunk called without a valid streaming element.");
-        return; 
-    }
-
-    const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
-    if (loadingDots) {
-        currentStreamingAnswerElement.innerHTML = '';
-    }
-    
-    const currentContent = (currentStreamingAnswerElement.dataset.rawContent || '') + payload;
-    currentStreamingAnswerElement.dataset.rawContent = currentContent;
-    renderMarkdownAndKatex(currentContent, currentStreamingAnswerElement);
-    
-    requestAnimationFrame(() => {
-        // Add a safety check before scrolling
-        if (currentStreamingAnswerElement) {
-            currentStreamingAnswerElement.scrollIntoView({ behavior: 'auto', block: 'end' });
+function handleEndAnswerEdit(payload) {
+    if (currentEditingAnswer.element && currentEditingAnswer.buffer) {
+        try {
+            const edits = JSON.parse(currentEditingAnswer.buffer);
+            handleAnswerEditContent(edits); // Reuse existing logic
+        } catch (e) {
+            console.error("Failed to parse edit JSON for answer:", currentEditingAnswer.id, e);
         }
-    });
+    }
+    currentEditingAnswer = { id: null, element: null, buffer: '' };
 }
 
-function handleStartFileStream(payload) {
-    if (!currentCodeBlocksArea) {
-        console.error("Cannot start file stream: a project block was not properly initiated.");
+function handleEndFileExtend(payload) {
+    // This is essentially the same as ending a regular file stream.
+    handleEndFileStream(payload);
+}
+
+function handleAnswerEditStart(payload) {
+    const originalMessage = document.querySelector(`[data-message-id='${payload.answer_to_edit_id}'] .message-content`);
+    if (originalMessage) {
+        currentEditingAnswer = { id: payload.answer_to_edit_id, element: originalMessage, buffer: '' };
+        console.log("Preparing to edit answer ID:", payload.answer_to_edit_id);
+    }
+}
+
+function handleFileEditStart(payload) {
+    if (!currentEditingProject.originalTurnContainer) {
+        console.error("Cannot start file edit: no original project container is being tracked.");
         return;
     }
-
-    // Add file to the explorer UI immediately
-    if (currentStreamingExplorer) {
-        currentStreamingExplorer.addFile({
-            path: payload.path,
-            content: '',
-            language: payload.language,
-            size: 0,
-            lastModified: Date.now()
-        });
+    const fileBlock = currentEditingProject.originalTurnContainer.querySelector(`.block-container[data-path='${payload.path}']`);
+    if (fileBlock) {
+        currentEditingFile = { path: payload.path, element: fileBlock.querySelector('code'), buffer: '' };
+        console.log("Found file to edit:", payload.path);
+    } else {
+        console.error("Could not find file block with path:", payload.path);
     }
-
-    streamingCodeBlockCounter++;
-    const isRunnable = payload.path.endsWith('run.sh');
-    const promptingUserId = payload.prompting_user_id; 
-    const turnIdSuffix = payload.turn_id;
-
-    const newBlock = createCodeBlock(
-        payload.language || 'plaintext', '', '', turnIdSuffix, 
-        streamingCodeBlockCounter, currentCodeBlocksArea, isRunnable,
-        promptingUserId
-    );
-    newBlock.dataset.path = payload.path;
-    newBlock.querySelector('.block-title .title-text').textContent = payload.path;
-
-    currentStreamingFile = { 
-        container: newBlock, 
-        codeElement: newBlock.querySelector('code'), 
-        path: payload.path,
-        size: 0,
-        language: payload.language || 'plaintext'
-    };
 }
 
 function handleFileChunk(payload) {
+    if (currentEditingFile.element) {
+        currentEditingFile.buffer += payload.content;
+        return;
+    }
+
     if (!currentStreamingFile || !currentStreamingFile.codeElement) return;
 
     const codeElement = currentStreamingFile.codeElement;
@@ -2051,6 +1864,310 @@ function handleFileChunk(payload) {
              currentStreamingFile.container.scrollIntoView({ behavior: 'auto', block: 'nearest' });
         }
     });
+}
+
+function handleAnswerChunk(chunk) {
+    if (currentEditingAnswer.element) {
+        currentEditingAnswer.buffer += chunk;
+        return; 
+    }
+
+    if (!currentStreamingAnswerElement) {
+        console.warn("handleAnswerChunk called, but no streaming element exists.");
+        return;
+    }
+    
+    const loadingDots = currentStreamingAnswerElement.querySelector('.loading-dots');
+    if (loadingDots) {
+        currentStreamingAnswerElement.innerHTML = '';
+    }
+
+    const currentContent = (currentStreamingAnswerElement.dataset.rawContent || '') + chunk;
+    currentStreamingAnswerElement.dataset.rawContent = currentContent;
+    renderMarkdownAndKatex(currentContent, currentStreamingAnswerElement);
+
+    requestAnimationFrame(() => {
+        if (currentStreamingAnswerElement) {
+            currentStreamingAnswerElement.scrollIntoView({ behavior: 'auto', block: 'end' });
+        }
+    });
+}
+
+function handleStartFileStream(payload) {
+    if (!currentCodeBlocksArea) {
+        console.error("Cannot start file stream: a project block was not properly initiated.");
+        return;
+    }
+
+    if (currentStreamingExplorer) {
+        currentStreamingExplorer.addFile({
+            path: payload.path,
+            content: '',
+            language: payload.language,
+            size: 0,
+            lastModified: Date.now()
+        });
+    }
+
+    streamingCodeBlockCounter++;
+    const isRunnable = payload.path.endsWith('run.sh');
+    const promptingUserId = payload.prompting_user_id;
+    const turnIdSuffix = payload.turn_id;
+
+    const newBlock = createCodeBlock(
+        payload.language || 'plaintext', '', '', turnIdSuffix,
+        streamingCodeBlockCounter, currentCodeBlocksArea, isRunnable,
+        promptingUserId
+    );
+
+    // --- THE FIX IS HERE ---
+    // We were missing this logic to assign a stable ID to the new block.
+    if (newBlock) {
+        const safeBtoa = btoa(payload.path).replace(/[/+=]/g, '');
+        const stableId = `code-block-turn${turnIdSuffix}-${safeBtoa}`;
+        newBlock.id = stableId; // This is the critical missing line.
+
+        newBlock.dataset.path = payload.path;
+        newBlock.querySelector('.block-title .title-text').textContent = payload.path;
+
+        // Also initialize its history for undo/redo functionality
+        initializeCodeBlockHistory(newBlock.id, '');
+    }
+    // --- END FIX ---
+
+    currentStreamingFile = {
+        container: newBlock,
+        codeElement: newBlock.querySelector('code'),
+        path: payload.path,
+        size: 0,
+        language: payload.language || 'plaintext'
+    };
+}
+
+function connectWebSocket() {
+    let sessionId = getSessionIdFromPath();
+    if (!sessionId) {
+        addErrorMessage("Cannot connect to chat: Invalid session ID in URL.");
+        setInputDisabledState(true, false);
+        return;
+    }
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/${sessionId}/${clientId}`;
+    try {
+        const ws = new WebSocket(wsUrl);
+        websocket = ws;
+        ws.onopen = () => { console.log("[WS_CLIENT] WebSocket connection opened."); setInputDisabledState(false, false); addSystemMessage("Connected to the server."); };
+        ws.onmessage = (event) => {
+            if (typeof event.data !== 'string') return;
+            const messageData = JSON.parse(event.data);
+            
+            console.log("[WebSocket Client] Received message:", messageData);
+
+            if (event.data.startsWith("<ERROR>")) { addErrorMessage(event.data.substring(7)); finalizeTurnOnErrorOrClose(); return; }
+            
+            switch (messageData.type) {
+                case 'ai_thinking': handleAiThinking(messageData.payload); break;
+                case 'project_header': handleProjectHeader(messageData.payload); break;
+                case 'ai_chunk': handleAnswerChunk(messageData.payload); break;
+                case 'end_answer_stream': handleEndAnswerStream(messageData.payload); break;
+                case 'start_file_stream': handleStartFileStream(messageData.payload); break;
+                case 'file_chunk': handleFileChunk(messageData.payload); break;
+                case 'end_file_stream': handleEndFileStream(messageData.payload); break;
+                case 'answer_edit_start': handleAnswerEditStart(messageData.payload); break;
+                case 'answer_update_start': handleAnswerUpdateStart(messageData.payload); break;
+                // 'answer_edit_content' is handled by buffering in handleAnswerChunk
+                case 'end_answer_edit': handleEndAnswerEdit(messageData.payload); break;
+                case 'end_answer_update': handleEndAnswerStream(messageData.payload); break;
+                case 'project_edit_start': handleProjectEditStart(messageData.payload); break;
+                case 'project_update_start': handleProjectUpdateStart(messageData.payload); break;
+                case 'end_project_edit': handleEndProjectEdit(messageData.payload); break;
+                case 'end_project_update': console.log("Project update block finished."); break;
+                case 'file_update_start': handleFileUpdateStart(messageData.payload); break;
+                case 'file_extend_start': handleFileExtendStart(messageData.payload); break;
+                case 'file_edit_start': handleFileEditStart(messageData.payload); break;
+                case 'end_file_edit': handleEndFileEdit(messageData.payload); break;
+                case 'end_file_update': handleEndFileStream(messageData.payload); break;
+                case 'end_file_extend': handleEndFileExtend(messageData.payload); break;
+                case 'ai_stream_end': handleAiStreamEnd(messageData.payload); break;
+                case 'new_message':
+                    if (messageData.payload) {
+                        renderSingleMessage(messageData.payload, chatHistory, true, {});
+                    }
+                    scrollToBottom('smooth');
+                    break;
+                case 'message_updated': {
+                    const { message_id, new_content } = messageData.payload;
+                    const turnContainer = document.querySelector(`.ai-turn-container[data-message-id='${message_id}']`);
+                    if(turnContainer){
+                        const newLinkData = JSON.parse(new_content);
+                        turnContainer.innerHTML = ''; // Clear it
+                        const linkContainer = document.createElement('div');
+                        linkContainer.className = 'system-message italic text-blue-600 cursor-pointer hover:underline';
+                        linkContainer.textContent = newLinkData.text || 'Content has been updated. Click to view.';
+                        linkContainer.addEventListener('click', () => {
+                             const targetElement = document.querySelector(`.ai-turn-container[data-message-id='${newLinkData.target_message_id}']`);
+                             if(targetElement) targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        });
+                        turnContainer.appendChild(linkContainer);
+                    }
+                    break;
+                }
+                case 'project_updated':
+                    if (messageData.payload && messageData.payload.project_id) {
+                        const { project_id, project_data } = messageData.payload;
+                        const explorer = document.querySelector(`.ai-turn-container[data-project-id="${project_id}"] project-explorer`);
+                        if (explorer) explorer.updateData(project_data);
+                    }
+                    break;
+                case 'project_preview_ready': handleProjectPreviewReady(messageData.payload); break;
+                case 'participant_typing': handleTypingIndicators(messageData.payload); break;
+                case 'participants_update': updateAndDisplayParticipants(messageData.payload); break;
+                case 'session_deleted': 
+                    const chatTitle = document.getElementById('chat-session-title'); 
+                    if (chatTitle) chatTitle.textContent = `[Deleted] ${chatTitle.textContent}`; 
+                    const banner = document.createElement('div'); 
+                    banner.className = 'text-center text-sm text-red-700 bg-red-100 p-2 rounded-md font-semibold'; 
+                    banner.textContent = 'The host has deleted this session. The chat is now read-only.'; 
+                    chatHistory.prepend(banner); 
+                    setInputDisabledState(true, false); 
+                    break;
+                case 'message_deleted': {
+                    const { message_id, user_id } = messageData.payload;
+                    const turnContainer = document.querySelector(`.ai-turn-container[data-message-id='${message_id}']`);
+                    
+                    if (turnContainer && window.currentUserInfo && window.currentUserInfo.id === user_id) {
+                        const placeholder = document.createElement('div');
+                        placeholder.className = 'deleted-message-placeholder';
+                        
+                        const text = document.createElement('span');
+                        text.textContent = '(message has been deleted)';
+                        
+                        const dismissBtn = document.createElement('span');
+                        dismissBtn.className = 'dismiss-deleted-btn';
+                        dismissBtn.innerHTML = '&times;';
+                        dismissBtn.title = 'Dismiss';
+                        dismissBtn.onclick = () => placeholder.remove();
+                        
+                        placeholder.appendChild(text);
+                        placeholder.appendChild(dismissBtn);
+                        
+                        turnContainer.replaceWith(placeholder);
+                    } else if (turnContainer) {
+                        turnContainer.remove();
+                    }
+                    break;
+                }
+                default: handleStructuredMessage(messageData); break;
+            }
+        };
+        ws.onclose = (event) => { console.error(`[WS_CLIENT] WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`); };
+        ws.onerror = (event) => { console.error("[WS_CLIENT] WebSocket error:", event); };
+    } catch (error) {
+        console.error("WebSocket creation error:", error);
+    }
+}
+
+function createDeleteButton(messageId, messageUserId, turnContainer) {
+    // Permission Check:
+    // - window.isHost is a new variable we'll need to set.
+    // - currentUserInfo.id must match the message's author.
+    // - AI messages (messageUserId is null/undefined) can be deleted by anyone.
+    const isHost = window.isHost === true;
+    const isMyMessage = window.currentUserInfo && window.currentUserInfo.id === messageUserId;
+    const isAiMessage = !messageUserId;
+
+    if (!isHost && !isMyMessage && !isAiMessage) {
+        return null; // Don't create the button if user doesn't have permission
+    }
+
+    const container = document.createElement('div');
+    container.className = 'delete-btn-container';
+
+    const button = document.createElement('button');
+    button.className = 'delete-message-btn';
+    button.innerHTML = '&times;';
+    button.title = 'Delete Message';
+
+    button.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm('Are you sure you want to permanently delete this message? This cannot be undone.')) {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                console.log(`[FRONTEND-TRACE] Sending 'delete_message' for ID: ${messageId}`);
+                websocket.send(JSON.stringify({
+                    type: 'delete_message',
+                    payload: { message_id: messageId }
+                }));
+            }
+        }
+    });
+
+    container.appendChild(button);
+    return container;
+}
+
+async function loadAndDisplayChatHistory(sessionId) {
+    await updateAndDisplayParticipants();
+    const chatHistoryDiv = document.getElementById('chat-history');
+    if (!chatHistoryDiv) return;
+
+    chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>';
+
+    try {
+        const [messagesResponse, editedBlocksResponse] = await Promise.all([
+            fetch(`/api/sessions/${sessionId}/messages`),
+            fetch(`/api/sessions/${sessionId}/edited-blocks`)
+        ]);
+
+        if (!messagesResponse.ok) {
+            const errorData = await messagesResponse.json().catch(() => ({ detail: "Failed to load chat history." }));
+            throw new Error(errorData.detail || messagesResponse.statusText);
+        }
+
+        const messages = await messagesResponse.json();
+        const editedCodeBlocks = editedBlocksResponse.ok ? await editedBlocksResponse.json() : {};
+        
+        chatHistoryDiv.innerHTML = '';
+
+        if (messages.length === 0) {
+            chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">No sessions in this session yet.</p>';
+        } else {
+            currentTurnId = Math.max(0, ...messages.map(msg => msg.turn_id || 0));
+            messages.forEach(msg => {
+                renderSingleMessage(msg, chatHistoryDiv, true, editedCodeBlocks);
+            });
+
+            const projectContainers = Array.from(chatHistoryDiv.querySelectorAll('.ai-turn-container[data-project-name]'));
+            const latestProjects = new Map();
+
+            projectContainers.forEach(container => {
+                const projectName = container.dataset.projectName;
+                if (projectName) {
+                    latestProjects.set(projectName, container);
+                }
+            });
+
+            projectContainers.forEach(container => {
+                const projectName = container.dataset.projectName;
+                if (projectName && latestProjects.get(projectName) !== container) {
+                    const explorer = container.querySelector('project-explorer');
+                    const codeArea = container.querySelector('.code-blocks-area');
+                    if (explorer) explorer.style.display = 'none';
+                    if (codeArea) codeArea.style.display = 'none';
+                    
+                    const messageBubble = container.querySelector('.message.ai-message, .system-message');
+                    if (!messageBubble) {
+                        container.style.display = 'none';
+                    }
+                }
+            });
+        }
+        
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+
+    } catch (error){
+        console.error(`Failed to fetch or display chat history for session ${sessionId}:`, error);
+        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An error occurred while loading history: ${escapeHTML(error.message)}</p>`;
+    }
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -2155,7 +2272,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         chatForm.addEventListener('submit', (event) => {
             event.preventDefault();
-            if(typingTimeout) {
+            if (typingTimeout) {
                 clearTimeout(typingTimeout);
                 typingTimeout = null;
                 sendTypingSignal(false);
@@ -2167,7 +2284,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
             try {
-                addUserMessage(userMessage);
                 messageInput.value = '';
                 const mentionRegex = /@(\w+)/gi;
                 const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
@@ -2280,67 +2396,3 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 });
 
-async function loadAndDisplayChatHistory(sessionId) {
-    await updateAndDisplayParticipants();
-    const chatHistoryDiv = document.getElementById('chat-history');
-    if (!chatHistoryDiv) return;
-
-    chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>';
-
-    try {
-        const [messagesResponse, editedBlocksResponse] = await Promise.all([
-            fetch(`/api/sessions/${sessionId}/messages`),
-            fetch(`/api/sessions/${sessionId}/edited-blocks`)
-        ]);
-
-        if (!messagesResponse.ok) {
-            const errorData = await messagesResponse.json().catch(() => ({ detail: "Failed to load chat history." }));
-            throw new Error(errorData.detail || messagesResponse.statusText);
-        }
-
-        const messages = await messagesResponse.json();
-        const editedCodeBlocks = editedBlocksResponse.ok ? await editedBlocksResponse.json() : {};
-        
-        chatHistoryDiv.innerHTML = '';
-
-        if (messages.length === 0) {
-            chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">No sessions in this session yet.</p>';
-        } else {
-            currentTurnId = Math.max(0, ...messages.map(msg => msg.turn_id || 0));
-            messages.forEach(msg => {
-                renderSingleMessage(msg, chatHistoryDiv, true, editedCodeBlocks);
-            });
-
-            const projectContainers = Array.from(chatHistoryDiv.querySelectorAll('.ai-turn-container[data-project-name]'));
-            const latestProjects = new Map();
-
-            projectContainers.forEach(container => {
-                const projectName = container.dataset.projectName;
-                if (projectName) {
-                    latestProjects.set(projectName, container);
-                }
-            });
-
-            projectContainers.forEach(container => {
-                const projectName = container.dataset.projectName;
-                if (projectName && latestProjects.get(projectName) !== container) {
-                    const explorer = container.querySelector('project-explorer');
-                    const codeArea = container.querySelector('.code-blocks-area');
-                    if (explorer) explorer.style.display = 'none';
-                    if (codeArea) codeArea.style.display = 'none';
-                    
-                    const messageBubble = container.querySelector('.message.ai-message, .system-message');
-                    if (!messageBubble) {
-                        container.style.display = 'none';
-                    }
-                }
-            });
-        }
-        
-        chatHistory.scrollTop = chatHistory.scrollHeight;
-
-    } catch (error){
-        console.error(`Failed to fetch or display chat history for session ${sessionId}:`, error);
-        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An error occurred while loading history: ${escapeHTML(error.message)}</p>`;
-    }
-}

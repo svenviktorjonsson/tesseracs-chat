@@ -1485,8 +1485,8 @@ async def websocket_endpoint(
                         exclude_websocket=websocket
                     )
 
-                elif message_type in ["run_code", "stop_code", "code_input", "save_code_content", "save_code_result", "commit_project_changes"]:
-                    asyncio.create_task(handle_code_related_message(
+                elif message_type in ["run_code", "stop_code", "code_input", "save_code_content", "save_code_run", "commit_project_changes", "delete_message"]:
+                    asyncio.create_task(handle_action_message(
                         message_type, payload, websocket, client_js_id, session_id_ws
                     ))
                 else:
@@ -1536,7 +1536,7 @@ async def websocket_endpoint(
         writer_task.cancel()
         await state.disconnect(session_id_ws, connection)
 
-async def handle_code_related_message(message_type: str, payload: dict, websocket: WebSocket, client_id: str, session_id: str):
+async def handle_action_message(message_type: str, payload: dict, websocket: WebSocket, client_id: str, session_id: str):
     user = await auth.get_user_by_session_token_internal(websocket.cookies.get(auth.SESSION_COOKIE_NAME))
     if not user:
         return
@@ -1587,7 +1587,7 @@ async def handle_code_related_message(message_type: str, payload: dict, websocke
                     await utils.send_ws_message(websocket, "code_finished", final_payload)
                     
                     if full_output and not error_message and exit_code == 0:
-                        asyncio.create_task(handle_code_related_message(
+                        asyncio.create_task(handle_action_message(
                             'save_code_run',
                             {'project_id': persistent_project_id, 'output': full_output},
                             websocket, client_id, session_id
@@ -1738,10 +1738,53 @@ async def handle_code_related_message(message_type: str, payload: dict, websocke
         )
         state.remove_memory_for_client(payload['session_id'])
     
-    elif message_type == "save_code_result" and payload:
-        payload['session_id'] = session_id
-        await asyncio.to_thread(database.save_code_execution_result, **payload)
-        state.remove_memory_for_client(session_id)
+    elif message_type == "delete_message" and payload:
+        message_id = payload.get("message_id")
+        if not message_id:
+            return
+
+        conn = database.get_db_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # --- THE FIX: Use 'chat_messages' instead of 'messages' ---
+            cursor.execute("""
+                SELECT m.id, m.user_id, m.sender_type, m.project_id, s.host_id
+                FROM chat_messages m 
+                JOIN sessions s ON m.session_id = s.id
+                WHERE m.id = ?
+            """, (message_id,))
+            message = cursor.fetchone()
+
+            if not message:
+                return
+
+            is_host = user["id"] == message["host_id"]
+            is_my_message = user["id"] == message["user_id"]
+            is_ai_message = message["sender_type"] == "ai"
+
+            if not (is_host or is_my_message or is_ai_message):
+                return
+            
+            if project_id_to_delete := message["project_id"]:
+                print(f"Deleting associated project {project_id_to_delete}...")
+                cursor.execute("DELETE FROM projects WHERE id = ?", (project_id_to_delete,))
+
+            # --- THE FIX: Use 'chat_messages' here as well ---
+            cursor.execute("DELETE FROM chat_messages WHERE id = ?", (message_id,))
+            conn.commit()
+            print(f"User {user['id']} deleted message {message_id}.")
+
+            state.remove_memory_for_client(session_id)
+
+            await state.broadcast(session_id, {
+                "type": "message_deleted",
+                "payload": {"message_id": message_id, "user_id": user["id"]}
+            })
+
+        finally:
+            conn.close()
+
 
 @app.get("/api/sessions", response_model=List[models.SessionResponseModel], tags=["Sessions"])
 async def get_user_sessions(

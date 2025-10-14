@@ -375,6 +375,12 @@ export async function updateAndDisplayParticipants(participants) {
         li.appendChild(nameSpan);
         participantList.appendChild(li);
     });
+
+    if (window.currentUserInfo && window.currentUserInfo.id === hostId) {
+        window.isHost = true;
+    } else {
+        window.isHost = false;
+    }
 }
 
 export function connectToLobbySocket() {

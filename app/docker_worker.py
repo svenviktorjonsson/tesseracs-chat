@@ -43,15 +43,22 @@ def process_job(conn: Connection, job: Dict[str, Any]):
         lang_config = job["lang_config"]
         host_project_path = get_host_path_from_container_path(project_path)
         
+        # --- THE FIX IS HERE ---
+        # We create a compound command that runs the user's script first,
+        # then always runs the permission fix afterward.
+        # The semicolon (;) ensures the chown command runs even if run.sh fails.
+        cleanup_command = "sh run.sh; chown -R 1000:1000 /app"
+        
         container = docker_client.containers.create(
             image=lang_config["image"],
-            command=["sh", "run.sh"],
+            command=["sh", "-c", cleanup_command], # This now runs our compound command
             volumes={host_project_path: {'bind': '/app', 'mode': 'rw'}},
             working_dir='/app',
             stdin_open=True, tty=False, detach=True,
             mem_limit=config.DOCKER_MEM_LIMIT,
             labels={"managed-by": "tesseracs-chat"}
         )
+        # --- END FIX ---
 
         socket_obj = container.attach_socket(params={"stdin": 1, "stdout": 1, "stderr": 1, "stream": 1})
         container.start()
@@ -97,7 +104,6 @@ def process_job(conn: Connection, job: Dict[str, Any]):
                                 raw_sock.sendall(user_input.encode('utf-8'))
                     except (EOFError, BrokenPipeError):
                         if conn in read_sockets: read_sockets.remove(conn)
-                    # --- THE FIX: The problematic 'continue' statement is removed from here ---
 
                 if s is raw_sock:
                     try:

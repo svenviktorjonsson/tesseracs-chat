@@ -77,7 +77,7 @@ def _get_llm_settings_sync(user_id: int) -> dict:
         if conn:
             conn.close()
 
-def _process_and_save_ai_response(session_id: str, user_id: int, full_raw_content: str, turn_id: int, reply_to_id: Optional[int]) -> Tuple[Optional[int], Optional[str]]:
+def _process_and_save_ai_response(session_id: str, user_id: int, full_raw_content: str, turn_id: int, reply_to_id: Optional[int]) -> Tuple[Optional[int], Optional[str], Optional[int]]:
     """Parses the full AI response, applies creation/edit/update logic, and saves the results."""
     conn = None
     try:
@@ -152,13 +152,13 @@ def _process_and_save_ai_response(session_id: str, user_id: int, full_raw_conten
             _update_original_message_to_link(cursor, original_message_id_to_link, new_message_id, link_text)
 
         conn.commit()
-        return new_message_id, new_project_id
+        return new_message_id, new_project_id, original_message_id_to_link
 
     except Exception as e:
         print(f"!!! LLM_SAVE_ERROR: An exception occurred in _process_and_save_ai_response: {e}")
         traceback.print_exc()
         if conn: conn.rollback()
-        return None, None
+        return None, None, None
     finally:
         if conn: conn.close()
 
@@ -245,18 +245,18 @@ async def invoke_llm_for_session(
                         buffer = buffer[split_pos:]
                         
                         current_state = parser_stack[-1]
-                        if current_state in ["ANSWER", "UPDATE_ANSWER", "PROJECT", "UPDATE_PROJECT"]:
+                        if current_state in ["ANSWER", "UPDATE_ANSWER", "PROJECT", "UPDATE_PROJECT", "EDIT_ANSWER", "EDIT_PROJECT"]:
                             await state.broadcast(session_id, {"type": "ai_chunk", "payload": content_chunk}); await asyncio.sleep(0)
-                        elif current_state in ["FILE", "UPDATE_FILE", "EXTEND_FILE"]:
+                        elif current_state in ["FILE", "UPDATE_FILE", "EXTEND_FILE", "EDIT_FILE"]:
                             await state.broadcast(session_id, {"type": "file_chunk", "payload": {"content": content_chunk}}); await asyncio.sleep(0)
                     break 
 
                 content_before_tag = buffer[:match.start()]
                 if content_before_tag:
                     current_state_before = parser_stack[-1] if parser_stack else None
-                    if current_state_before in ["ANSWER", "UPDATE_ANSWER", "PROJECT", "UPDATE_PROJECT"]:
+                    if current_state_before in ["ANSWER", "UPDATE_ANSWER", "PROJECT", "UPDATE_PROJECT", "EDIT_ANSWER", "EDIT_PROJECT"]:
                         await state.broadcast(session_id, {"type": "ai_chunk", "payload": content_before_tag}); await asyncio.sleep(0)
-                    elif current_state_before in ["FILE", "UPDATE_FILE", "EXTEND_FILE"]:
+                    elif current_state_before in ["FILE", "UPDATE_FILE", "EXTEND_FILE", "EDIT_FILE"]:
                         await state.broadcast(session_id, {"type": "file_chunk", "payload": {"content": content_before_tag}}); await asyncio.sleep(0)
                 
                 buffer = buffer[match.end():]
@@ -297,9 +297,10 @@ async def invoke_llm_for_session(
                     if parser_stack and parser_stack[-1] == tag_type:
                         parser_stack.pop()
                         end_event_map = {
-                            "ANSWER": "end_answer_stream", "FILE": "end_file_stream", "UPDATE_ANSWER": "end_answer_update", 
-                            "UPDATE_PROJECT": "end_project_update", "EDIT_PROJECT": "end_project_edit", 
-                            "UPDATE_FILE": "end_file_update", "EXTEND_FILE": "end_file_extend"
+                            "ANSWER": "end_answer_stream", "FILE": "end_file_stream", "UPDATE_ANSWER": "end_answer_update",
+                            "UPDATE_PROJECT": "end_project_update", "EDIT_PROJECT": "end_project_edit",
+                            "UPDATE_FILE": "end_file_update", "EXTEND_FILE": "end_file_extend",
+                            "EDIT_ANSWER": "end_answer_edit", "EDIT_FILE": "end_file_edit"
                         }
                         if tag_type in end_event_map:
                             await state.broadcast(session_id, {"type": end_event_map[tag_type], "payload": {"turn_id": turn_id}}); await asyncio.sleep(0)
@@ -308,9 +309,9 @@ async def invoke_llm_for_session(
 
         if buffer and parser_stack:
             current_state = parser_stack[-1]
-            if current_state in ["ANSWER", "UPDATE_ANSWER", "PROJECT", "UPDATE_PROJECT"]:
+            if current_state in ["ANSWER", "UPDATE_ANSWER", "PROJECT", "UPDATE_PROJECT", "EDIT_ANSWER", "EDIT_PROJECT"]:
                 await state.broadcast(session_id, {"type": "ai_chunk", "payload": buffer})
-            elif current_state in ["FILE", "UPDATE_FILE", "EXTEND_FILE"]:
+            elif current_state in ["FILE", "UPDATE_FILE", "EXTEND_FILE", "EDIT_FILE"]:
                 await state.broadcast(session_id, {"type": "file_chunk", "payload": {"content": buffer}}); await asyncio.sleep(0)
 
     except Exception as e:
@@ -325,10 +326,28 @@ async def invoke_llm_for_session(
         
         full_response_content = "".join(all_content_parts)
         
-        ai_message_id, saved_project_id = await asyncio.to_thread(
+        ai_message_id, saved_project_id, updated_original_id = await asyncio.to_thread(
             _process_and_save_ai_response,
             session_id, user_id, full_response_content, turn_id, reply_to_id
         )
+        
+        if updated_original_id and ai_message_id:
+            conn = None
+            try:
+                conn = database.get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT content FROM chat_messages WHERE id = ?", (updated_original_id,))
+                updated_row = cursor.fetchone()
+                if updated_row:
+                    await state.broadcast(session_id, {
+                        "type": "message_updated",
+                        "payload": {
+                            "message_id": updated_original_id,
+                            "new_content": updated_row['content']
+                        }
+                    })
+            finally:
+                if conn: conn.close()
         
         if ai_message_id is not None:
             state.remove_memory_for_client(session_id)

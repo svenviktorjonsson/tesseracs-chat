@@ -6,10 +6,8 @@ import secrets
 import datetime
 from typing import Dict,List,Any
 
-APP_DIR = Path(__file__).parent
-PROJECT_ROOT = APP_DIR.parent
 DATABASE_NAME = "tesseracs_chat.db"
-DATABASE_PATH = PROJECT_ROOT / DATABASE_NAME
+DATABASE_PATH = Path("/data") / DATABASE_NAME
 
 def get_db_connection():
     conn = sqlite3.connect(DATABASE_PATH)
