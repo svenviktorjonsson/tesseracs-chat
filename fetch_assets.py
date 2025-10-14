@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import zipfile
 import glob
+from urllib.parse import urljoin
 
 # --- Configuration ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +38,7 @@ katex_fonts = [
 files_to_download = [
     {
         'name': 'katex.min.css',
-        'url': f"{KATEX_BASE_URL}katex.min.css", # CORRECTED: Use forward slashes for URL
+        'url': urljoin(KATEX_BASE_URL, "katex.min.css"),
         'dest': os.path.join(css_dir, 'katex.min.css')
     },
     {
@@ -54,9 +55,11 @@ files_to_download = [
 
 # Add all the KaTeX font files to the download list
 for font_filename in katex_fonts:
+    # Use urljoin to safely combine the base URL and the font path
+    font_path = f"fonts/{font_filename}"
     files_to_download.append({
         'name': font_filename,
-        'url': f"{KATEX_BASE_URL}fonts/{font_filename}", # CORRECTED: Use forward slashes for URL
+        'url': urljoin(KATEX_BASE_URL, font_path),
         'dest': os.path.join(fonts_dir, font_filename)
     })
 

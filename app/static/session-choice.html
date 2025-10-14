@@ -51,7 +51,7 @@
                         <form id="host-session-form">
                             <div class="mb-4">
                                 <label for="session-name" class="block text-sm font-medium text-gray-700 mb-1">Session Name</label>
-                                <input type="text" id="session-name" name="name" required class="w-full py-2 px-3 border border-gray-300 rounded-md text-sm" placeholder="e.g., Project Brainstorm">
+                                <input type="text" id="session-name" name="session_title" required class="w-full py-2 px-3 border border-gray-300 rounded-md text-sm" placeholder="e.g., Project Brainstorm" autocomplete="off" readonly>
                             </div>
                             <div class="mb-4">
                                 <label for="session-access" class="block text-sm font-medium text-gray-700 mb-1">Access Level</label>
@@ -63,7 +63,7 @@
                             </div>
                             <div id="passcode-group" class="mb-4 hidden">
                                 <label for="session-passcode" class="block text-sm font-medium text-gray-700 mb-1">Passcode</label>
-                                <input type="password" id="session-passcode" name="passcode" class="w-full py-2 px-3 border border-gray-300 rounded-md text-sm" placeholder="Enter a passcode">
+                                <input type="password" id="session-passcode" name="passcode" class="w-full py-2 px-3 border border-gray-300 rounded-md text-sm" placeholder="Enter a passcode" autocomplete="new-password" readonly>
                             </div>
                             <button type="button" id="host-session-button" class="w-full flex items-center justify-center px-4 py-3 bg-blue-600 hover:bg-blue-700 rounded-md text-white font-medium transition duration-150">
                                 Host New Session

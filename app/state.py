@@ -71,7 +71,7 @@ def _get_memory_from_db_sync(session_id: str) -> Optional[ConversationBufferMemo
 
                                 project_context_parts = [
                                     ai_content,
-                                    "\n\n--- PROJECT CONTEXT ---",
+                                    f"\n\n--- PROJECT CONTEXT (ID: {msg['project_id']}) ---",
                                     "Commit History:",
                                     commit_history,
                                     "\nLatest Files:"

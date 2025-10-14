@@ -44,6 +44,11 @@ projectExplorerTemplate.innerHTML = `
             transition: background-color 0.2s;
         }
         .header-btn:hover { background-color: rgba(255, 255, 255, 1); }
+        .header-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background-color: rgba(229, 231, 235, 0.7);
+        }
         #commit-select {
             font-size: 0.8rem;
             padding: 0.15rem 0.5rem;
@@ -107,10 +112,13 @@ projectExplorerTemplate.innerHTML = `
                 <span class="block-title">Project Files</span>
                 <button id="download-btn" class="header-btn">Download .zip</button>
                 <button id="upload-btn" class="header-btn">Upload File</button>
+                <button id="commit-btn" class="header-btn" disabled hidden>Commit Changes</button>
                 <input type="file" id="file-upload" style="display: none;" multiple>
             </div>
             <div class="header-right">
-                <select id="commit-select"></select>
+                <select id="commit-select">
+                    <option id="uncommitted-option" value="uncommitted" hidden>(Uncommitted changes)</option>
+                </select>
             </div>
         </div>
         <div id="tree-container"></div>
@@ -124,6 +132,7 @@ class ProjectExplorer extends HTMLElement {
         
         this._projectData = null;
         this.selectedFolderPath = './';
+        this.hasUncommittedChanges = false;
     }
 
     connectedCallback() {
@@ -135,6 +144,7 @@ class ProjectExplorer extends HTMLElement {
 
     set projectData(data) {
         this._projectData = data;
+        this.hasUncommittedChanges = false;
         if (this.shadowRoot.getElementById('tree-container')) {
             this.render();
         }
@@ -144,6 +154,37 @@ class ProjectExplorer extends HTMLElement {
         return this._projectData;
     }
 
+    showUncommittedState() {
+        if (this.hasUncommittedChanges) return;
+        this.hasUncommittedChanges = true;
+        
+        const commitBtn = this.shadowRoot.getElementById('commit-btn');
+        const commitSelect = this.shadowRoot.getElementById('commit-select');
+        const uncommittedOption = this.shadowRoot.getElementById('uncommitted-option');
+
+        commitBtn.hidden = false;
+        commitBtn.disabled = false;
+        uncommittedOption.hidden = false;
+        commitSelect.value = 'uncommitted';
+    }
+
+    hideUncommittedState() {
+        if (!this.hasUncommittedChanges) return;
+        this.hasUncommittedChanges = false;
+        const commitBtn = this.shadowRoot.getElementById('commit-btn');
+        const commitSelect = this.shadowRoot.getElementById('commit-select');
+        const uncommittedOption = this.shadowRoot.getElementById('uncommitted-option');
+        
+        commitBtn.hidden = true;
+        commitBtn.disabled = true;
+        uncommittedOption.hidden = true;
+        
+        // The first option is the hidden one, the second is the latest commit.
+        if (commitSelect.options.length > 1) {
+             commitSelect.value = commitSelect.options[1].value;
+        }
+    }
+    
     addFile(fileData) {
         if (!this._projectData || !this._projectData.files) return;
         this._projectData.files.push(fileData);
@@ -171,13 +212,16 @@ class ProjectExplorer extends HTMLElement {
 
         const uploadButton = this.shadowRoot.getElementById('upload-btn');
         const downloadButton = this.shadowRoot.getElementById('download-btn');
+        const commitButton = this.shadowRoot.getElementById('commit-btn');
         const hasProjectId = this._projectData.projectId || this._projectData.id;
 
         uploadButton.disabled = !hasProjectId;
         downloadButton.disabled = !hasProjectId;
+        
         if (!hasProjectId) {
             uploadButton.title = "Available after project is saved";
             downloadButton.title = "Available after project is saved";
+            commitButton.hidden = true;
         } else {
             uploadButton.title = "Upload File";
             downloadButton.title = "Download .zip";
@@ -201,19 +245,22 @@ class ProjectExplorer extends HTMLElement {
         treeContainer.appendChild(rootUl);
 
         const commitSelect = this.shadowRoot.getElementById('commit-select');
-        commitSelect.innerHTML = '';
+        while (commitSelect.options.length > 1) {
+            commitSelect.remove(1);
+        }
+
         (this._projectData.commits || []).forEach((commit, index) => {
             const option = document.createElement('option');
             option.value = commit.hash;
             option.textContent = `${commit.hash.substring(0, 7)} - ${commit.message}`;
-            if (index === 0) {
-                option.selected = true;
-            }
             commitSelect.appendChild(option);
         });
 
+        this.hideUncommittedState(); // Reset to clean state on every full render
+
         commitSelect.removeEventListener('change', this._commitChangeHandler);
         this._commitChangeHandler = async (event) => {
+            if (event.target.value === 'uncommitted') return;
             const selectedCommitHash = event.target.value;
             const projectId = this._projectData.projectId || this._projectData.id;
             if (!selectedCommitHash || !projectId) return;
@@ -271,7 +318,7 @@ class ProjectExplorer extends HTMLElement {
             const target = event.target;
             const li = target.closest('li');
             if (!li) return;
-
+    
             if (target.type === 'checkbox') {
                 const isChecked = target.checked;
                 const path = target.dataset.path;
@@ -291,58 +338,51 @@ class ProjectExplorer extends HTMLElement {
                 }));
                 return;
             }
-
+    
             const itemDiv = target.closest('.tree-item');
             if (li.dataset.type === 'folder' && itemDiv) {
                 li.classList.toggle('collapsed');
             }
         });
 
-        treeContainer.addEventListener('dragstart', (e) => {
-            const li = e.target.closest('li');
-            if (li) {
-                draggedElement = li;
-                e.dataTransfer.setData('text/mpld3-filepath', li.dataset.path);
-                e.dataTransfer.effectAllowed = 'move';
+        const commitBtn = this.shadowRoot.getElementById('commit-btn');
+        commitBtn.addEventListener('click', () => {
+            const commitMessage = prompt("Please enter your commit message:");
+            if (!commitMessage || commitMessage.trim() === "") {
+                alert("Commit cancelled: message was empty.");
+                return;
             }
-        });
 
-        treeContainer.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            const targetLi = e.target.closest('li.folder');
-            this.shadowRoot.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-            if (targetLi && draggedElement && targetLi !== draggedElement && !draggedElement.contains(targetLi)) {
-                targetLi.querySelector('.tree-item').classList.add('drag-over');
+            const turnContainer = this.closest('.ai-turn-container');
+            if (!turnContainer) {
+                alert("Error: Could not find the parent container for this project.");
+                return;
             }
-        });
 
-        treeContainer.addEventListener('dragleave', (e) => {
-            if (!treeContainer.contains(e.relatedTarget)) {
-                this.shadowRoot.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-            }
-        });
-
-        this.shadowRoot.addEventListener('drop', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            this.shadowRoot.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-
-            const internalMovePath = e.dataTransfer.getData('text/mpld3-filepath');
-            const dropTarget = e.target.closest('li.folder');
-            const destinationPath = dropTarget ? dropTarget.dataset.path : './';
-
-            if (internalMovePath) {
-                if (draggedElement && dropTarget && draggedElement !== dropTarget && !draggedElement.contains(dropTarget)) {
-                    this.dispatchEvent(new CustomEvent('fileMove', { detail: { projectId: this._projectData.projectId, sourcePath: internalMovePath, destinationPath }, bubbles: true, composed: true }));
+            const filesToCommit = [];
+            const codeBlocks = turnContainer.querySelectorAll('.block-container[data-path]');
+            codeBlocks.forEach(block => {
+                const path = block.dataset.path;
+                const codeElement = block.querySelector('code');
+                if (path && codeElement) {
+                    filesToCommit.push({ path: path, content: codeElement.textContent });
                 }
-            } else if (e.dataTransfer.files.length > 0) {
-                this.handleFileUploads(e.dataTransfer.files, destinationPath);
-            }
-            draggedElement = null;
+            });
+
+            this.dispatchEvent(new CustomEvent('commit-project-changes', {
+                detail: {
+                    projectId: this._projectData.projectId,
+                    commitMessage: commitMessage,
+                    files: filesToCommit
+                },
+                bubbles: true,
+                composed: true
+            }));
+
+            commitBtn.disabled = true;
+            commitBtn.textContent = 'Committing...';
         });
-
-        this.shadowRoot.addEventListener('dragover', (e) => { e.preventDefault(); });
-
+        
         this.shadowRoot.getElementById('download-btn').addEventListener('click', () => {
             this.dispatchEvent(new CustomEvent('downloadClicked', { detail: { projectId: this._projectData.projectId }, bubbles: true, composed: true }));
         });
@@ -350,19 +390,6 @@ class ProjectExplorer extends HTMLElement {
         const fileUploadInput = this.shadowRoot.getElementById('file-upload');
         this.shadowRoot.getElementById('upload-btn').addEventListener('click', () => fileUploadInput.click());
         fileUploadInput.addEventListener('change', (e) => this.handleFileUploads(e.target.files, this.selectedFolderPath));
-    }
-
-    handleFileUploads(files, targetPath) {
-        Array.from(files).forEach(file => {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                this.dispatchEvent(new CustomEvent('fileUpload', {
-                    detail: { projectId: this._projectData.projectId, path: targetPath, filename: file.name, content: e.target.result },
-                    bubbles: true, composed: true
-                }));
-            };
-            reader.readAsText(file);
-        });
     }
 
     buildFileTree(files) {
@@ -443,7 +470,19 @@ class ProjectExplorer extends HTMLElement {
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
     }
+
+    handleFileUploads(files, targetPath) {
+        Array.from(files).forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                this.dispatchEvent(new CustomEvent('fileUpload', {
+                    detail: { projectId: this._projectData.projectId, path: targetPath, filename: file.name, content: e.target.result },
+                    bubbles: true, composed: true
+                }));
+            };
+            reader.readAsText(file);
+        });
+    }
 }
 
 customElements.define('project-explorer', ProjectExplorer);
-

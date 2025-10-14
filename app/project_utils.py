@@ -10,6 +10,72 @@ import tarfile
 import io
 import shutil
 import zipfile
+import traceback
+
+
+def apply_project_modifications(
+    repo_blob: bytes, 
+    operations: List[Dict[str, Any]], 
+    commit_message: str, 
+    user_name: str
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """Unpacks a repo, applies a series of file operations, commits, and repacks it."""
+    temp_dir_to_clean = None
+    try:
+        project_root, error = unpack_git_repo_to_temp_dir(repo_blob)
+        if error or not project_root:
+            raise Exception(f"Failed to unpack repo for modifications: {error}")
+        
+        temp_dir_to_clean = os.path.dirname(project_root)
+
+        for op in operations:
+            op_path = op.get("path", "").lstrip('./')
+            if ".." in op_path or op_path.startswith('/'):
+                print(f"PROJECT_UTILS: Skipping unsafe path in operation: {op_path}")
+                continue
+            
+            full_path = os.path.join(project_root, op_path)
+            op_type = op.get("type")
+            
+            if op_type == "EDIT_FILE":
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                with open(full_path, 'r+', encoding='utf-8') as f:
+                    content = f.read()
+                    for mod in op["content"]:
+                        content = re.sub(mod['find'], mod['replace'], content, flags=re.DOTALL)
+                    f.seek(0)
+                    f.write(content)
+                    f.truncate()
+            elif op_type in ["FILE", "UPDATE_FILE"]:
+                 os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                 with open(full_path, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(op["content"])
+            elif op_type == "EXTEND_FILE":
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                with open(full_path, 'a', encoding='utf-8', newline='\n') as f:
+                    f.write(op["content"])
+
+        subprocess.run(["git", "config", "user.name", user_name], cwd=project_root, check=True)
+        subprocess.run(["git", "config", "user.email", f"{user_name.replace(' ', '.')}@tesseracs.dev"], cwd=project_root, check=True)
+        subprocess.run(["git", "add", "."], cwd=project_root, check=True)
+        
+        status_result = subprocess.run(["git", "status", "--porcelain"], cwd=project_root, capture_output=True, text=True)
+        if status_result.stdout:
+            subprocess.run(["git", "commit", "-m", commit_message], cwd=project_root, check=True, capture_output=True)
+
+        new_repo_blob, error = repack_repo_from_path(project_root)
+        if error:
+            raise Exception(f"Failed to repack repository: {error}")
+            
+        return new_repo_blob, None
+    except Exception as e:
+        error_msg = f"Failed during project modification: {e}"
+        print(f"PROJECT_UTILS ERROR: {error_msg}")
+        traceback.print_exc()
+        return None, error_msg
+    finally:
+        if temp_dir_to_clean and os.path.exists(temp_dir_to_clean):
+            shutil.rmtree(temp_dir_to_clean)
 
 def get_language_from_extension(file_path: str) -> str:
     """
@@ -56,6 +122,104 @@ def parse_file_blocks(content: str) -> Optional[List[Dict[str, Any]]]:
         return files if files else None
     except Exception as e:
         print(f"PROJECT_UTILS PARSE ERROR: Failed to parse file blocks - {e}")
+        return None
+
+def parse_project_from_full_response(content: str) -> Optional[Dict[str, Any]]:
+    """Parses a full AI response string containing a _PROJECT_START_ block to extract its data."""
+    try:
+        print("\n" + "="*20 + " NEW DETAILED PARSER LOG " + "="*20)
+        print(f"[PARSER STEP 0] Full raw content received (length: {len(content)}):\n---\n{content}\n---")
+
+        # 1. Isolate the main project block.
+        project_block_match = re.search(r"_PROJECT_START_([\s\S]*?)_PROJECT_END_", content, re.DOTALL)
+        if not project_block_match:
+            print("[PARSER] ERROR: Could not find a complete _PROJECT_START_..._PROJECT_END_ block.")
+            return None
+        
+        project_content_raw = project_block_match.group(1).strip()
+        print(f"[PARSER STEP 1] Isolated project content (length: {len(project_content_raw)}):\n---\n{project_content_raw}\n---")
+        
+        # 2. Extract the project header JSON.
+        project_header_match = re.search(r"^(.*?)_JSON_END_", project_content_raw, re.DOTALL)
+        if not project_header_match:
+            print("[PARSER] ERROR: Could not find _JSON_END_ for the project header.")
+            return None
+            
+        project_payload = json.loads(project_header_match.group(1).strip())
+        project_name = project_payload.get("name", "Untitled Project")
+        print(f"[PARSER STEP 2] Found project name: '{project_name}'")
+
+        # 3. Find the content after the project header.
+        content_after_header = project_content_raw[project_header_match.end():]
+        print(f"[PARSER STEP 3] Content after project header (length: {len(content_after_header)}):\n---\n{content_after_header}\n---")
+
+        # 4. Split the remaining content by the file start tag.
+        # This gives us the intro text and then each subsequent file block.
+        file_blocks_raw = content_after_header.split("_FILE_START_")
+        
+        intro_text = file_blocks_raw.pop(0).strip()
+        print(f"[PARSER STEP 4] Found intro text: '{intro_text}'")
+
+        file_blocks = []
+        # 5. Iterate through each potential file block.
+        for i, block_raw in enumerate(file_blocks_raw):
+            print(f"\n[PARSER STEP 5.{i}] Processing raw file block #{i+1}:\n---\n{block_raw}\n---")
+            
+            if "_JSON_END_" not in block_raw:
+                print(f"[PARSER] WARN: Skipping malformed file block #{i+1} (missing _JSON_END_)")
+                continue
+
+            # Split the block into its JSON part and the content part.
+            payload_str, content_and_end_tag = block_raw.split("_JSON_END_", 1)
+            print(f"[PARSER STEP 5.{i}.A] Extracted payload string:\n---\n{payload_str}\n---")
+            print(f"[PARSER STEP 5.{i}.B] Extracted content + end tag:\n---\n{content_and_end_tag}\n---")
+            
+            # The content is everything before the final _FILE_END_ tag.
+            # Using rsplit is more robust against content that might contain the end tag text.
+            if "_FILE_END_" in content_and_end_tag:
+                 file_content_str = content_and_end_tag.rsplit("_FILE_END_", 1)[0].strip()
+            else:
+                 # Handle malformed tags like _FILE_END (missing final underscore)
+                 file_content_str = content_and_end_tag.rsplit("_FILE_END", 1)[0].strip()
+
+            print(f"[PARSER STEP 5.{i}.C] Extracted file content (length: {len(file_content_str)}):\n---\n{file_content_str}\n---")
+
+            try:
+                file_args = json.loads(payload_str.strip())
+                path = file_args.get("path")
+                if not path:
+                    print(f"[PARSER] WARN: Skipping file block #{i+1} with no path in JSON.")
+                    continue
+                
+                if len(file_content_str) > 0:
+                    print(f"[PARSER] SUCCESS: Adding file '{path}' to project.")
+                    file_blocks.append({
+                        "path": path,
+                        "language": get_language_from_extension(path),
+                        "content": file_content_str
+                    })
+                else:
+                    print(f"[PARSER] WARN: Skipping file '{path}' because its content is empty after final parsing.")
+
+            except json.JSONDecodeError:
+                print(f"[PARSER] WARN: Skipping file block #{i+1} with invalid JSON payload.")
+                continue
+
+        if not file_blocks:
+            print("[PARSER] ERROR: No valid file blocks were parsed from the project after iterating.")
+            return None
+
+        print("\n[PARSER FINAL] Successfully parsed all data.")
+        print("="*50 + "\n")
+        return {
+            "name": project_name,
+            "intro_text": intro_text,
+            "files": file_blocks
+        }
+    except Exception as e:
+        print(f"!!! PROJECT_UTILS CRITICAL ERROR in parse_project_from_full_response: {e}")
+        traceback.print_exc()
+        print("="*50 + "\n")
         return None
 
 def create_zip_from_blob(repo_blob: bytes) -> Tuple[Optional[io.BytesIO], Optional[str]]:
@@ -221,20 +385,18 @@ def unpack_git_repo_to_temp_dir(repo_blob: bytes) -> Tuple[Optional[str], Option
 
 def create_project_directory_and_files(project_data: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """
-    Creates a temporary directory inside the SHARED './.data/projects' folder
+    Creates a temporary directory inside the SHARED '/projects' folder
     and writes all project files into it.
     """
     project_dir = None
     try:
         # This path now EXACTLY matches the path from docker-compose.yml
-        base_dir = Path("./.data/projects")
+        base_dir = Path("/projects")
         base_dir.mkdir(parents=True, exist_ok=True)
         
         project_dir_name = f"tesseracs_proj_{uuid.uuid4()}"
         project_dir = base_dir / project_dir_name
         project_dir.mkdir()
-        
-        print(f"DOCKER_UTILS: Created shared project directory at: {project_dir}")
         
         files_to_create = project_data.get("files")
         if not files_to_create or not isinstance(files_to_create, list):
@@ -245,7 +407,7 @@ def create_project_directory_and_files(project_data: Dict[str, Any]) -> Tuple[Op
             content = file_info.get("content", "")
             
             if not file_path_str or file_path_str.startswith("/") or ".." in file_path_str:
-                print(f"DOCKER_UTILS: Skipping potentially unsafe file path: {file_path_str}")
+                print(f"[EXEC-TRACE] Skipping potentially unsafe file path: {file_path_str}")
                 continue
                 
             full_path = project_dir / file_path_str.lstrip('./')
@@ -254,14 +416,11 @@ def create_project_directory_and_files(project_data: Dict[str, Any]) -> Tuple[Op
             
             if file_path_str.endswith('run.sh'):
                 os.chmod(full_path, 0o755)
-                
-            print(f"DOCKER_UTILS: Successfully wrote file '{file_path_str}' to directory.")
-            
-        print(f"DOCKER_UTILS: Wrote a total of {len(files_to_create)} files.")
+        
         return str(project_dir), None
     except Exception as e:
         error_msg = f"Failed during project file creation: {e}"
-        print(f"DOCKER_UTILS ERROR: {error_msg}")
+        print(f"[EXEC-TRACE] ERROR: {error_msg}")
         if project_dir and project_dir.exists():
             shutil.rmtree(project_dir)
         return None, error_msg
@@ -269,8 +428,6 @@ def create_project_directory_and_files(project_data: Dict[str, Any]) -> Tuple[Op
 def create_and_pack_git_repo(project_data: Dict[str, Any]) -> Tuple[Optional[bytes], Optional[str]]:
     """
     Creates a git repo in a temporary directory, packs it, and returns the binary blob.
-    IMPORTANT: This function no longer cleans up the temporary directory it creates.
-    The calling process is now responsible for cleanup after it's done using the directory.
     """
     project_dir = None
     try:
@@ -285,9 +442,11 @@ def create_and_pack_git_repo(project_data: Dict[str, Any]) -> Tuple[Optional[byt
         with open(meta_file_path, 'w', encoding='utf-8') as f:
             json.dump(meta_data, f)
 
+        # Git must be initialized AND configured before the first commit.
         subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True, text=True)
         subprocess.run(["git", "config", "user.name", "AI Assistant"], cwd=project_dir, check=True)
         subprocess.run(["git", "config", "user.email", "ai@tesseracs.com"], cwd=project_dir, check=True)
+        
         subprocess.run(["git", "add", "."], cwd=project_dir, check=True)
         commit_message = f"Initial commit: Create project '{project_data.get('name', 'Untitled Project')}'"
         subprocess.run(["git", "commit", "-m", commit_message], cwd=project_dir, check=True, capture_output=True, text=True)
@@ -296,11 +455,13 @@ def create_and_pack_git_repo(project_data: Dict[str, Any]) -> Tuple[Optional[byt
         with tarfile.open(fileobj=in_memory_file, mode="w:gz") as tar:
             tar.add(project_dir, arcname=os.path.basename(project_dir))
         
+        # The calling process (like run_code_in_docker) is responsible for cleanup.
+        # We do NOT clean up the directory here on success.
         return in_memory_file.getvalue(), None
     except Exception as e:
         error_msg = f"Failed during project creation/packing: {e}"
         print(f"PROJECT_UTILS ERROR: {error_msg}")
-        # Still clean up on FAILURE
+        # Clean up only on FAILURE
         if project_dir and os.path.exists(project_dir):
             shutil.rmtree(project_dir)
         return None, error_msg
@@ -333,11 +494,10 @@ def unpack_git_repo_from_blob(repo_blob: bytes) -> Tuple[Optional[Dict[str, Any]
             if len(unpacked_contents) == 1 and os.path.isdir(os.path.join(unpack_dir, unpacked_contents[0])):
                 project_root_path = os.path.join(unpack_dir, unpacked_contents[0])
             
-            # --- Get Commit History ---
             commits = []
             try:
                 log_result = subprocess.run(
-                    ['git', 'log', '--pretty=format:%H;%s;%ct'], # Use %ct for committer timestamp
+                    ['git', 'log', '--pretty=format:%H;%s;%ct'],
                     cwd=project_root_path, capture_output=True, text=True, check=True, encoding='utf-8'
                 )
                 for line in log_result.stdout.strip().split('\n'):
@@ -347,12 +507,11 @@ def unpack_git_repo_from_blob(repo_blob: bytes) -> Tuple[Optional[Dict[str, Any]
                         commits.append({
                             "hash": parts[0],
                             "message": parts[1],
-                            "timestamp": int(parts[2]) * 1000 # to JS ms
+                            "timestamp": int(parts[2]) * 1000
                         })
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 print(f"Warning: Could not get git log: {e}")
 
-            # Read the metadata file to get the correct file order
             meta_file_path = os.path.join(project_root_path, '.tesseracs_meta.json')
             file_order_map = {}
             if os.path.exists(meta_file_path):
@@ -367,7 +526,6 @@ def unpack_git_repo_from_blob(repo_blob: bytes) -> Tuple[Optional[Dict[str, Any]
                     dirs.remove('.git')
                 
                 for filename in files:
-                    # Filter out the metadata file from the final list
                     if filename == '.tesseracs_meta.json':
                         continue
 
@@ -383,17 +541,16 @@ def unpack_git_repo_from_blob(repo_blob: bytes) -> Tuple[Optional[Dict[str, Any]
                         files_list.append({
                             'path': relative_path, 
                             'content': content,
+                            'language': get_language_from_extension(filename),
                             'size': stats.st_size,
-                            'lastModified': stats.st_mtime * 1000 # To JS timestamp
+                            'lastModified': stats.st_mtime * 1000
                         })
                     except UnicodeDecodeError:
                         print(f"Warning: Could not read file {relative_path} as UTF-8 text.")
 
-            # Sort the collected files based on the order from the metadata
             if file_order_map:
                 files_list.sort(key=lambda f: file_order_map.get(f['path'], float('inf')))
             else:
-                # Fallback to alphabetical sorting if metadata is missing
                 files_list.sort(key=lambda f: f['path'])
             
             return {"files": files_list, "commits": commits}, None
@@ -401,6 +558,7 @@ def unpack_git_repo_from_blob(repo_blob: bytes) -> Tuple[Optional[Dict[str, Any]
     except Exception as e:
         error_msg = f"Failed to unpack and read git repo blob: {e}"
         print(f"PROJECT_UTILS ERROR: {error_msg}")
+        traceback.print_exc()
         return None, error_msg
 
 def get_project_state_at_commit(repo_blob: bytes, commit_hash: str) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -531,92 +689,5 @@ def repack_repo_from_path(project_path: str) -> Tuple[Optional[bytes], Optional[
     except Exception as e:
         return None, str(e)
 
-def unpack_git_repo_from_blob(repo_blob: bytes) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    try:
-        in_memory_file = io.BytesIO(repo_blob)
-        with tempfile.TemporaryDirectory() as unpack_dir:
-            with tarfile.open(fileobj=in_memory_file, mode="r:gz") as tar:
-                def is_within_directory(directory, target):
-                    abs_directory = os.path.abspath(directory)
-                    abs_target = os.path.abspath(target)
-                    prefix = os.path.commonprefix([abs_directory, abs_target])
-                    return prefix == abs_directory
-                
-                for member in tar.getmembers():
-                    member_path = os.path.join(unpack_dir, member.name)
-                    if not is_within_directory(unpack_dir, member_path):
-                        raise Exception("Attempted Path Traversal in Tar File")
-                
-                tar.extractall(path=unpack_dir)
 
-            unpacked_contents = os.listdir(unpack_dir)
-            project_root_path = unpack_dir
-            if len(unpacked_contents) == 1 and os.path.isdir(os.path.join(unpack_dir, unpacked_contents[0])):
-                project_root_path = os.path.join(unpack_dir, unpacked_contents[0])
-            
-            commits = []
-            try:
-                log_result = subprocess.run(
-                    ['git', 'log', '--pretty=format:%H;%s;%ct'],
-                    cwd=project_root_path, capture_output=True, text=True, check=True, encoding='utf-8'
-                )
-                for line in log_result.stdout.strip().split('\n'):
-                    if not line: continue
-                    parts = line.split(';', 2)
-                    if len(parts) == 3:
-                        commits.append({
-                            "hash": parts[0],
-                            "message": parts[1],
-                            "timestamp": int(parts[2]) * 1000
-                        })
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                print(f"Warning: Could not get git log: {e}")
-
-            meta_file_path = os.path.join(project_root_path, '.tesseracs_meta.json')
-            file_order_map = {}
-            if os.path.exists(meta_file_path):
-                with open(meta_file_path, 'r', encoding='utf-8') as f:
-                    meta_data = json.load(f)
-                    ordered_paths = meta_data.get("file_order", [])
-                    file_order_map = {path: i for i, path in enumerate(ordered_paths)}
-
-            files_list = []
-            for root, dirs, files in os.walk(project_root_path):
-                if '.git' in dirs:
-                    dirs.remove('.git')
-                
-                for filename in files:
-                    if filename == '.tesseracs_meta.json':
-                        continue
-
-                    file_path_on_disk = os.path.join(root, filename)
-                    normalized_path = os.path.relpath(file_path_on_disk, project_root_path).replace('\\', '/')
-                    relative_path = f"./{normalized_path}"
-                    
-                    try:
-                        with open(file_path_on_disk, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        
-                        stats = os.stat(file_path_on_disk)
-                        files_list.append({
-                            'path': relative_path, 
-                            'content': content,
-                            'size': stats.st_size,
-                            'lastModified': stats.st_mtime * 1000
-                        })
-                    except UnicodeDecodeError:
-                        print(f"Warning: Could not read file {relative_path} as UTF-8 text.")
-
-            if file_order_map:
-                files_list.sort(key=lambda f: file_order_map.get(f['path'], float('inf')))
-            else:
-                files_list.sort(key=lambda f: f['path'])
-            
-            return {"files": files_list, "commits": commits}, None
-            
-    except Exception as e:
-        error_msg = f"Failed to unpack and read git repo blob: {e}"
-        print(f"PROJECT_UTILS ERROR: {error_msg}")
-        return None, error_msg
-    
 #this is the end

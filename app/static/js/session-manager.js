@@ -100,6 +100,16 @@ export function initializeDashboard() {
     const joinTabButton = document.getElementById('join-tab-button');
     const hostSessionView = document.getElementById('host-session-view');
     const joinSessionView = document.getElementById('join-session-view');
+    const sessionNameInput = document.getElementById('session-name');
+
+    if (sessionNameInput) {
+        // This is the new fix: Clear the value, and remove the 'readonly'
+        // attribute only when the user focuses the input.
+        sessionNameInput.value = '';
+        sessionNameInput.addEventListener('focus', () => {
+            sessionNameInput.removeAttribute('readonly');
+        }, { once: true });
+    }
 
     if (!hostTabButton || !joinTabButton || !hostSessionView || !joinSessionView) return;
 
@@ -134,7 +144,14 @@ export function handleHostSessionForm() {
     const passcode_input = document.getElementById('session-passcode');
     const button = document.getElementById('host-session-button');
 
-    if (!form || !accessSelect || !passcodeGroup || !button) return;
+    if (!form || !accessSelect || !passcodeGroup || !passcode_input || !button) return;
+
+    // --- Start of Fix ---
+    // Make the password field editable on focus to trick autofill
+    passcode_input.addEventListener('focus', () => {
+        passcode_input.removeAttribute('readonly');
+    }, { once: true });
+    // --- End of Fix ---
 
     accessSelect.addEventListener('change', () => {
         if (accessSelect.value === 'protected') {

@@ -82,7 +82,14 @@ let currentStreamingFile = {
     path: null
 };
 let currentStreamingExplorer = null;
-
+let currentEditingAnswer = { id: null, element: null };
+let currentEditingFile = { path: null, element: null };
+let currentEditingProject = { originalTurnContainer: null };
+// --- Add these with your other State Variables ---
+let isParsingBlock = false;
+let currentBlockType = null;
+let jsonBuffer = "";
+let contentBuffer = "";
 
 document.addEventListener('fileToggle', (event) => {
     const { path, isChecked, recursive, turnContainer } = event.detail;
@@ -180,6 +187,23 @@ document.addEventListener('fileMove', (event) => {
         console.error('File move error:', error);
         alert(`Error moving file: ${error.message}`);
     });
+});
+
+document.addEventListener('commit-project-changes', (event) => {
+    const { projectId, commitMessage, files } = event.detail;
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+        console.log("[FRONTEND-TRACE] Sending 'commit_project_changes' message.");
+        websocket.send(JSON.stringify({
+            type: 'commit_project_changes',
+            payload: {
+                project_id: projectId,
+                commit_message: commitMessage,
+                files: files
+            }
+        }));
+    } else {
+        alert('Error: WebSocket is not connected. Cannot commit changes.');
+    }
 });
 
 
@@ -341,6 +365,113 @@ function setInputDisabledState(inputsDisabled, aiResponding) {
     }
 }
 
+function handleAnswerEditStart(payload) {
+    const originalMessage = document.querySelector(`[data-message-id='${payload.answer_to_edit_id}'] .message-content`);
+    if (originalMessage) {
+        currentEditingAnswer = { id: payload.answer_to_edit_id, element: originalMessage };
+        console.log("Preparing to edit answer ID:", payload.answer_to_edit_id);
+    }
+}
+
+function handleAnswerUpdateStart(payload) {
+    // For a full update, we just start a new AI turn container.
+    // The "move-and-link" logic will be handled when history is reloaded.
+    const turnId = currentTurnId;
+    const promptingUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
+    const promptingUserName = window.currentUserInfo ? window.currentUserInfo.name : "User";
+    handleAiThinking({ turn_id: turnId, prompting_user_id: promptingUserId, prompting_user_name: promptingUserName });
+}
+
+function handleAnswerEditContent(payload) {
+    if (!currentEditingAnswer.element) {
+        console.error("No answer selected for editing.");
+        return;
+    }
+    try {
+        let currentContent = currentEditingAnswer.element.innerHTML;
+        payload.forEach(mod => {
+            // Create a RegExp object for global replacement.
+            const regex = new RegExp(mod.find, 'g');
+            currentContent = currentContent.replace(regex, mod.replace);
+        });
+        // Rerender the content with Markdown and KaTeX
+        renderMarkdownAndKatex(currentContent, currentEditingAnswer.element);
+    } catch (e) {
+        console.error("Error applying answer edits:", e);
+    }
+    // Clear the state after applying
+    currentEditingAnswer = { id: null, element: null };
+}
+
+function handleProjectEditStart(payload) {
+    console.log("Starting edit for project ID:", payload.project_to_edit_id);
+    const originalContainer = document.querySelector(`.ai-turn-container[data-project-id='${payload.project_to_edit_id}']`);
+    if (originalContainer) {
+        currentEditingProject.originalTurnContainer = originalContainer;
+    } else {
+        console.error("Could not find the original project container to edit.");
+        currentEditingProject.originalTurnContainer = null;
+    }
+    
+    const turnId = currentTurnId;
+    const promptingUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
+    const promptingUserName = window.currentUserInfo ? window.currentUserInfo.name : "User";
+    handleAiThinking({ turn_id: turnId, prompting_user_id: promptingUserId, prompting_user_name: promptingUserName });
+}
+
+function handleProjectUpdateStart(payload) {
+    console.log("Starting update for project ID:", payload.project_to_edit_id);
+    // Reuses the same logic as starting a new project
+    const turnId = currentTurnId;
+    const promptingUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
+    const promptingUserName = window.currentUserInfo ? window.currentUserInfo.name : "User";
+    handleAiThinking({ turn_id: turnId, prompting_user_id: promptingUserId, prompting_user_name: promptingUserName });
+}
+
+function handleFileUpdateStart(payload) {
+    // This reuses the logic for starting a new file stream, creating a code block container for the new content.
+    handleStartFileStream(payload);
+}
+
+function handleFileExtendStart(payload) {
+    // This also reuses the file stream logic. The frontend just needs to display the appended content.
+    handleStartFileStream(payload);
+}
+
+function handleFileEditStart(payload) {
+    if (!currentEditingProject.originalTurnContainer) {
+        console.error("Cannot start file edit: no original project container is being tracked.");
+        return;
+    }
+    const fileBlock = currentEditingProject.originalTurnContainer.querySelector(`.block-container[data-path='${payload.path}']`);
+    if (fileBlock) {
+        currentEditingFile = { path: payload.path, element: fileBlock.querySelector('code') };
+        console.log("Found file to edit:", payload.path);
+    } else {
+        console.error("Could not find file block with path:", payload.path);
+    }
+}
+
+function handleFileEditContent(payload) {
+    if (!currentEditingFile.element) {
+        console.error("No file selected for editing.");
+        return;
+    }
+    try {
+        let currentContent = currentEditingFile.element.textContent;
+        payload.forEach(mod => {
+            const regex = new RegExp(mod.find, 'g');
+            currentContent = currentContent.replace(regex, mod.replace);
+        });
+        currentEditingFile.element.textContent = currentContent;
+        Prism.highlightElement(currentEditingFile.element);
+    } catch (e) {
+        console.error("Error applying file edits:", e);
+    }
+    // Clear the state after applying
+    currentEditingFile = { path: null, element: null };
+}
+
 function handleTypingIndicators(payload) {
     const { user_id, user_name, is_typing, color } = payload;
     const indicatorId = `typing-indicator-${user_id}`;
@@ -415,7 +546,127 @@ function updateParticipantListUI(active_user_id = null) {
     });
 }
 
+function processStreamChunk(chunk) {
+    const startRegex = /_(\w+)_START_/;
+    const jsonEndRegex = /_JSON_END_/;
+    const fileEndRegex = /_FILE_END_/;
+    const updateEndRegex = /_UPDATE_FILE_END_/;
+    const projectEndRegex = /_UPDATE_PROJECT_END_/;
 
+    let remainingChunk = chunk;
+
+    while (remainingChunk.length > 0) {
+        if (!isParsingBlock) {
+            const match = remainingChunk.match(startRegex);
+            if (match) {
+                // We found the start of a new command block
+                const plainText = remainingChunk.substring(0, match.index);
+                if (plainText) {
+                    handleAnswerChunk(plainText); // Process any text before the block
+                }
+
+                isParsingBlock = true;
+                currentBlockType = match[1]; // e.g., "UPDATE_PROJECT", "FILE", "UPDATE_FILE"
+                jsonBuffer = "";
+                contentBuffer = "";
+                
+                // Call the appropriate start handler
+                if (currentBlockType === 'UPDATE_PROJECT') {
+                    // This is where we would trigger a UI change if needed, but the main work is parsing the JSON
+                    console.log("[PARSER] Detected Project Update start.");
+                }
+
+                remainingChunk = remainingChunk.substring(match.index + match[0].length);
+            } else {
+                // No command blocks found, process the rest as plain text
+                handleAnswerChunk(remainingChunk);
+                remainingChunk = "";
+            }
+        } else {
+            // We are inside a command block, looking for an end token
+            let endMatch = null;
+            let isJsonBlock = true;
+
+            switch (currentBlockType) {
+                case 'UPDATE_PROJECT':
+                    endMatch = remainingChunk.match(jsonEndRegex);
+                    break;
+                case 'FILE':
+                case 'UPDATE_FILE':
+                    endMatch = remainingChunk.match(jsonEndRegex);
+                    if (!endMatch) {
+                        // If we haven't found JSON_END, we are still in the JSON part
+                        jsonBuffer += remainingChunk;
+                        remainingChunk = "";
+                        continue;
+                    }
+                    break;
+                default:
+                    // Fallback for unknown block types
+                    isParsingBlock = false;
+                    continue;
+            }
+
+            if (endMatch) {
+                // We found the end of the JSON part
+                jsonBuffer += remainingChunk.substring(0, endMatch.index);
+                try {
+                    const jsonData = JSON.parse(jsonBuffer);
+                    
+                    // --- Trigger Actions Based on JSON ---
+                    if (currentBlockType === 'FILE') {
+                        handleStartFileStream({ turn_id: currentTurnId, ...jsonData });
+                    } else if (currentBlockType === 'UPDATE_FILE') {
+                        // For updates, we just start a new file stream for the new content
+                        handleStartFileStream({ turn_id: currentTurnId, ...jsonData });
+                    }
+
+                } catch (e) {
+                    console.error("Error parsing JSON from stream:", e, "Buffer:", jsonBuffer);
+                }
+
+                remainingChunk = remainingChunk.substring(endMatch.index + endMatch[0].length);
+
+                // Now look for the content part and its end
+                let contentEndMatch;
+                if (currentBlockType === 'FILE') contentEndMatch = remainingChunk.match(fileEndRegex);
+                else if (currentBlockType === 'UPDATE_FILE') contentEndMatch = remainingChunk.match(updateEndRegex);
+                
+                if (contentEndMatch) {
+                    const content = remainingChunk.substring(0, contentEndMatch.index);
+                    if (content) handleFileChunk({ content: content });
+                    
+                    // End the file stream
+                    handleEndFileStream({ turn_id: currentTurnId });
+
+                    remainingChunk = remainingChunk.substring(contentEndMatch.index + contentEndMatch[0].length);
+                    isParsingBlock = false; // Finished with this block
+                } else {
+                    // The content is not finished in this chunk, so buffer it
+                    contentBuffer += remainingChunk;
+                    remainingChunk = "";
+                }
+
+            } else {
+                // Still inside a block, but no end token found in this chunk
+                if (isJsonBlock) {
+                    jsonBuffer += remainingChunk;
+                } else {
+                    contentBuffer += remainingChunk;
+                }
+                remainingChunk = "";
+            }
+            
+            // Final check for the overall project update end
+            const projectEndMatch = remainingChunk.match(projectEndRegex);
+            if (projectEndMatch) {
+                console.log("[PARSER] Detected Project Update end.");
+                isParsingBlock = false; // Reset for the next message
+                remainingChunk = remainingChunk.substring(projectEndMatch.index + projectEndMatch[0].length);
+            }
+        }
+    }
+}
 
 function handleEndAnswerStream(payload) {
     if (currentStreamingAnswerElement && currentStreamingAnswerElement.dataset.rawContent) {
@@ -537,20 +788,19 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
 
     const container = document.createElement('div');
     container.classList.add('block-container');
-    // ID is now set by the caller
     container.dataset.language = canonicalLang;
     container.dataset.originalContent = originalCodeForDataset;
+    container.dataset.edited = 'false';
 
     const codeHeader = document.createElement('div');
     codeHeader.classList.add('block-header');
 
-    if (promptingUserId !== null) {
-        const prompterColor = window.participantInfo?.[promptingUserId]?.color || '#dbeafe';
-        const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
+    if (promptingUserId !== null && window.participantInfo) {
+        const prompterColor = window.participantInfo[promptingUserId]?.color || '#dbeafe';
+        const aiColor = window.participantInfo['AI']?.color || '#E0F2FE';
         codeHeader.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
     }
 
-    // The rest of the function for creating buttons and elements remains the same...
     const codeButtonsDiv = document.createElement('div');
     codeButtonsDiv.classList.add('block-buttons');
     const runStopBtn = document.createElement('button');
@@ -563,29 +813,29 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
         runStopBtn.style.display = 'none';
     }
     codeButtonsDiv.appendChild(runStopBtn);
+    
     const restoreBtn = document.createElement('button');
     restoreBtn.classList.add('restore-code-btn', 'block-action-btn');
     restoreBtn.textContent = 'Restore';
     restoreBtn.title = 'Restore Original Code';
-    const toggleCodeBtn = document.createElement('button');
-    toggleCodeBtn.classList.add('toggle-code-btn', 'block-action-btn');
-    toggleCodeBtn.textContent = 'Hide';
-    toggleCodeBtn.title = 'Show/Hide Code';
     const copyCodeBtn = document.createElement('button');
     copyCodeBtn.classList.add('copy-code-btn', 'block-action-btn');
     copyCodeBtn.textContent = 'Copy';
     copyCodeBtn.title = 'Copy Code';
+
     codeButtonsDiv.appendChild(restoreBtn);
-    codeButtonsDiv.appendChild(toggleCodeBtn);
     codeButtonsDiv.appendChild(copyCodeBtn);
+    
     const codeTitle = document.createElement('span');
     codeTitle.classList.add('block-title');
     const titleTextSpan = document.createElement('span');
     titleTextSpan.classList.add('title-text');
-    titleTextSpan.textContent = `Code Block ${codeBlockIndex} (${canonicalLang})`;
+    titleTextSpan.textContent = `Code Block`;
     codeTitle.appendChild(titleTextSpan);
+    
     codeHeader.appendChild(codeButtonsDiv);
     codeHeader.appendChild(codeTitle);
+
     const preElement = document.createElement('pre');
     preElement.classList.add('manual');
     const codeElement = document.createElement('code');
@@ -593,6 +843,7 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
     codeElement.setAttribute('contenteditable', 'true');
     codeElement.setAttribute('spellcheck', 'false');
     codeElement.textContent = codeContent;
+
     preElement.appendChild(codeElement);
     container.appendChild(codeHeader);
     container.appendChild(preElement);
@@ -602,17 +853,74 @@ function createCodeBlock(language, codeContent, originalCodeForDataset, turnIdSu
         try { Prism.highlightElement(codeElement); } catch (e) { console.error(`Prism highlight error:`, e); }
     }
 
-    // This ID is temporary and will be overwritten by the caller for stability
-    const tempBlockId = `code-block-turn${turnIdSuffix}-${codeBlockIndex}`;
-
-    toggleCodeBtn.addEventListener('click', () => { const isHidden = preElement.classList.toggle('hidden'); toggleCodeBtn.textContent = isHidden ? 'Show' : 'Hide'; });
     copyCodeBtn.addEventListener('click', async () => { try { await navigator.clipboard.writeText(codeElement.textContent || ''); copyCodeBtn.textContent = 'Copied!'; setTimeout(() => { copyCodeBtn.textContent = 'Copy'; }, 1500); } catch (err) { console.error('Failed to copy code: ', err); } });
-    restoreBtn.addEventListener('click', async () => { const originalContent = container.dataset.originalContent; const sessionId = getSessionIdFromPath(); if (!sessionId || !window.csrfTokenRaw) return; try { const response = await fetch(`/api/sessions/${sessionId}/edited-blocks/${container.id}`, { method: 'DELETE', headers: { 'X-CSRF-Token': window.csrfTokenRaw } }); if (response.ok) { const cursorPos = getCursorPosition(codeElement); codeElement.textContent = originalContent; if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, Math.min(cursorPos, originalContent.length)); } catch (e) { console.error(`Prism highlight error:`, e); } } saveCodeBlockState(container.id, originalContent); } else { const error = await response.json(); alert(`Failed to restore code block: ${error.detail || 'Server error'}`); } } catch (error) { console.error("Error restoring code block:", error); alert("An error occurred while restoring the code block."); } });
-    codeElement.addEventListener('keydown', (event) => { handleCodeBlockKeydown(event, container.id); });
-    codeElement.addEventListener('blur', () => { const content = codeElement.textContent || ''; saveCodeBlockContent(container.id, content); });
-    codeElement.addEventListener('input', () => { const cursorPos = getCursorPosition(codeElement); const content = codeElement.textContent || ''; setTimeout(() => { if (typeof Prism !== 'undefined' && typeof Prism.highlightElement === 'function') { try { Prism.highlightElement(codeElement); setCursorPosition(codeElement, cursorPos); } catch (e) { console.error(`Prism highlight error:`, e); } } }, 10); saveCodeBlockState(container.id, content); });
+    
+    restoreBtn.addEventListener('click', async () => { 
+        const originalContent = container.dataset.originalContent; 
+        codeElement.textContent = originalContent;
+        if(typeof Prism !== 'undefined') Prism.highlightElement(codeElement);
+        
+        container.dataset.edited = 'false';
+        updateProjectCommitState(container);
+        
+        const sessionId = getSessionIdFromPath();
+        if (sessionId) {
+            fetch(`/api/sessions/${sessionId}/edited-blocks/${container.id}`, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-Token': window.csrfTokenRaw }
+            });
+        }
+    });
+    
+    codeElement.addEventListener('input', () => {
+        const cursorPosition = getCursorPosition(codeElement);
+        const currentText = codeElement.textContent || '';
+        
+        if (typeof Prism !== 'undefined') {
+            Prism.highlightElement(codeElement);
+        }
+        
+        setCursorPosition(codeElement, cursorPosition);
+        
+        const isEdited = currentText !== container.dataset.originalContent;
+        container.dataset.edited = isEdited.toString();
+        updateProjectCommitState(container);
+
+        clearTimeout(codeElement._saveTimeout);
+        codeElement._saveTimeout = setTimeout(() => {
+            const blockId = container.id;
+            console.log(`[FRONTEND-TRACE] Debounced save triggered for block ${blockId}`);
+            saveCodeBlockContent(blockId, currentText);
+        }, 2000);
+    });
+
+    // --- THE FIX: Attach the keydown listener to handle Ctrl+Z and Ctrl+Y ---
+    codeElement.addEventListener('keydown', (e) => {
+        handleCodeBlockKeydown(e, container.id);
+    });
 
     return container;
+}
+
+function updateProjectCommitState(container) {
+    const turnContainer = container.closest('.ai-turn-container');
+    if (!turnContainer) return;
+
+    const explorer = turnContainer.querySelector('project-explorer');
+    if (!explorer) return;
+
+    const allBlocks = turnContainer.querySelectorAll('.block-container[data-path]');
+    const hasAnyEdits = Array.from(allBlocks).some(block => block.dataset.edited === 'true');
+
+    if (hasAnyEdits) {
+        if (typeof explorer.showUncommittedState === 'function') {
+            explorer.showUncommittedState();
+        }
+    } else {
+        if (typeof explorer.hideUncommittedState === 'function') {
+            explorer.hideUncommittedState();
+        }
+    }
 }
 
 function handleCodeWaitingInput(payload) {
@@ -621,40 +929,45 @@ function handleCodeWaitingInput(payload) {
     const outputContainer = document.getElementById(outputBlockId);
     if (!outputContainer) return;
 
-    const outputPre = outputContainer.querySelector('.block-output-console pre');
-    if (!outputPre) return;
+    const textarea = outputContainer.querySelector('.console-textarea');
+    if (!textarea) return;
 
-    // Check if an input already exists to prevent duplicates
-    if (outputPre.querySelector('.console-input')) return;
+    // 1. Store the content length BEFORE the user can type.
+    const textBeforeInput = textarea.value.length;
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'console-input';
-    input.spellcheck = false;
+    // 2. Unlock the textarea and focus it.
+    textarea.readOnly = false;
+    textarea.focus();
 
-    input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            const value = input.value;
+    // 3. CRITICAL: Move the cursor to the very end of the text.
+    textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+
+    const handleEnter = (e) => {
+        // We only care about the "Enter" key, and not when "Shift" is also pressed.
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault(); // Stop "Enter" from adding a newline itself.
+
+            const currentText = textarea.value;
+            // 4. Extract ONLY the text the user just typed.
+            const userInput = currentText.substring(textBeforeInput);
 
             if (websocket && websocket.readyState === WebSocket.OPEN) {
                 websocket.send(JSON.stringify({
                     type: 'code_input',
-                    payload: { project_id: project_id, input: value }
+                    payload: { project_id: project_id, input: userInput.trimEnd() } // Send the clean input
                 }));
             }
 
-            // Simply remove the input field. The terminal's echo will appear shortly.
-            input.remove();
+            // 5. Add the final newline and lock the textarea again.
+            textarea.value += '\n';
+            textarea.readOnly = true;
+
+            // 6. Clean up the listener to prevent it from firing again.
+            textarea.removeEventListener('keydown', handleEnter);
         }
-    });
+    };
 
-    outputPre.appendChild(input);
-
-    // This timeout ensures the element is in the DOM before we try to focus it.
-    setTimeout(() => {
-        input.focus();
-    }, 0);
+    textarea.addEventListener('keydown', handleEnter);
 }
 
 function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
@@ -712,6 +1025,8 @@ function renderPlotWhenReady(plotDivId, plotData, timeout = 3000) {
 
 function handleStructuredMessage(messageData) {
     const { type, payload } = messageData;
+    console.log(`[FRONTEND-TRACE] Received WebSocket message. Type: ${type}`, payload);
+
     if (!payload || !payload.project_id) return;
 
     const projectId = payload.project_id;
@@ -720,19 +1035,24 @@ function handleStructuredMessage(messageData) {
     let outputContainer = document.getElementById(outputBlockId);
 
     if (!outputContainer && type !== 'code_output') {
-        return; 
+        return;
     }
     
     switch (type) {
         case 'code_output': {
             if (!outputContainer) {
-                outputContainer = createOrClearOutputContainer(projectId);
+                const codeBlock = document.getElementById(projectId);
+                outputContainer = createOrClearOutputContainer(projectId, codeBlock);
             }
-            const outputPre = outputContainer.querySelector('.block-output-console pre');
-            if (outputPre) {
-                addCodeOutput(outputPre, payload.stream, payload.data);
+            // --- THE FIX IS HERE ---
+            // Find the new '.console-textarea' instead of the old 'pre' tag.
+            const textarea = outputContainer.querySelector('.console-textarea');
+            if (textarea) {
+                // Call the updated addCodeOutput function.
+                addCodeOutput(textarea, payload.data);
                 outputContainer.style.display = '';
             }
+            // --- END FIX ---
             break;
         }
         case 'code_waiting_input': {
@@ -740,7 +1060,8 @@ function handleStructuredMessage(messageData) {
             break;
         }
         case 'code_finished': {
-            const { exit_code, error } = payload;
+            const { exit_code, error, full_output, persistent_project_id } = payload;
+            console.log(`[FRONTEND-TRACE] Handling 'code_finished'. Exit: ${exit_code}, Error: ${error}, Output Length: ${full_output ? full_output.length : 0}`);
             let finishMessage = `Finished (Exit: ${exit_code})`;
             let statusClass = (exit_code === 0) ? 'success' : 'error';
 
@@ -748,9 +1069,18 @@ function handleStructuredMessage(messageData) {
                 finishMessage = (error === "Stopped by user.") ? "Stopped" : "Failed";
                 statusClass = 'error';
                 if (outputContainer) {
-                    const outputPre = outputContainer.querySelector('.block-output-console pre');
-                    if (outputPre) addCodeOutput(outputPre, 'stderr', `Error: ${error}`);
+                    const textarea = outputContainer.querySelector('.console-textarea');
+                    if (textarea) addCodeOutput(textarea, `\n[Program finished with error: ${error}]`);
                 }
+            } else if (full_output && persistent_project_id && websocket && websocket.readyState === WebSocket.OPEN) {
+                console.log(`[FRONTEND-TRACE] Sending 'save_code_run' for project ${persistent_project_id}`);
+                websocket.send(JSON.stringify({
+                    type: 'save_code_run',
+                    payload: {
+                        project_id: persistent_project_id,
+                        output: full_output,
+                    }
+                }));
             }
             
             if (outputContainer) {
@@ -779,35 +1109,45 @@ function createOrClearOutputContainer(projectId, codeContainer, title, prompting
     let outputContainer = document.getElementById(outputBlockId);
 
     if (outputContainer) {
-        const outputPre = outputContainer.querySelector('.block-output-console pre');
-        if (outputPre) outputPre.innerHTML = '';
-        const outputHeader = outputContainer.querySelector('.block-header');
-        if (outputHeader) {
-            outputHeader.innerHTML = createOutputHeaderHTML(title, promptingUserId, 'Ready', 'idle');
-            const consoleDiv = outputContainer.querySelector('.block-output-console');
-            outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = consoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
-            outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { const text = outputContainer.querySelector('pre')?.textContent || ''; await navigator.clipboard.writeText(text); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
+        const textarea = outputContainer.querySelector('.console-textarea');
+        if (textarea) {
+            textarea.value = '';
+            textarea.readOnly = true;
         }
     } else {
         outputContainer = document.createElement('div');
         outputContainer.id = outputBlockId;
         outputContainer.className = 'block-container';
+
         const outputHeader = document.createElement('div');
         outputHeader.className = 'block-header';
         outputHeader.innerHTML = createOutputHeaderHTML(title, promptingUserId);
         const prompterColor = window.participantInfo?.[promptingUserId]?.color || '#dbeafe';
         const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
         outputHeader.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
+
         const outputConsoleDiv = document.createElement('div');
         outputConsoleDiv.className = 'block-output-console';
-        const outputPre = document.createElement('pre');
-        outputConsoleDiv.appendChild(outputPre);
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'console-textarea';
+        textarea.spellcheck = false;
+        textarea.readOnly = true; // Start in a locked, read-only state
+
+        outputConsoleDiv.appendChild(textarea);
         outputContainer.appendChild(outputHeader);
         outputContainer.appendChild(outputConsoleDiv);
 
-        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => { const isHidden = outputConsoleDiv.classList.toggle('hidden'); e.target.textContent = isHidden ? 'Show' : 'Hide'; });
-        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => { await navigator.clipboard.writeText(outputPre.textContent || ''); e.target.textContent = 'Copied!'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1500); });
-        
+        outputHeader.querySelector('.toggle-output-btn').addEventListener('click', (e) => {
+            const isHidden = outputConsoleDiv.classList.toggle('hidden');
+            e.target.textContent = isHidden ? 'Show' : 'Hide';
+        });
+        outputHeader.querySelector('.copy-output-btn').addEventListener('click', async (e) => {
+            await navigator.clipboard.writeText(textarea.value || '');
+            e.target.textContent = 'Copied!';
+            setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+        });
+
         if (codeContainer) {
             codeContainer.insertAdjacentElement('afterend', outputContainer);
         } else {
@@ -903,6 +1243,8 @@ async function handleRunStopCodeClick(event) {
     const runBlockId = container.id;
     const status = button.dataset.status;
 
+    console.log(`[FRONTEND-TRACE] Run/Stop button clicked. Status: ${status}, Block ID: ${runBlockId}`);
+
     if (status === 'running' || status === 'previewing') {
         const outputBlockId = `output-for-${runBlockId}`;
         const outputContainer = document.getElementById(outputBlockId);
@@ -910,6 +1252,7 @@ async function handleRunStopCodeClick(event) {
             updateHeaderStatus(outputContainer, 'Stopping...', 'stopping');
         }
         if (websocket && websocket.readyState === WebSocket.OPEN) {
+            console.log("[FRONTEND-TRACE] Sending 'stop_code' message.");
             websocket.send(JSON.stringify({ type: 'stop_code', payload: { project_id: runBlockId } }));
         }
         return;
@@ -966,19 +1309,20 @@ async function handleRunStopCodeClick(event) {
             updateHeaderStatus(outputContainer, 'Running...', 'running');
         }
 
-        websocket.send(JSON.stringify({
-            type: 'run_code',
-            payload: {
-                project_data: updatedProjectData,
-                project_id: runBlockId,
-                persistent_project_id: persistentProjectId,
-                language: mainLanguage
-            }
-        }));
+        const payload = {
+            project_data: updatedProjectData,
+            project_id: runBlockId,
+            persistent_project_id: persistentProjectId,
+            language: mainLanguage
+        };
+        console.log("[FRONTEND-TRACE] Sending 'run_code' message with payload:", payload);
+        websocket.send(JSON.stringify({ type: 'run_code', payload }));
     } else {
         addErrorMessage("Cannot run code: Not connected to server.");
     }
 }
+
+
 
 function updateHeaderStatus(outputContainer, statusText, statusClass) {
     const statusSpan = outputContainer.querySelector('.block-status');
@@ -1004,42 +1348,12 @@ function updateHeaderStatus(outputContainer, statusText, statusClass) {
 }
 
 
-function addCodeOutput(outputPreElement, streamType, text, language) {
-    if (!outputPreElement || !text) return;
+function addCodeOutput(textarea, text) {
+    if (!textarea || !text) return;
 
-    if (language === 'html' && streamType !== 'stderr') {
-        if (!outputPreElement.htmlBuffer) {
-            outputPreElement.htmlBuffer = '';
-        }
-        outputPreElement.htmlBuffer += text;
-        return;
-    }
-
-    const spanClass = streamType === 'stderr' ? 'stderr-output' : 'stdout-output';
-    let lastSpan = outputPreElement.lastChild;
-
-    if (lastSpan && lastSpan.nodeName === 'SPAN' && lastSpan.classList.contains(spanClass)) {
-        lastSpan.textContent += text;
-    } else {
-        const newSpan = document.createElement('span');
-        newSpan.className = spanClass;
-        newSpan.textContent = text;
-        outputPreElement.appendChild(newSpan);
-    }
-    
-    requestAnimationFrame(() => {
-        const internalScroller = outputPreElement.parentElement;
-        if (internalScroller) {
-            // This scrolls the inside of the output pane
-            internalScroller.scrollTop = internalScroller.scrollHeight;
-        }
-
-        // This scrolls the main chat window just enough to see the output container
-        const outputContainer = internalScroller.parentElement;
-        if (outputContainer) {
-            outputContainer.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-        }
-    });
+    textarea.value += text;
+    // Auto-scroll to the bottom as new output arrives
+    textarea.scrollTop = textarea.scrollHeight;
 }
 
 function performUndo(blockId) {
@@ -1167,136 +1481,82 @@ function restoreCodeExecutionResult(result) {
     updateHeaderStatus(outputContainer, statusText, statusClass);
 }
 
-async function loadAndDisplayChatHistory(sessionId) {
-    await updateAndDisplayParticipants();
-
-    const chatHistoryDiv = document.getElementById('chat-history');
-    if (!chatHistoryDiv) {
-        console.error("Chat history container 'chat-history' not found.");
-        return;
-    }
-
-    chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>';
-
-    try {
-        const messagesResponse = await fetch(`/api/sessions/${sessionId}/messages`);
-
-        if (!messagesResponse.ok) {
-            const errorData = await messagesResponse.json().catch(() => ({ detail: "Failed to load chat history." }));
-            throw new Error(errorData.detail || messagesResponse.statusText);
-        }
-
-        const messages = await messagesResponse.json();
-        chatHistoryDiv.innerHTML = '';
-
-        if (messages.length === 0) {
-            chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">No messages in this session yet.</p>';
-        } else {
-            currentTurnId = Math.max(0, ...messages.map(msg => msg.turn_id || 0));
-
-            const editedBlocksResponse = await fetch(`/api/sessions/${sessionId}/edited-blocks`);
-            const editedCodeBlocks = editedBlocksResponse.ok ? await editedBlocksResponse.json() : {};
-
-            messages.forEach(msg => {
-                renderSingleMessage(msg, chatHistoryDiv, true, editedCodeBlocks);
-            });
-
-            const projectContainers = Array.from(chatHistoryDiv.querySelectorAll('.ai-turn-container[data-project-name]'));
-            const latestProjects = new Map();
-
-            projectContainers.forEach(container => {
-                const projectName = container.dataset.projectName;
-                if (projectName) {
-                    latestProjects.set(projectName, container);
-                }
-            });
-
-            projectContainers.forEach(container => {
-                const projectName = container.dataset.projectName;
-                if (projectName && latestProjects.get(projectName) !== container) {
-                    const explorer = container.querySelector('project-explorer');
-                    const codeArea = container.querySelector('.code-blocks-area');
-                    if (explorer) explorer.style.display = 'none';
-                    if (codeArea) codeArea.style.display = 'none';
-                    
-                    const messageBubble = container.querySelector('.message.ai-message, .system-message');
-                    if (!messageBubble) {
-                        container.style.display = 'none';
-                    }
-                }
-            });
-        }
-        
-        chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
-
-    } catch (error){
-        console.error(`Failed to fetch or display chat history for session ${sessionId}:`, error);
-        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An error occurred while loading history: ${escapeHTML(error.message)}</p>`;
-    }
-}
-
-
 async function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
+    console.log(`--- FRONTEND LOG 2: Rendering message ID ${msg.id}. Has project_files:`, msg.project_files ? `Yes (${msg.project_files.length} files)` : 'No', msg);
     if (!parentElement || !msg) return;
 
-    const senderType = msg.sender_type;
-    const senderName = msg.sender_name || (senderType === 'ai' ? 'AI Assistant' : 'User');
-    const currentUserId = window.currentUserInfo ? window.currentUserInfo.id : null;
-    const isCurrentUser = msg.user_id === currentUserId;
+    let linkData;
+    try {
+        if (typeof msg.content === 'string' && msg.content.startsWith('{"type":"link"')) {
+            const parsed = JSON.parse(msg.content);
+            if (parsed && parsed.type === 'link') linkData = parsed;
+        }
+    } catch (e) { /* Not a JSON link */ }
+
+    if (linkData) {
+        const linkContainer = document.createElement('div');
+        linkContainer.className = 'system-message italic text-blue-600 cursor-pointer hover:underline';
+        linkContainer.textContent = linkData.text || 'Content has been updated. Click to view.';
+        linkContainer.addEventListener('click', () => scrollToMessage(linkData.target_message_id));
+        parentElement.appendChild(linkContainer);
+        return;
+    }
 
     const turnContainer = document.createElement('div');
     turnContainer.className = 'ai-turn-container';
     if (msg.turn_id) turnContainer.dataset.turnId = msg.turn_id;
+    turnContainer.dataset.messageId = msg.id;
 
-    const hasContent = msg.content && msg.content.trim().length > 0;
     const hasProject = msg.project_files && msg.project_files.length > 0;
+    
+    let contentToRender = msg.content || "";
+
+    if (hasProject && contentToRender.includes('_PROJECT_START_')) {
+        const introMatch = contentToRender.match(/_JSON_END_([\s\S]*?)(?:_FILE_START_|_PROJECT_END_)/);
+        contentToRender = introMatch ? introMatch[1].trim() : "";
+    }
+    
+    const hasContent = contentToRender.trim().length > 0;
 
     if (hasContent) {
         const messageBubble = document.createElement('div');
         const contentElem = document.createElement('div');
         const senderElem = document.createElement('p');
-
         contentElem.className = 'text-gray-800 text-sm message-content';
         senderElem.className = 'font-semibold text-sm mb-1 text-gray-800';
-
-        if (senderType === 'ai') {
+        
+        if (msg.sender_type === 'ai') {
             messageBubble.className = 'message ai-message';
             const prompterId = msg.prompting_user_id;
-            const prompterInfo = prompterId ? window.participantInfo?.[prompterId] : null;
+            const prompterInfo = prompterId && window.participantInfo ? window.participantInfo[prompterId] : null;
             const prompterColor = prompterInfo?.color || '#dbeafe';
             const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
             messageBubble.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
             senderElem.textContent = prompterInfo ? `AI Assistant - Prompted by ${prompterInfo.name}` : 'AI Assistant';
             senderElem.classList.add('italic');
-            renderMarkdownAndKatex(msg.content, contentElem);
-        } else if (senderType === 'user') {
+            renderMarkdownAndKatex(contentToRender, contentElem);
+        } else if (msg.sender_type === 'user') {
             messageBubble.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
-            if (isCurrentUser) {
-                messageBubble.classList.add('self-end', 'ml-auto');
-            } else {
-                messageBubble.classList.add('self-start', 'mr-auto');
-            }
-            let bubbleColor = msg.sender_color;
-            if (!bubbleColor && window.participantInfo && msg.user_id) {
-                bubbleColor = window.participantInfo[msg.user_id]?.color;
-            }
-            messageBubble.style.backgroundColor = bubbleColor || '#e5e7eb';
-            senderElem.textContent = senderName;
-            contentElem.innerHTML = marked.parse((msg.content || '').replace(/@\w+/g, '').trim());
+            const isCurrentUser = window.currentUserInfo && msg.user_id === window.currentUserInfo.id;
+            messageBubble.classList.add(isCurrentUser ? 'self-end' : 'self-start', isCurrentUser ? 'ml-auto' : 'mr-auto');
+            let bubbleColor = msg.sender_color || (window.participantInfo && msg.user_id ? window.participantInfo[msg.user_id]?.color : '#e5e7eb');
+            messageBubble.style.backgroundColor = bubbleColor;
+            senderElem.textContent = msg.sender_name;
+            contentElem.innerHTML = marked.parse((contentToRender || '').replace(/@\w+/g, '').trim());
         } else {
             messageBubble.className = 'system-message';
-            contentElem.textContent = msg.content;
+            contentElem.textContent = contentToRender;
             messageBubble.appendChild(contentElem);
         }
 
-        if (senderType !== 'system') {
+        if (msg.sender_type !== 'system') {
             messageBubble.appendChild(senderElem);
             messageBubble.appendChild(contentElem);
         }
         
         turnContainer.appendChild(messageBubble);
     }
-    
+
     if (hasProject) {
         turnContainer.dataset.projectId = msg.project_id;
         turnContainer.dataset.projectName = msg.project_name;
@@ -1350,18 +1610,20 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
         });
         turnContainer.appendChild(codeBlocksArea);
 
+        // --- THE FIX IS HERE ---
         if (runBlockElement && outputContent !== null) {
+            // Create the output container using our updated function.
             const outputContainer = createOrClearOutputContainer(runBlockElement.id, runBlockElement, "run.sh", msg.prompting_user_id);
-            const outputPre = outputContainer.querySelector('pre');
-            if (outputPre) {
-                outputPre.innerHTML = '';
-                const outputSpan = document.createElement('span');
-                outputSpan.className = 'stdout-output';
-                outputSpan.textContent = outputContent;
-                outputPre.appendChild(outputSpan);
+            // Find the new '.console-textarea' instead of the old 'pre' tag.
+            const textarea = outputContainer.querySelector('.console-textarea');
+            if (textarea) {
+                // Set the value of the textarea directly.
+                textarea.value = outputContent;
             }
+            // Update the header status to show it's from history.
             updateHeaderStatus(outputContainer, 'Finished (from history)', 'success');
         }
+        // --- END FIX ---
     }
 
     if (turnContainer.hasChildNodes()) {
@@ -1641,14 +1903,32 @@ function connectWebSocket() {
 
             if (event.data.startsWith("<ERROR>")) { addErrorMessage(event.data.substring(7)); finalizeTurnOnErrorOrClose(); return; }
             
+            // This switch statement correctly handles the structured messages from the backend
             switch (messageData.type) {
                 case 'ai_thinking': handleAiThinking(messageData.payload); break;
                 case 'project_header': handleProjectHeader(messageData.payload); break;
                 case 'ai_chunk': handleAnswerChunk(messageData.payload); break;
-                case 'end_answer_stream': handleEndAnswerStream(); break;
+                case 'end_answer_stream': handleEndAnswerStream(messageData.payload); break;
                 case 'start_file_stream': handleStartFileStream(messageData.payload); break;
                 case 'file_chunk': handleFileChunk(messageData.payload); break;
                 case 'end_file_stream': handleEndFileStream(messageData.payload); break;
+                case 'answer_edit_start': handleAnswerEditStart(messageData.payload); break;
+                case 'answer_update_start': handleAnswerUpdateStart(messageData.payload); break;
+                case 'answer_edit_content': handleAnswerEditContent(messageData.payload); break;
+                case 'end_answer_update': handleEndAnswerStream(messageData.payload); break;
+                case 'project_edit_start': handleProjectEditStart(messageData.payload); break;
+                case 'project_update_start': handleProjectUpdateStart(messageData.payload); break;
+                case 'end_project_edit':
+                    console.log("Project edit block finished.");
+                    currentEditingProject.originalTurnContainer = null;
+                    break;
+                case 'end_project_update': console.log("Project update block finished."); break;
+                case 'file_update_start': handleFileUpdateStart(messageData.payload); break;
+                case 'file_extend_start': handleFileExtendStart(messageData.payload); break;
+                case 'file_edit_start': handleFileEditStart(messageData.payload); break;
+                case 'file_edit_content': handleFileEditContent(messageData.payload); break;
+                case 'end_file_update': handleEndFileStream(messageData.payload); break;
+                case 'end_file_extend': handleEndFileStream(messageData.payload); break;
                 case 'ai_stream_end': handleAiStreamEnd(messageData.payload); break;
                 case 'new_message':
                     if (messageData.payload) {
@@ -1660,36 +1940,7 @@ function connectWebSocket() {
                     if (messageData.payload && messageData.payload.project_id) {
                         const { project_id, project_data } = messageData.payload;
                         const explorer = document.querySelector(`.ai-turn-container[data-project-id="${project_id}"] project-explorer`);
-                        
-                        if (explorer) {
-                            const checkedStates = new Map();
-                            if (explorer.projectData && explorer.projectData.files) {
-                                explorer.projectData.files.forEach(file => {
-                                    const checkbox = explorer.shadowRoot.querySelector(`input[data-path="${file.path}"]`);
-                                    if (checkbox) {
-                                        checkedStates.set(file.path, checkbox.checked);
-                                    }
-                                });
-                            }
-                            
-                            const newData = project_data;
-                            newData.files.forEach(file => {
-                                file.checked = checkedStates.has(file.path) ? checkedStates.get(file.path) : false;
-                            });
-
-                            console.log(`Found project instance for ${project_id}. Updating it.`);
-                            explorer.updateData(newData);
-                            
-                            const turnContainer = explorer.closest('.ai-turn-container');
-                            explorer.dispatchEvent(new CustomEvent('commitChanged', { 
-                                detail: { 
-                                    turnContainer: turnContainer,
-                                    files: newData.files
-                                }, 
-                                bubbles: true, 
-                                composed: true 
-                            }));
-                        }
+                        if (explorer) explorer.updateData(project_data);
                     }
                     break;
                 case 'project_preview_ready': handleProjectPreviewReady(messageData.payload); break;
@@ -1708,7 +1959,7 @@ function connectWebSocket() {
 
 function handleAnswerChunk(payload) {
     if (!currentStreamingAnswerElement) {
-        console.warn("handleAnswerChunk called without a streaming element.");
+        console.warn("handleAnswerChunk called without a valid streaming element.");
         return; 
     }
 
@@ -1722,43 +1973,39 @@ function handleAnswerChunk(payload) {
     renderMarkdownAndKatex(currentContent, currentStreamingAnswerElement);
     
     requestAnimationFrame(() => {
-        currentStreamingAnswerElement.scrollIntoView({ behavior: 'auto', block: 'end' });
+        // Add a safety check before scrolling
+        if (currentStreamingAnswerElement) {
+            currentStreamingAnswerElement.scrollIntoView({ behavior: 'auto', block: 'end' });
+        }
     });
 }
 
-function createPreviewHeaderHTML(title, promptingUserId) {
-    return `
-        <div class="block-buttons">
-            <button class="refresh-btn header-btn" title="Refresh Preview">Refresh</button>
-            <button class="publish-btn header-btn" title="Publish (coming soon)">Publish</button>
-            <button class="toggle-output-btn header-btn">Hide</button>
-        </div>
-        <span class="block-title" style="color: #374151;">Preview of ${escapeHTML(title)}</span>
-        <span class="block-status running">Starting...</span>
-    `;
-}
-
 function handleStartFileStream(payload) {
-    const turnContainer = currentStreamingExplorer.closest('.ai-turn-container');
-    if (turnContainer) {
-        const projectData = JSON.parse(turnContainer.dataset.projectData);
-        const newFile = {
+    if (!currentCodeBlocksArea) {
+        console.error("Cannot start file stream: a project block was not properly initiated.");
+        return;
+    }
+
+    // Add file to the explorer UI immediately
+    if (currentStreamingExplorer) {
+        currentStreamingExplorer.addFile({
             path: payload.path,
             content: '',
-            language: payload.language
-        };
-        projectData.files.push(newFile);
-        turnContainer.dataset.projectData = JSON.stringify(projectData);
-        currentStreamingExplorer.addFile(newFile);
+            language: payload.language,
+            size: 0,
+            lastModified: Date.now()
+        });
     }
-    
+
     streamingCodeBlockCounter++;
     const isRunnable = payload.path.endsWith('run.sh');
-    const blockId = `code-block-turn${payload.turn_id}-${streamingCodeBlockCounter}`;
+    const promptingUserId = payload.prompting_user_id; 
+    const turnIdSuffix = payload.turn_id;
+
     const newBlock = createCodeBlock(
-        payload.language || 'plaintext', '', '', payload.turn_id, 
+        payload.language || 'plaintext', '', '', turnIdSuffix, 
         streamingCodeBlockCounter, currentCodeBlocksArea, isRunnable,
-        payload.prompting_user_id
+        promptingUserId
     );
     newBlock.dataset.path = payload.path;
     newBlock.querySelector('.block-title .title-text').textContent = payload.path;
@@ -1768,7 +2015,7 @@ function handleStartFileStream(payload) {
         codeElement: newBlock.querySelector('code'), 
         path: payload.path,
         size: 0,
-        highlightTimeout: null
+        language: payload.language || 'plaintext'
     };
 }
 
@@ -1777,47 +2024,32 @@ function handleFileChunk(payload) {
 
     const codeElement = currentStreamingFile.codeElement;
 
-    // Initialize a raw content store on the element itself
     if (typeof codeElement.dataset.rawContent === 'undefined') {
         codeElement.dataset.rawContent = '';
     }
-
-    // Append new text to our raw content store
     codeElement.dataset.rawContent += payload.content;
 
-    // Use Prism's core highlighting function on the full string
     if (typeof Prism !== 'undefined') {
-        const language = codeElement.className.replace('language-', '');
+        const language = PRISM_LANGUAGE_MAP[currentStreamingFile.language] || currentStreamingFile.language;
         const grammar = Prism.languages[language];
         if (grammar) {
-            // This highlights the text in memory and returns an HTML string
             const highlightedHtml = Prism.highlight(codeElement.dataset.rawContent, grammar, language);
-            // This replaces the content in one single, non-flickering operation
             codeElement.innerHTML = highlightedHtml;
         } else {
-            // Fallback for unknown languages
             codeElement.textContent = codeElement.dataset.rawContent;
         }
     }
-
-    // --- The rest of the function remains the same ---
-    const turnContainer = currentStreamingFile.container.closest('.ai-turn-container');
-    if (turnContainer) {
-        const projectData = JSON.parse(turnContainer.dataset.projectData);
-        const fileToUpdate = projectData.files.find(f => f.path === currentStreamingFile.path);
-        if (fileToUpdate) {
-            fileToUpdate.content += payload.content;
-        }
-        turnContainer.dataset.projectData = JSON.stringify(projectData);
-    }
-
+    
+    // Update file size in the explorer UI
     if (currentStreamingExplorer && currentStreamingFile.path) {
         currentStreamingFile.size += (new TextEncoder().encode(payload.content)).length;
         currentStreamingExplorer.updateFileSize(currentStreamingFile.path, currentStreamingFile.size);
     }
 
     requestAnimationFrame(() => {
-        currentStreamingFile.container.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+        if (currentStreamingFile && currentStreamingFile.container) {
+             currentStreamingFile.container.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+        }
     });
 }
 
@@ -2047,3 +2279,68 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, { passive: true });
     }
 });
+
+async function loadAndDisplayChatHistory(sessionId) {
+    await updateAndDisplayParticipants();
+    const chatHistoryDiv = document.getElementById('chat-history');
+    if (!chatHistoryDiv) return;
+
+    chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">Loading history...</p>';
+
+    try {
+        const [messagesResponse, editedBlocksResponse] = await Promise.all([
+            fetch(`/api/sessions/${sessionId}/messages`),
+            fetch(`/api/sessions/${sessionId}/edited-blocks`)
+        ]);
+
+        if (!messagesResponse.ok) {
+            const errorData = await messagesResponse.json().catch(() => ({ detail: "Failed to load chat history." }));
+            throw new Error(errorData.detail || messagesResponse.statusText);
+        }
+
+        const messages = await messagesResponse.json();
+        const editedCodeBlocks = editedBlocksResponse.ok ? await editedBlocksResponse.json() : {};
+        
+        chatHistoryDiv.innerHTML = '';
+
+        if (messages.length === 0) {
+            chatHistoryDiv.innerHTML = '<p class="text-center text-gray-500 p-4">No sessions in this session yet.</p>';
+        } else {
+            currentTurnId = Math.max(0, ...messages.map(msg => msg.turn_id || 0));
+            messages.forEach(msg => {
+                renderSingleMessage(msg, chatHistoryDiv, true, editedCodeBlocks);
+            });
+
+            const projectContainers = Array.from(chatHistoryDiv.querySelectorAll('.ai-turn-container[data-project-name]'));
+            const latestProjects = new Map();
+
+            projectContainers.forEach(container => {
+                const projectName = container.dataset.projectName;
+                if (projectName) {
+                    latestProjects.set(projectName, container);
+                }
+            });
+
+            projectContainers.forEach(container => {
+                const projectName = container.dataset.projectName;
+                if (projectName && latestProjects.get(projectName) !== container) {
+                    const explorer = container.querySelector('project-explorer');
+                    const codeArea = container.querySelector('.code-blocks-area');
+                    if (explorer) explorer.style.display = 'none';
+                    if (codeArea) codeArea.style.display = 'none';
+                    
+                    const messageBubble = container.querySelector('.message.ai-message, .system-message');
+                    if (!messageBubble) {
+                        container.style.display = 'none';
+                    }
+                }
+            });
+        }
+        
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+
+    } catch (error){
+        console.error(`Failed to fetch or display chat history for session ${sessionId}:`, error);
+        chatHistoryDiv.innerHTML = `<p class="text-center text-red-500 p-4">An error occurred while loading history: ${escapeHTML(error.message)}</p>`;
+    }
+}

@@ -1204,27 +1204,15 @@ async def get_chat_messages_for_session(
             project_rows = database.get_projects_by_ids(conn, list(project_ids_to_fetch))
             
             for project_row in project_rows:
-                project_details, error = project_utils.unpack_git_repo_from_blob(project_row['git_repo_blob'])
+                project_details, error = await asyncio.to_thread(project_utils.unpack_git_repo_from_blob, project_row['git_repo_blob'])
                 if error or not project_details:
-                    print(f"Error unpacking project {project_row['id']}: {error}")
+                    print(f"!!! LOGGING ERROR: Error unpacking project {project_row['id']}: {error}")
                     continue
                 
-                unpacked_files = project_details.get("files", [])
-                commits = project_details.get("commits", [])
-
-                project_files_for_model = [
-                    models.ProjectFileResponse(
-                        path=f['path'],
-                        content=f['content'],
-                        language=project_utils.get_language_from_extension(f['path']),
-                        size=f.get('size'),
-                        lastModified=f.get('lastModified')
-                    ) for f in unpacked_files
-                ]
                 project_info_map[project_row['id']] = {
                     "name": project_row['name'],
-                    "files": project_files_for_model,
-                    "commits": commits
+                    "files": project_details.get("files", []),
+                    "commits": project_details.get("commits", [])
                 }
 
         messages_to_return = []
@@ -1237,11 +1225,27 @@ async def get_chat_messages_for_session(
                 msg_row['project_commits'] = project_details['commits']
 
             messages_to_return.append(models.MessageItem(**msg_row))
+
+        # --- START: DETAILED LOGGING ---
+        print("\n" + "="*20 + " DETAILED BACKEND LOG: DATA SENT TO FRONTEND " + "="*20)
+        for msg in messages_to_return:
+            msg_dict = msg.model_dump()
+            has_project_files = 'project_files' in msg_dict and msg_dict['project_files'] is not None
+            print(f"  - Message ID: {msg_dict['id']}, Type: {msg_dict['sender_type']}, Project ID: {msg_dict['project_id']}")
+            if has_project_files:
+                print(f"    - Found {len(msg_dict['project_files'])} files. Inspecting each file:")
+                for i, file_dict in enumerate(msg_dict['project_files']):
+                    print(f"      - File #{i+1}: path='{file_dict.get('path')}', has_language_key={'language' in file_dict}, language_value='{file_dict.get('language')}'")
+            else:
+                print("    - No project files attached.")
+        print("="*78 + "\n")
+        # --- END: DETAILED LOGGING ---
             
         return messages_to_return
 
     finally:
-        if conn: conn.close()
+        if conn:
+            conn.close()
 
 @app.post("/api/sessions/{session_id}/join", status_code=status.HTTP_200_OK, tags=["Sessions"])
 async def join_session(
@@ -1452,7 +1456,7 @@ async def websocket_endpoint(
         return
 
     await websocket.accept()
-    websocket.scope['client_id'] = client_js_id # Make client ID available to other parts of the app
+    websocket.scope['client_id'] = client_js_id
     
     queue = asyncio.Queue()
     connection = state.Connection(websocket=websocket, queue=queue)
@@ -1481,7 +1485,7 @@ async def websocket_endpoint(
                         exclude_websocket=websocket
                     )
 
-                elif message_type in ["run_code", "stop_code", "code_input", "save_code_content", "save_code_result"]:
+                elif message_type in ["run_code", "stop_code", "code_input", "save_code_content", "save_code_result", "commit_project_changes"]:
                     asyncio.create_task(handle_code_related_message(
                         message_type, payload, websocket, client_js_id, session_id_ws
                     ))
@@ -1516,8 +1520,6 @@ async def websocket_endpoint(
     finally:
         print(f"Client {client_js_id} (User {user_id}) connection closing.")
 
-        # --- NEW CLEANUP LOGIC ---
-        # Find and stop all containers started by this specific client
         async with state.running_containers_lock:
             running_ids = [pid for pid, info in state.running_containers.items() if info.get("client_id") == client_js_id]
         for pid in running_ids:
@@ -1529,7 +1531,6 @@ async def websocket_endpoint(
         for pid in preview_ids:
             print(f"Cleaning up preview container {pid} for disconnected client {client_js_id}")
             await docker_utils.stop_container(pid)
-        # --- END OF NEW LOGIC ---
 
         reader_task.cancel()
         writer_task.cancel()
@@ -1540,84 +1541,207 @@ async def handle_code_related_message(message_type: str, payload: dict, websocke
     if not user:
         return
 
-    project_path = None
-    try:
-        if message_type == "run_code" and payload:
-            project_data = payload.get("project_data")
-            run_block_id = payload.get("project_id")
-            persistent_project_id = payload.get("persistent_project_id")
-            language = payload.get("language")
+    if message_type == "run_code" and payload:
+        project_data = payload.get("project_data")
+        run_block_id = payload.get("project_id")
+        persistent_project_id = payload.get("persistent_project_id")
+        language = payload.get("language")
 
-            if not all([project_data, run_block_id, language, persistent_project_id]):
-                return
+        if not all([project_data, run_block_id, language, persistent_project_id]):
+            return
 
-            project_path, error = await asyncio.to_thread(
-                project_utils.create_project_directory_and_files, project_data
-            )
-            if error or not project_path:
-                await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Failed to create project files: {error}"})
-                return
-            
-            lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
-            if not lang_config:
-                await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": f"Language '{language}' is not configured."})
-                return
-
-            is_preview = lang_config.get("is_preview_server", False)
-
-            if is_preview:
-                await docker_utils.handle_preview_server(
-                    websocket=websocket,
-                    project_id=run_block_id,
-                    persistent_project_id=persistent_project_id,
-                    project_path=project_path,
-                    run_command="sh run.sh",
-                    lang_config=lang_config,
-                    local_docker_client=docker_utils.get_docker_client()
+        async def run_and_process_task():
+            project_path = None
+            is_preview = False
+            try:
+                project_path, error = await asyncio.to_thread(
+                    project_utils.create_project_directory_and_files, project_data
                 )
-                project_path = None
-            else:
-                task = asyncio.create_task(
-                    docker_utils.run_code_in_docker(
-                        websocket=websocket, client_id=client_id, project_id=run_block_id,
-                        project_data=project_data, project_path=project_path,
-                        run_command="sh run.sh", lang_config=lang_config
-                    )
-                )
-                async with state.running_code_tasks_lock:
-                    state.running_code_tasks[run_block_id] = task
+                if error or not project_path:
+                    error_message = f"Failed to create project files: {error}"
+                    await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": error_message})
+                    return
                 
-                project_path = None
-
-        elif message_type == "stop_code" and payload:
-            if project_id := payload.get("project_id"):
-                async with state.running_code_tasks_lock:
-                    task_to_cancel = state.running_code_tasks.pop(project_id, None)
-                if task_to_cancel:
-                    print(f"[Handler] Received stop for {project_id}. Cancelling task.")
-                    task_to_cancel.cancel()
+                lang_config = config.SUPPORTED_LANGUAGES.get(language.lower())
+                if not lang_config:
+                    raise Exception(f"Language '{language}' is not configured.")
+                
+                is_preview = lang_config.get("is_preview_server", False)
+                
+                if is_preview:
+                    await docker_utils.handle_preview_server(
+                        websocket=websocket, project_id=run_block_id, persistent_project_id=persistent_project_id,
+                        project_path=project_path, lang_config=lang_config
+                    )
                 else:
-                    print(f"[Handler] Received stop for {project_id}, but no task found. Stopping container directly.")
-                    await docker_utils.stop_container(project_id)
-                    await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "exit_code": -1, "error": "Stopped by user."})
+                    loop = asyncio.get_running_loop()
+                    exit_code, full_output, error_message = await docker_utils.run_code_in_docker(
+                        websocket, client_id, run_block_id, project_data, project_path,
+                        "sh run.sh", lang_config, loop
+                    )
+                    
+                    final_payload = {"project_id": run_block_id, "exit_code": exit_code, "full_output": full_output}
+                    if error_message:
+                        final_payload["error"] = error_message
+                    
+                    await utils.send_ws_message(websocket, "code_finished", final_payload)
+                    
+                    if full_output and not error_message and exit_code == 0:
+                        asyncio.create_task(handle_code_related_message(
+                            'save_code_run',
+                            {'project_id': persistent_project_id, 'output': full_output},
+                            websocket, client_id, session_id
+                        ))
 
-        elif message_type == "code_input" and payload:
-            await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
+            except asyncio.CancelledError:
+                error_message = "Stopped by user."
+                await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": error_message})
+            except Exception as e:
+                error_message = f"A task error occurred: {e}"
+                traceback.print_exc()
+                await utils.send_ws_message(websocket, "code_finished", {"project_id": run_block_id, "error": error_message})
+            finally:
+                if project_path and os.path.exists(project_path) and not is_preview:
+                    await asyncio.to_thread(shutil.rmtree, project_path)
+                async with state.running_code_tasks_lock:
+                    state.running_code_tasks.pop(run_block_id, None)
+
+        task = asyncio.create_task(run_and_process_task())
+        async with state.running_code_tasks_lock:
+            state.running_code_tasks[run_block_id] = task
+    
+    elif message_type == "stop_code" and payload:
+        if project_id := payload.get("project_id"):
+            async with state.running_code_tasks_lock:
+                task_to_cancel = state.running_code_tasks.pop(project_id, None)
+            if task_to_cancel:
+                task_to_cancel.cancel()
+            
+            await docker_utils.stop_container(project_id)
+            await utils.send_ws_message(websocket, "code_finished", {"project_id": project_id, "error": "Stopped by user."})
+    
+    elif message_type == "code_input" and payload:
+        await docker_utils.send_input_to_container(payload['project_id'], payload['input'])
+
+    elif message_type == "commit_project_changes" and payload:
+        project_id = payload.get("project_id")
+        commit_message = payload.get("commit_message")
+        files = payload.get("files", [])
+
+        if not all([project_id, commit_message, files]):
+            return
+
+        def sync_commit_and_repack():
+            conn_inner = None
+            try:
+                conn_inner = database.get_db_connection()
+                cursor = conn_inner.cursor()
+                cursor.execute("SELECT git_repo_blob FROM projects WHERE id = ?", (project_id,))
+                project_row = cursor.fetchone()
+                if not project_row: return None, "Project not found"
+                
+                operations = [
+                    {"type": "UPDATE_FILE", "path": f.get("path"), "content": f.get("content")}
+                    for f in files
+                ]
+
+                new_repo_blob, error = project_utils.apply_project_modifications(
+                    repo_blob=project_row["git_repo_blob"],
+                    operations=operations,
+                    commit_message=commit_message,
+                    user_name=user["name"]
+                )
+
+                if error: return None, error
+
+                cursor.execute("UPDATE projects SET git_repo_blob = ? WHERE id = ?", (new_repo_blob, project_id))
+                conn_inner.commit()
+                return new_repo_blob, None
+            finally:
+                if conn_inner: conn_inner.close()
+
+        new_blob, err = await asyncio.to_thread(sync_commit_and_repack)
+
+        if err:
+            print(f"Error committing user changes for project {project_id}: {err}")
+        else:
+            print(f"Successfully committed user changes for project {project_id}")
+            conn = database.get_db_connection()
+            try:
+                conn.execute("DELETE FROM edited_code_blocks WHERE session_id = ?", (session_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
+            full_project_data = await get_project_details(project_id, user)
+            await state.broadcast(session_id, {
+                "type": "project_updated",
+                "payload": { "project_id": project_id, "project_data": full_project_data.model_dump() }
+            })
+    
+    elif message_type == "save_code_run" and payload:
+        project_id = payload.get("project_id")
+        output = payload.get("output")
+        user_name = user["name"] if user else "Code Execution"
+
+        if not project_id or not output:
+            return
+
+        def sync_save_and_repack():
+            conn_inner = None
+            temp_dir = None
+            try:
+                conn_inner = database.get_db_connection()
+                cursor = conn_inner.cursor()
+                cursor.execute("SELECT git_repo_blob FROM projects WHERE id = ?", (project_id,))
+                project_row = cursor.fetchone()
+                if not project_row:
+                    return None, f"Project {project_id} not found in database"
+
+                repo_blob = project_row["git_repo_blob"]
+                project_root, error = project_utils.unpack_git_repo_to_temp_dir(repo_blob)
+                if error: return None, error
+                temp_dir = os.path.dirname(project_root)
+
+                commit_error = project_utils.add_output_and_commit(project_root, output, user_name)
+                if commit_error: return None, commit_error
+                
+                new_repo_blob, repack_error = project_utils.repack_repo_from_path(project_root)
+                if repack_error: return None, repack_error
+                
+                cursor.execute("UPDATE projects SET git_repo_blob = ? WHERE id = ?", (new_repo_blob, project_id))
+                conn_inner.commit()
+                return new_repo_blob, None
+            finally:
+                if conn_inner: conn_inner.close()
+                if temp_dir and os.path.exists(temp_dir): 
+                    shutil.rmtree(temp_dir)
         
-        elif message_type == "save_code_content" and payload:
-            await asyncio.to_thread(
-                database.save_edited_code_content,
-                payload['session_id'], payload['code_block_id'], payload['language'], payload['code_content']
-            )
-            state.remove_memory_for_client(payload['session_id'])
-        
-        elif message_type == "save_code_result" and payload:
-            payload['session_id'] = session_id
-            await asyncio.to_thread(database.save_code_execution_result, **payload)
-            state.remove_memory_for_client(session_id)
-    finally:
-        if project_path and os.path.exists(project_path):
-            shutil.rmtree(project_path)
+        new_blob, err = await asyncio.to_thread(sync_save_and_repack)
+        if err:
+            print(f"Error saving run result for project {project_id}: {err}")
+        else:
+            print(f"Successfully saved run output for project {project_id}")
+            full_project_data = await get_project_details(project_id, user)
+            await state.broadcast(session_id, {
+                "type": "project_updated",
+                "payload": {
+                    "project_id": project_id,
+                    "project_data": full_project_data.model_dump()
+                }
+            })
+
+    elif message_type == "save_code_content" and payload:
+        await asyncio.to_thread(
+            database.save_edited_code_content,
+            payload['session_id'], payload['code_block_id'], payload['language'], payload['code_content']
+        )
+        state.remove_memory_for_client(payload['session_id'])
+    
+    elif message_type == "save_code_result" and payload:
+        payload['session_id'] = session_id
+        await asyncio.to_thread(database.save_code_execution_result, **payload)
+        state.remove_memory_for_client(session_id)
 
 @app.get("/api/sessions", response_model=List[models.SessionResponseModel], tags=["Sessions"])
 async def get_user_sessions(
@@ -1793,13 +1917,11 @@ async def startup_event():
     database.init_db()
     print("Database initialization check complete.")
     
-    # --- ADD THIS BLOCK ---
     print("Starting background container scavenger...")
-    # Run the scavenger every 10 minutes (600 seconds)
     scavenger_interval = 600 
     asyncio.create_task(docker_utils.background_scavenger_task(scavenger_interval))
-    # --- END OF BLOCK ---
 
+    docker_utils.start_docker_worker()
     llm.start_llm_worker()
 
     try:
@@ -1812,6 +1934,8 @@ async def startup_event():
 def shutdown_event():
     print("Application shutdown: Stopping LLM worker...")
     llm.shutdown_llm_worker()
+    print("Application shutdown: Stopping Docker worker...")
+    docker_utils.shutdown_docker_worker()
 
 if config.STATIC_DIR and config.STATIC_DIR.is_dir():
     dist_dir = config.STATIC_DIR / "dist"

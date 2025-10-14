@@ -153,7 +153,7 @@ class MessageListContainerResponse(BaseModel):
     messages: List[MessageItem]
 
 class HostSessionRequest(BaseModel):
-    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] = Field(..., alias="session_title")
     access_level: str = 'private' # 'private', 'public', 'protected', 'unlisted'
     passcode: Optional[str] = None
 
