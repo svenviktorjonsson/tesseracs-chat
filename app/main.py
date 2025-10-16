@@ -1195,7 +1195,12 @@ async def get_chat_messages_for_session(
         if not cursor.fetchone():
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
         
-        cursor.execute("SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC", (session_id,))
+        cursor.execute("""
+            SELECT m.* FROM chat_messages m
+            LEFT JOIN hidden_messages h ON m.id = h.message_id AND h.user_id = ?
+            WHERE m.session_id = ? AND h.message_id IS NULL
+            ORDER BY m.timestamp ASC
+        """, (user_id, session_id))
         messages_rows = [dict(row) for row in cursor.fetchall()]
         
         project_ids_to_fetch = {msg['project_id'] for msg in messages_rows if msg.get('project_id')}
@@ -1411,8 +1416,7 @@ async def handle_chat_message(
     
         await state.broadcast(
             session_id,
-            {"type": "new_message", "payload": message_model.model_dump()},
-            exclude_websocket=websocket
+            {"type": "new_message", "payload": message_model.model_dump()}
         )
         
         print(f"[HANDLER / {client_id}] Checking recipients: {recipient_ids}")
@@ -1482,7 +1486,6 @@ async def websocket_endpoint(
                     await state.broadcast(
                         session_id_ws,
                         {"type": "participant_typing", "payload": {"user_id": user_id, "user_name": current_ws_user.get('name'), "is_typing": payload.get("is_typing", False), "color": sender_color}},
-                        exclude_websocket=websocket
                     )
 
                 elif message_type in ["run_code", "stop_code", "code_input", "save_code_content", "save_code_run", "commit_project_changes", "delete_message"]:
@@ -1740,51 +1743,82 @@ async def handle_action_message(message_type: str, payload: dict, websocket: Web
     
     elif message_type == "delete_message" and payload:
         message_id = payload.get("message_id")
-        if not message_id:
+        if not message_id or not isinstance(message_id, int):
+            # Ignore if the ID is temporary (e.g., "temp-id-...") or invalid
             return
 
         conn = database.get_db_connection()
         try:
             cursor = conn.cursor()
             
-            # --- THE FIX: Use 'chat_messages' instead of 'messages' ---
+            # First, verify the user has permission to delete this message
             cursor.execute("""
-                SELECT m.id, m.user_id, m.sender_type, m.project_id, s.host_id
-                FROM chat_messages m 
-                JOIN sessions s ON m.session_id = s.id
+                SELECT m.user_id, s.host_user_id
+                FROM chat_messages m JOIN sessions s ON m.session_id = s.id
                 WHERE m.id = ?
             """, (message_id,))
             message = cursor.fetchone()
 
             if not message:
-                return
+                return # Message doesn't exist
 
-            is_host = user["id"] == message["host_id"]
+            is_host = user["id"] == message["host_user_id"]
             is_my_message = user["id"] == message["user_id"]
-            is_ai_message = message["sender_type"] == "ai"
 
-            if not (is_host or is_my_message or is_ai_message):
+            # Allow deletion if user is the host or the author of the message
+            if not (is_host or is_my_message):
                 return
-            
-            if project_id_to_delete := message["project_id"]:
-                print(f"Deleting associated project {project_id_to_delete}...")
-                cursor.execute("DELETE FROM projects WHERE id = ?", (project_id_to_delete,))
 
-            # --- THE FIX: Use 'chat_messages' here as well ---
-            cursor.execute("DELETE FROM chat_messages WHERE id = ?", (message_id,))
+            # Instead of DELETE, we UPDATE the content to a "deleted" state
+            deleted_content = json.dumps({"type": "deleted", "deleted_by": user["name"]})
+            cursor.execute("UPDATE chat_messages SET content = ? WHERE id = ?", (deleted_content, message_id))
+            
+            # We also clear any associated project ID from the message
+            cursor.execute("UPDATE chat_messages SET project_id = NULL WHERE id = ?", (message_id,))
+
             conn.commit()
-            print(f"User {user['id']} deleted message {message_id}.")
+            print(f"User {user['id']} soft-deleted message {message_id}.")
 
             state.remove_memory_for_client(session_id)
 
+            # Broadcast a 'message_updated' event so all clients can re-render it
             await state.broadcast(session_id, {
-                "type": "message_deleted",
-                "payload": {"message_id": message_id, "user_id": user["id"]}
+                "type": "message_updated",
+                "payload": {"message_id": message_id, "new_content": deleted_content}
             })
 
         finally:
-            conn.close()
+            if conn: conn.close()
 
+# [ADD] in app/main.py
+
+@app.delete("/api/messages/{message_id}/hide", status_code=status.HTTP_204_NO_CONTENT, tags=["Messages"])
+async def hide_deleted_message_for_user(
+    request: Request,
+    message_id: int = FastApiPath(..., description="The ID of the message to hide."),
+    user: Dict[str, Any] = Depends(auth.get_current_active_user),
+    csrf_protect: CsrfProtect = Depends()
+):
+    await csrf_protect.validate_csrf(request)
+    user_id = user['id']
+    conn = None
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        # Using INSERT OR IGNORE is efficient; it does nothing if the entry already exists.
+        cursor.execute(
+            "INSERT OR IGNORE INTO hidden_messages (user_id, message_id) VALUES (?, ?)",
+            (user_id, message_id)
+        )
+        conn.commit()
+    except sqlite3.Error as e:
+        # This will likely fail only on a major DB issue, not if the entry exists.
+        print(f"Error hiding message {message_id} for user {user_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error while hiding message.")
+    finally:
+        if conn:
+            conn.close()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @app.get("/api/sessions", response_model=List[models.SessionResponseModel], tags=["Sessions"])
 async def get_user_sessions(

@@ -27,6 +27,51 @@ import 'prismjs/components/prism-c';
 import 'prismjs/components/prism-cpp';
 import 'prismjs/components/prism-latex'
 
+
+const katexExtension = {
+    name: 'katex',
+    level: 'inline',
+    start(src) {
+        return src.match(/\$|\\\[|\\\(/)?.index;
+    },
+    tokenizer(src, tokens) {
+        const blockRule = /^(?:\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\])/;
+        const inlineRule = /^(?:\$((?:\\\$|[^$])+?)\$|\\\(([\s\S]+?)\\\))/;
+        let match;
+
+        if (match = blockRule.exec(src)) {
+            return {
+                type: 'katex',
+                raw: match[0],
+                text: (match[1] || match[2]).trim(),
+                displayMode: true
+            };
+        }
+
+        if (match = inlineRule.exec(src)) {
+            return {
+                type: 'katex',
+                raw: match[0],
+                text: (match[1] || match[2]).trim(),
+                displayMode: false
+            };
+        }
+    },
+    renderer(token) {
+        try {
+            return katex.renderToString(token.text, {
+                displayMode: token.displayMode,
+                throwOnError: false,
+                strict: false
+            });
+        } catch (e) {
+            return `<span class="katex-error" title="${escapeHTML(e.toString())}">${escapeHTML(token.raw)}</span>`;
+        }
+    }
+};
+
+marked.use({ extensions: [katexExtension] });
+
 // --- DOM Elements ---
 const chatHistory = document.getElementById('chat-history');
 const chatForm = document.getElementById('chat-form');
@@ -34,6 +79,8 @@ const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
 const thinkCheckbox = document.getElementById('think-checkbox');
 const stopAiButton = document.getElementById('stop-ai-button');
+
+
 
 const LANGUAGE_ALIASES = {
     'python': 'python', 'py': 'python',
@@ -64,6 +111,7 @@ const PRISM_LANGUAGE_MAP = {
     'sh': 'bash',
     'shell': 'bash'
 };
+
 
 // --- State Variables ---
 let websocket;
@@ -472,6 +520,9 @@ function handleFileEditContent(payload) {
 }
 
 function handleTypingIndicators(payload) {
+    if (window.currentUserInfo && payload.user_id === window.currentUserInfo.id) {
+        return;
+    }
     const { user_id, user_name, is_typing, color } = payload;
     const indicatorId = `typing-indicator-${user_id}`;
     let existingIndicator = document.getElementById(indicatorId);
@@ -599,9 +650,35 @@ function handleEndAnswerStream(payload) {
     updateParticipantListUI(null);
 }
 
+// [REPLACE] in app/static/script.js
+
 function handleEndFileStream(payload) {
     if (currentStreamingFile && currentStreamingFile.codeElement) {
         Prism.highlightElement(currentStreamingFile.codeElement);
+
+        const container = currentStreamingFile.container;
+        const codeElement = currentStreamingFile.codeElement;
+        if (container && codeElement) {
+            // --- START FIX: Set the baseline content for future edits ---
+            const finalContent = codeElement.textContent || '';
+            container.dataset.originalContent = finalContent;
+
+            // Also update the in-memory project data on the turn container so "Run" works correctly.
+            const turnContainer = container.closest('.ai-turn-container');
+            if (turnContainer && turnContainer.dataset.projectData) {
+                try {
+                    const projectData = JSON.parse(turnContainer.dataset.projectData);
+                    const fileInProject = projectData.files.find(f => f.path === currentStreamingFile.path);
+                    if (fileInProject) {
+                        fileInProject.content = finalContent;
+                        turnContainer.dataset.projectData = JSON.stringify(projectData);
+                    }
+                } catch (e) {
+                    console.error("Error updating project data after file stream:", e);
+                }
+            }
+            // --- END FIX ---
+        }
     }
     currentStreamingFile = { container: null, codeElement: null, path: null, fileData: null };
 }
@@ -648,43 +725,12 @@ function renderMarkdownAndKatex(contentString, targetElement) {
         return;
     }
 
-    const storedKatex = {};
-    let katexPlaceholderIndex = 0;
-    
-    // --- CHANGE START: Updated Regex to include \[...\] and \(...\) ---
-    const katexRegexGlobal = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\\\[([\s\S]+?)(?<!\\)\\\]|(?<!\\)\$((?:\\\$|[^$])+?)(?<!\\)\$|(?<!\\)\\\(([\s\S]+?)(?<!\\)\\\)/g;
-
-    let textForMarkdownParsing = contentString.replace(katexRegexGlobal, (match, displayDollars, displayBrackets, inlineDollars, inlineParens) => {
-        // --- CHANGE START: Updated logic to handle new capture groups ---
-        const isDisplayMode = !!(displayDollars || displayBrackets);
-        const katexString = (displayDollars || displayBrackets || inlineDollars || inlineParens).trim();
-        // --- CHANGE END ---
-
-        const cleanedKatexString = katexString.replace(/\\([$])/g, '$1');
-        let katexHtml = '';
-        try {
-            katexHtml = katex.renderToString(cleanedKatexString, {
-                displayMode: isDisplayMode, throwOnError: false, output: "html", strict: false
-            });
-        } catch (e) {
-            katexHtml = `<span class="katex-error" title="${escapeHTML(e.toString())}">${escapeHTML(match)}</span>`;
-        }
-        
-        const placeholderId = `MPLD3KATEXPLACEHOLDER${katexPlaceholderIndex++}`;
-
-        storedKatex[placeholderId] = katexHtml;
-        return placeholderId;
-    });
-
-    let html = marked.parse(textForMarkdownParsing);
-
-    for (const placeholderId in storedKatex) {
-        const regex = new RegExp(placeholderId, "g");
-        html = html.replace(regex, storedKatex[placeholderId]);
-    }
-
+    // With the extension, marked now handles KaTeX automatically.
+    // The placeholder logic is no longer needed.
+    const html = marked.parse(contentString);
     targetElement.innerHTML = html;
 
+    // We still need to highlight code blocks after rendering.
     targetElement.querySelectorAll('pre code[class*="language-"]').forEach((block) => {
         if (typeof Prism !== 'undefined') {
             Prism.highlightElement(block);
@@ -1371,38 +1417,115 @@ function saveCodeBlockState(blockId, content) {
     }, 2000);
 }
 
+
 async function renderSingleMessage(msg, parentElement, isHistory = false, editedCodeBlocks = {}) {
     if (!parentElement || !msg) return;
 
-    let linkData;
-    try {
-        if (typeof msg.content === 'string' && msg.content.startsWith('{"type":"link"')) {
+    let specialContent = null;
+    if (typeof msg.content === 'string' && msg.content.trim().startsWith('{')) {
+        try {
             const parsed = JSON.parse(msg.content);
-            if (parsed && parsed.type === 'link') linkData = parsed;
-        }
-    } catch (e) {}
+            if (parsed && (parsed.type === 'deleted' || parsed.type === 'link')) {
+                specialContent = parsed;
+            }
+        } catch (e) {}
+    }
 
-    if (linkData) {
-        const linkContainer = document.createElement('div');
-        linkContainer.className = 'system-message italic text-blue-600 cursor-pointer hover:underline';
-        linkContainer.textContent = linkData.text || 'Content has been updated. Click to view.';
-        linkContainer.addEventListener('click', () => scrollToMessage(linkData.target_message_id));
-        parentElement.appendChild(linkContainer);
+    if (specialContent && specialContent.type === 'deleted') {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'deleted-message-placeholder';
+        placeholder.dataset.messageId = msg.id;
+        const wasMyMessage = window.currentUserInfo && msg.user_id === window.currentUserInfo.id;
+        if (wasMyMessage) {
+            placeholder.classList.add('self-end', 'ml-auto');
+        } else {
+            placeholder.classList.add('self-start', 'mr-auto');
+        }
+        const text = document.createElement('span');
+        text.textContent = `(message deleted by ${specialContent.deleted_by || 'a user'})`;
+        const dismissBtn = document.createElement('span');
+        dismissBtn.className = 'dismiss-deleted-btn';
+        dismissBtn.innerHTML = '&times;';
+        dismissBtn.title = 'Dismiss';
+        dismissBtn.onclick = async () => {
+            placeholder.remove();
+            try {
+                await fetch(`/api/messages/${msg.id}/hide`, {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': window.csrfTokenRaw }
+                });
+            } catch (error) {
+                console.error('Failed to save hidden state:', error);
+            }
+        };
+        placeholder.appendChild(text);
+        placeholder.appendChild(dismissBtn);
+        parentElement.appendChild(placeholder);
         return;
     }
 
+    if (specialContent && specialContent.type === 'link') {
+        const turnContainer = document.createElement('div');
+        turnContainer.className = 'ai-turn-container';
+        turnContainer.dataset.messageId = msg.id;
+        const linkElem = document.createElement('div');
+        linkElem.className = 'system-message italic text-blue-600 cursor-pointer hover:underline';
+        linkElem.textContent = specialContent.text || 'Content has been updated. Click to view.';
+        linkElem.addEventListener('click', () => {
+            const targetElement = document.querySelector(`.ai-turn-container[data-message-id='${specialContent.target_message_id}']`);
+            if (targetElement) targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        turnContainer.appendChild(linkElem);
+        parentElement.appendChild(turnContainer);
+        return;
+    }
+
+    if (msg.sender_type === 'user') {
+        const messageBubble = document.createElement('div');
+        messageBubble.className = 'message-item p-3 rounded-lg max-w-xl mb-2 break-words flex flex-col';
+        messageBubble.dataset.messageId = msg.id;
+        if (msg.turn_id) messageBubble.dataset.turnId = msg.turn_id;
+        const isCurrentUser = window.currentUserInfo && msg.user_id === window.currentUserInfo.id;
+        messageBubble.classList.add(isCurrentUser ? 'self-end' : 'self-start', isCurrentUser ? 'ml-auto' : 'mr-auto');
+        let bubbleColor = msg.sender_color || (window.participantInfo && msg.user_id ? window.participantInfo[msg.user_id]?.color : '#e5e7eb');
+        messageBubble.style.backgroundColor = bubbleColor;
+        const senderElem = document.createElement('p');
+        senderElem.className = 'font-semibold text-sm mb-1 text-gray-800';
+        senderElem.textContent = msg.sender_name;
+        const contentElem = document.createElement('div');
+        contentElem.className = 'text-gray-800 text-sm message-content';
+        contentElem.innerHTML = marked.parse((msg.content || '').replace(/@\w+/g, '').trim());
+        const deleteBtn = createDeleteButton(msg.id, msg.user_id);
+        if (deleteBtn) {
+            messageBubble.appendChild(deleteBtn);
+        }
+        messageBubble.appendChild(senderElem);
+        messageBubble.appendChild(contentElem);
+        parentElement.appendChild(messageBubble);
+        return;
+    }
+    
     const turnContainer = document.createElement('div');
     turnContainer.className = 'ai-turn-container';
     if (msg.turn_id) turnContainer.dataset.turnId = msg.turn_id;
     turnContainer.dataset.messageId = msg.id;
-
     const hasProject = msg.project_files && msg.project_files.length > 0;
-    
     let contentToRender = msg.content || "";
 
-    if (hasProject && contentToRender.includes('_PROJECT_START_')) {
-        const introMatch = contentToRender.match(/_JSON_END_([\s\S]*?)(?:_FILE_START_|_PROJECT_END_)/);
-        contentToRender = introMatch ? introMatch[1].trim() : "";
+    if (msg.sender_type === 'ai') {
+        const isProjectBlock = /_PROJECT_START_/.test(contentToRender) || /_UPDATE_PROJECT_START_/.test(contentToRender);
+        const isEditBlock = /_EDIT_/.test(contentToRender);
+        const isAnswerBlock = /_ANSWER_START_/.test(contentToRender) || /_UPDATE_ANSWER_START_/.test(contentToRender);
+
+        if (hasProject && isProjectBlock) {
+            const introMatch = contentToRender.match(/_JSON_END_([\s\S]*?)(?=_FILE_START_|_PROJECT_END_)/);
+            contentToRender = introMatch ? introMatch[1].trim() : "";
+        } else if (isAnswerBlock) {
+            const answerMatch = contentToRender.match(/_JSON_END_([\s\S]*?)_ANSWER_END_/);
+            contentToRender = answerMatch ? answerMatch[1].trim() : "";
+        } else if (isEditBlock) {
+            contentToRender = "";
+        }
     }
     
     const hasContent = contentToRender.trim().length > 0;
@@ -1413,54 +1536,32 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
         const senderElem = document.createElement('p');
         contentElem.className = 'text-gray-800 text-sm message-content';
         senderElem.className = 'font-semibold text-sm mb-1 text-gray-800';
-        
-        if (msg.sender_type === 'ai') {
-            messageBubble.className = 'message ai-message';
-            const prompterId = msg.prompting_user_id;
-            const prompterInfo = prompterId && window.participantInfo ? window.participantInfo[prompterId] : null;
-            const prompterColor = prompterInfo?.color || '#dbeafe';
-            const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
-            messageBubble.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
-            senderElem.textContent = prompterInfo ? `AI Assistant - Prompted by ${prompterInfo.name}` : 'AI Assistant';
-            senderElem.classList.add('italic');
-            renderMarkdownAndKatex(contentToRender, contentElem);
-        } else if (msg.sender_type === 'user') {
-            messageBubble.classList.add('message-item', 'p-3', 'rounded-lg', 'max-w-xl', 'mb-2', 'break-words', 'flex', 'flex-col');
-            const isCurrentUser = window.currentUserInfo && msg.user_id === window.currentUserInfo.id;
-            messageBubble.classList.add(isCurrentUser ? 'self-end' : 'self-start', isCurrentUser ? 'ml-auto' : 'mr-auto');
-            let bubbleColor = msg.sender_color || (window.participantInfo && msg.user_id ? window.participantInfo[msg.user_id]?.color : '#e5e7eb');
-            messageBubble.style.backgroundColor = bubbleColor;
-            senderElem.textContent = msg.sender_name;
-            contentElem.innerHTML = marked.parse((contentToRender || '').replace(/@\w+/g, '').trim());
-        } else {
-            messageBubble.className = 'system-message';
-            contentElem.textContent = contentToRender;
-            messageBubble.appendChild(contentElem);
-        }
-
-        const deleteBtn = createDeleteButton(msg.id, msg.user_id);
+        messageBubble.className = 'message ai-message';
+        const prompterId = msg.prompting_user_id;
+        const prompterInfo = prompterId && window.participantInfo ? window.participantInfo[prompterId] : null;
+        const prompterColor = prompterInfo?.color || '#dbeafe';
+        const aiColor = window.participantInfo?.['AI']?.color || '#E0F2FE';
+        messageBubble.style.background = `linear-gradient(to right, ${aiColor}, ${prompterColor})`;
+        senderElem.textContent = prompterInfo ? `AI Assistant - Prompted by ${prompterInfo.name}` : 'AI Assistant';
+        senderElem.classList.add('italic');
+        renderMarkdownAndKatex(contentToRender, contentElem);
+        const deleteBtn = createDeleteButton(msg.id, msg.user_id, turnContainer);
         if (deleteBtn) {
             messageBubble.appendChild(deleteBtn);
         }
-
-        if (msg.sender_type !== 'system') {
-            messageBubble.appendChild(senderElem);
-            messageBubble.appendChild(contentElem);
-        }
-        
+        messageBubble.appendChild(senderElem);
+        messageBubble.appendChild(contentElem);
         turnContainer.appendChild(messageBubble);
     }
 
     if (hasProject) {
         turnContainer.dataset.projectId = msg.project_id;
         turnContainer.dataset.projectName = msg.project_name;
-        
         turnContainer.dataset.projectData = JSON.stringify({
             name: msg.project_name || "Code Project",
             files: msg.project_files,
             prompting_user_id: msg.prompting_user_id
         });
-
         const explorer = document.createElement('project-explorer');
         explorer.projectData = {
             projectId: msg.project_id,
@@ -1469,29 +1570,30 @@ async function renderSingleMessage(msg, parentElement, isHistory = false, edited
             commits: msg.project_commits || []
         };
         turnContainer.appendChild(explorer);
-
         const codeBlocksArea = document.createElement('div');
         codeBlocksArea.className = 'code-blocks-area';
-        
+
+        // Simplified logic: The explorer now handles uncommitted state dynamically.
+        // We just render the blocks based on the data we have.
         const outputLogFile = msg.project_files.find(f => f.path.endsWith('_run_output.log'));
         const outputContent = outputLogFile ? outputLogFile.content : null;
         let runBlockElement = null;
 
         msg.project_files.forEach((file, index) => {
             if (file.path.endsWith('_run_output.log')) return;
-
             const codeBlockIndex = index + 1;
             const isRunnable = file.path.endsWith('run.sh');
             const safeBtoa = btoa(file.path).replace(/[/+=]/g, '');
             const stableId = `code-block-turn${msg.turn_id}-${safeBtoa}`;
-            const finalCodeContent = editedCodeBlocks[stableId] || file.content;
-
+            
+            // On history load, check for edits and apply them.
+            const finalCodeContent = (isHistory && editedCodeBlocks[stableId]) ? editedCodeBlocks[stableId] : file.content;
+            
             const block = createCodeBlock(
                 file.language, finalCodeContent, file.content,
                 msg.turn_id, codeBlockIndex, codeBlocksArea,
                 isRunnable, msg.prompting_user_id
             );
-
             if (block) {
                 block.id = stableId;
                 block.dataset.path = file.path;
@@ -1736,36 +1838,23 @@ async function handleAiStreamEnd(payload) {
     finalizeTurnOnErrorOrClose();
 
     if (currentStreamingExplorer && payload && payload.project_id) {
-        console.log("Condition met: A project was being streamed and a final project_id was received.");
         const projectId = payload.project_id;
-        const turnContainer = currentStreamingExplorer.closest('.ai-turn-container');
-        if (turnContainer) {
-            turnContainer.dataset.projectId = projectId;
-        }
-
         try {
-            console.log(`Attempting to fetch final project details from: /api/projects/${projectId}`);
             const response = await fetch(`/api/projects/${projectId}`);
-            
             if (response.ok) {
                 const finalProjectData = await response.json();
                 finalProjectData.projectId = finalProjectData.id;
                 
-                console.log("Successfully fetched final project data. It includes commits:", finalProjectData.commits);
+                // Pass the final data to the explorer and let it handle the UI synchronization.
                 currentStreamingExplorer.updateData(finalProjectData);
-                console.log("Project explorer update has been called successfully.");
             } else {
                 console.error("Error fetching final project data. Status:", response.status);
-                const errorText = await response.text();
-                console.error("Server error response text:", errorText);
             }
         } catch (error) {
             console.error("A network or script error occurred while fetching final project data:", error);
         }
-    } else {
-        console.warn("Condition not met: Did not update dropdown because either no project was being streamed, or the final message from the server was missing the project_id.");
     }
-
+    
     currentStreamingExplorer = null;
     currentCodeBlocksArea = null;
 }
@@ -1989,29 +2078,6 @@ function connectWebSocket() {
                 case 'end_file_update': handleEndFileStream(messageData.payload); break;
                 case 'end_file_extend': handleEndFileExtend(messageData.payload); break;
                 case 'ai_stream_end': handleAiStreamEnd(messageData.payload); break;
-                case 'new_message':
-                    if (messageData.payload) {
-                        renderSingleMessage(messageData.payload, chatHistory, true, {});
-                    }
-                    scrollToBottom('smooth');
-                    break;
-                case 'message_updated': {
-                    const { message_id, new_content } = messageData.payload;
-                    const turnContainer = document.querySelector(`.ai-turn-container[data-message-id='${message_id}']`);
-                    if(turnContainer){
-                        const newLinkData = JSON.parse(new_content);
-                        turnContainer.innerHTML = ''; // Clear it
-                        const linkContainer = document.createElement('div');
-                        linkContainer.className = 'system-message italic text-blue-600 cursor-pointer hover:underline';
-                        linkContainer.textContent = newLinkData.text || 'Content has been updated. Click to view.';
-                        linkContainer.addEventListener('click', () => {
-                             const targetElement = document.querySelector(`.ai-turn-container[data-message-id='${newLinkData.target_message_id}']`);
-                             if(targetElement) targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        });
-                        turnContainer.appendChild(linkContainer);
-                    }
-                    break;
-                }
                 case 'project_updated':
                     if (messageData.payload && messageData.payload.project_id) {
                         const { project_id, project_data } = messageData.payload;
@@ -2031,32 +2097,104 @@ function connectWebSocket() {
                     chatHistory.prepend(banner); 
                     setInputDisabledState(true, false); 
                     break;
-                case 'message_deleted': {
-                    const { message_id, user_id } = messageData.payload;
-                    const turnContainer = document.querySelector(`.ai-turn-container[data-message-id='${message_id}']`);
+                case 'new_message': {
+                    const message = messageData.payload;
+                    if (!message) break;
+
+                    const isMyMessage = window.currentUserInfo && message.user_id === window.currentUserInfo.id;
+
+                    if (isMyMessage) {
+                        console.log(`[WS RECV MSG | new_message] This is my message returning. Turn ID: ${message.turn_id}`);
+                        const tempMsgElement = document.querySelector(`.message-item[data-turn-id='${message.turn_id}']`);
+                        
+                        if (tempMsgElement) {
+                            console.log(`[WS RECV MSG | new_message] Found temporary element to replace:`, tempMsgElement);
+                            const tempContainer = document.createElement('div');
+                            renderSingleMessage(message, tempContainer, false, {});
+                            const finalMsgElement = tempContainer.firstChild;
+
+                            if (finalMsgElement) {
+                                console.log(`[WS RECV MSG | new_message] Replacing temporary element with final element:`, finalMsgElement);
+                                tempMsgElement.replaceWith(finalMsgElement);
+                            } else {
+                                console.warn(`[WS RECV MSG | new_message] Failed to create final element, removing temporary one.`);
+                                tempMsgElement.remove();
+                            }
+                            
+                            scrollToBottom('smooth');
+                            break;
+                        } else {
+                            console.warn(`[WS RECV MSG | new_message] Could not find temporary element for turn ID ${message.turn_id} to replace.`);
+                        }
+                    }
                     
-                    if (turnContainer && window.currentUserInfo && window.currentUserInfo.id === user_id) {
-                        const placeholder = document.createElement('div');
-                        placeholder.className = 'deleted-message-placeholder';
-                        
-                        const text = document.createElement('span');
-                        text.textContent = '(message has been deleted)';
-                        
-                        const dismissBtn = document.createElement('span');
-                        dismissBtn.className = 'dismiss-deleted-btn';
-                        dismissBtn.innerHTML = '&times;';
-                        dismissBtn.title = 'Dismiss';
-                        dismissBtn.onclick = () => placeholder.remove();
-                        
-                        placeholder.appendChild(text);
-                        placeholder.appendChild(dismissBtn);
-                        
-                        turnContainer.replaceWith(placeholder);
-                    } else if (turnContainer) {
-                        turnContainer.remove();
+                    console.log(`[WS RECV MSG | new_message] Rendering message from another user.`);
+                    renderSingleMessage(message, chatHistory, true, {});
+                    scrollToBottom('smooth');
+                    break;
+                }
+
+                case 'message_updated': {
+                    const { message_id, new_content } = messageData.payload;
+                    const elementToUpdate = document.querySelector(`[data-message-id='${message_id}']`);
+
+                    if (elementToUpdate) {
+                        try {
+                            const parsedContent = JSON.parse(new_content);
+                            // Check if this update is specifically for a deletion.
+                            if (parsedContent && parsedContent.type === 'deleted') {
+                                const placeholder = document.createElement('div');
+                                placeholder.className = 'deleted-message-placeholder';
+                                placeholder.dataset.messageId = message_id;
+
+                                // Keep the placeholder on the same side as the original message.
+                                if (elementToUpdate.classList.contains('self-end')) {
+                                    placeholder.classList.add('self-end', 'ml-auto');
+                                } else {
+                                    placeholder.classList.add('self-start', 'mr-auto');
+                                }
+
+                                const text = document.createElement('span');
+                                text.textContent = `(message deleted by ${parsedContent.deleted_by || 'a user'})`;
+
+                                const dismissBtn = document.createElement('span');
+                                dismissBtn.className = 'dismiss-deleted-btn';
+                                dismissBtn.innerHTML = '&times;';
+                                dismissBtn.title = 'Dismiss';
+                                dismissBtn.onclick = async () => {
+                                    placeholder.remove();
+                                    try {
+                                        await fetch(`/api/messages/${message_id}/hide`, {
+                                            method: 'DELETE',
+                                            headers: { 'X-CSRF-Token': window.csrfTokenRaw }
+                                        });
+                                    } catch (error) {
+                                        console.error('Failed to save hidden state:', error);
+                                    }
+                                };
+
+                                placeholder.appendChild(text);
+                                placeholder.appendChild(dismissBtn);
+                                elementToUpdate.replaceWith(placeholder);
+
+                            } else {
+                                // This block handles other types of updates, like future AI corrections.
+                                // For now, we'll just log it.
+                                console.log("Received a non-delete message update:", messageData.payload);
+                            }
+                        } catch (e) {
+                            // If it's not valid JSON, it's likely a regular content update (e.g. from an edit).
+                            // This part of the logic can be expanded later.
+                            console.log("Received a non-JSON message update, which may be an edit.");
+                        }
                     }
                     break;
                 }
+
+                case 'message_deleted':
+                    // This case is now handled by 'message_updated', but we'll leave it
+                    // to gracefully handle any old events that might still be in flight.
+                    break;
                 default: handleStructuredMessage(messageData); break;
             }
         };
@@ -2068,16 +2206,16 @@ function connectWebSocket() {
 }
 
 function createDeleteButton(messageId, messageUserId, turnContainer) {
-    // Permission Check:
-    // - window.isHost is a new variable we'll need to set.
-    // - currentUserInfo.id must match the message's author.
-    // - AI messages (messageUserId is null/undefined) can be deleted by anyone.
+    // --- START LOGGING ---
+    console.log(`[CREATE DELETE BTN] Creating delete button for Message ID: ${messageId} (Type: ${typeof messageId})`);
+    // --- END LOGGING ---
+
     const isHost = window.isHost === true;
     const isMyMessage = window.currentUserInfo && window.currentUserInfo.id === messageUserId;
     const isAiMessage = !messageUserId;
 
     if (!isHost && !isMyMessage && !isAiMessage) {
-        return null; // Don't create the button if user doesn't have permission
+        return null;
     }
 
     const container = document.createElement('div');
@@ -2092,7 +2230,9 @@ function createDeleteButton(messageId, messageUserId, turnContainer) {
         e.stopPropagation();
         if (confirm('Are you sure you want to permanently delete this message? This cannot be undone.')) {
             if (websocket && websocket.readyState === WebSocket.OPEN) {
-                console.log(`[FRONTEND-TRACE] Sending 'delete_message' for ID: ${messageId}`);
+                // --- START LOGGING ---
+                console.log(`[DELETE CLICK] Button clicked. Sending delete request for Message ID: ${messageId} (Type: ${typeof messageId})`);
+                // --- END LOGGING ---
                 websocket.send(JSON.stringify({
                     type: 'delete_message',
                     payload: { message_id: messageId }
@@ -2279,22 +2419,57 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             const userMessage = messageInput.value.trim();
             if (!userMessage) return;
+
             if (!websocket || websocket.readyState !== WebSocket.OPEN) {
                 addErrorMessage("Cannot send message: Not connected to the server. Please refresh the page.");
                 return;
             }
+
+            currentTurnId++;
+            const mentionRegex = /@(\w+)/gi;
+            const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
+
+            // --- START FIX: Optimistically render a temporary message ---
+            const tempId = `temp-id-${Date.now()}`;
+            const tempUserMessage = {
+                id: tempId, // Use a unique temporary ID
+                sender_type: 'user',
+                content: userMessage,
+                turn_id: currentTurnId,
+                sender_name: window.currentUserInfo ? window.currentUserInfo.name : "You",
+                user_id: window.currentUserInfo ? window.currentUserInfo.id : null,
+                sender_color: window.currentUserInfo ? window.currentUserInfo.color : '#e5e7eb',
+                timestamp: new Date().toISOString()
+            };
+
+            console.log(`[SUBMIT] Optimistically rendering temporary message. Temp ID: ${tempId}, Turn ID: ${currentTurnId}`);
+            
+            renderSingleMessage(tempUserMessage, chatHistory, false, {});
+            const tempMsgElement = document.querySelector(`[data-message-id='${tempId}']`);
+            if (tempMsgElement) {
+                // Add a special attribute to find and replace it later
+                tempMsgElement.dataset.turnId = currentTurnId;
+            }
+            scrollToBottom('smooth');
+            // --- END FIX ---
+
+            if (recipients.includes("AI")) {
+                if (!window.isAiConfigured) {
+                    alert("AI provider has not been configured. Please go to User Settings to select a provider and add your API key.");
+                    currentTurnId--;
+                    if (tempMsgElement) tempMsgElement.remove(); // Clean up optimistic message on error
+                    return;
+                }
+                
+                handleAiThinking({
+                    turn_id: currentTurnId,
+                    prompting_user_id: window.currentUserInfo ? window.currentUserInfo.id : null,
+                    prompting_user_name: window.currentUserInfo ? window.currentUserInfo.name : "User"
+                });
+            }
+
             try {
                 messageInput.value = '';
-                const mentionRegex = /@(\w+)/gi;
-                const recipients = (userMessage.match(mentionRegex) || []).map(m => m.substring(1).toUpperCase());
-                currentTurnId++;
-                if (recipients.includes("AI")) {
-                    if (!window.isAiConfigured) {
-                        alert("AI provider has not been configured. Please go to User Settings to select a provider and add your API key.");
-                        currentTurnId--;
-                        return;
-                    }
-                }
                 const messagePayload = {
                     type: "chat_message",
                     payload: {

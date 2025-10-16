@@ -77,30 +77,50 @@ def _get_llm_settings_sync(user_id: int) -> dict:
         if conn:
             conn.close()
 
-def _process_and_save_ai_response(session_id: str, user_id: int, full_raw_content: str, turn_id: int, reply_to_id: Optional[int]) -> Tuple[Optional[int], Optional[str], Optional[int]]:
-    """Parses the full AI response, applies creation/edit/update logic, and saves the results."""
+def _process_and_save_ai_response(session_id: str, user_id: int, full_raw_content: str, turn_id: int, reply_to_id: Optional[int]) -> Tuple[Optional[int], Optional[str], Optional[str]]:
+    """
+    Parses the full AI response, applies creation/edit/update logic, and saves the results.
+    Returns: (message_id, new_project_id, final_content_for_broadcast)
+    """
     conn = None
     try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+
         outer_block_match = re.search(r"^_([A-Z_]+)_START_", full_raw_content)
         block_type = outer_block_match.group(1) if outer_block_match else "ANSWER"
 
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-        
+        # --- Logic for Updating/Editing an Existing Answer ---
+        if block_type in ["EDIT_ANSWER", "UPDATE_ANSWER"]:
+            payload_match = re.search(r"(\{.*?\})_JSON_END_", full_raw_content, re.DOTALL)
+            if not payload_match:
+                raise ValueError("Could not find JSON payload in the AI's edit/update response.")
+
+            payload = json.loads(payload_match.group(1))
+            message_id_to_update = int(payload.get("answer_to_edit_id"))
+            content_after_json = full_raw_content[payload_match.end():].rsplit('_', 2)[0].strip()
+            
+            final_content = _apply_answer_modifications(
+                cursor, block_type, message_id_to_update, content_after_json
+            )
+
+            if final_content is None:
+                raise ValueError(f"Failed to apply modifications for {block_type}.")
+
+            cursor.execute(
+                "UPDATE chat_messages SET content = ?, timestamp = datetime('now', 'utc') WHERE id = ?",
+                (final_content, message_id_to_update)
+            )
+            conn.commit()
+            return message_id_to_update, None, final_content
+
+        # --- Logic for Creating or Updating a Project ---
         new_message_content = full_raw_content
         new_project_id = None
         original_message_id_to_link = None
         link_text = ""
 
-        if block_type in ["EDIT_ANSWER", "UPDATE_ANSWER"]:
-            payload_match = re.search(r"(\{.*?\})_JSON_END_", new_message_content, re.DOTALL)
-            payload = json.loads(payload_match.group(1)) if payload_match else {}
-            content_after_json = new_message_content[payload_match.end():].rsplit('_', 2)[0]
-            new_message_content = _apply_answer_modifications(cursor, block_type, payload, content_after_json)
-            original_message_id_to_link = payload.get("answer_to_edit_id") or payload.get("answer_to_update_id")
-            link_text = "This answer has been updated. Click here to see the new version."
-
-        elif block_type in ["EDIT_PROJECT", "UPDATE_PROJECT"]:
+        if block_type in ["EDIT_PROJECT", "UPDATE_PROJECT"]:
             payload_match = re.search(r"(\{.*?\})_JSON_END_", new_message_content, re.DOTALL)
             payload = json.loads(payload_match.group(1)) if payload_match else {}
             
@@ -140,7 +160,8 @@ def _process_and_save_ai_response(session_id: str, user_id: int, full_raw_conten
                     print(f"[LLM_SAVE_ERROR] Failed to create git repo blob. Error: {error}")
             else:
                 print("[LLM_SAVE_ERROR] Failed to parse project data from raw content.")
-
+        
+        # --- Final INSERT for New Messages (including Projects and simple Answers) ---
         cursor.execute(
             """INSERT INTO chat_messages (session_id, user_id, sender_name, sender_type, content, turn_id, reply_to_message_id, prompting_user_id, project_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -152,7 +173,7 @@ def _process_and_save_ai_response(session_id: str, user_id: int, full_raw_conten
             _update_original_message_to_link(cursor, original_message_id_to_link, new_message_id, link_text)
 
         conn.commit()
-        return new_message_id, new_project_id, original_message_id_to_link
+        return new_message_id, new_project_id, new_message_content
 
     except Exception as e:
         print(f"!!! LLM_SAVE_ERROR: An exception occurred in _process_and_save_ai_response: {e}")
@@ -161,6 +182,8 @@ def _process_and_save_ai_response(session_id: str, user_id: int, full_raw_conten
         return None, None, None
     finally:
         if conn: conn.close()
+
+
 
 async def invoke_llm_for_session(
     session_id: str,
@@ -326,28 +349,26 @@ async def invoke_llm_for_session(
         
         full_response_content = "".join(all_content_parts)
         
-        ai_message_id, saved_project_id, updated_original_id = await asyncio.to_thread(
+        ai_message_id, saved_project_id, final_content = await asyncio.to_thread(
             _process_and_save_ai_response,
             session_id, user_id, full_response_content, turn_id, reply_to_id
         )
+
+        # Check if the response was an update/edit block
+        is_update_or_edit = "_UPDATE_ANSWER_START_" in full_response_content or "_EDIT_ANSWER_START_" in full_response_content
         
-        if updated_original_id and ai_message_id:
-            conn = None
-            try:
-                conn = database.get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("SELECT content FROM chat_messages WHERE id = ?", (updated_original_id,))
-                updated_row = cursor.fetchone()
-                if updated_row:
-                    await state.broadcast(session_id, {
-                        "type": "message_updated",
-                        "payload": {
-                            "message_id": updated_original_id,
-                            "new_content": updated_row['content']
-                        }
-                    })
-            finally:
-                if conn: conn.close()
+        if ai_message_id and is_update_or_edit:
+            # This was an update, so we broadcast a 'message_updated' event
+            await state.broadcast(session_id, {
+                "type": "message_updated",
+                "payload": {
+                    "message_id": ai_message_id,
+                    "new_content": final_content
+                }
+            })
+            state.remove_memory_for_client(session_id)
+            await state.unregister_ai_stream(stream_id)
+            return # End the execution here for updates
         
         if ai_message_id is not None:
             state.remove_memory_for_client(session_id)
@@ -368,29 +389,37 @@ def _update_original_message_to_link(cursor: sqlite3.Cursor, original_message_id
         (link_content, original_message_id)
     )
     
-def _apply_answer_modifications(cursor: sqlite3.Cursor, block_type: str, payload: dict, content: str) -> Optional[str]:
-    """Applies modifications to an answer's content and returns the new content."""
-    answer_id_key = "answer_to_edit_id" if block_type == "EDIT_ANSWER" else "answer_to_update_id"
-    original_message_id = payload.get(answer_id_key)
+def _apply_answer_modifications(cursor: sqlite3.Cursor, block_type: str, original_message_id: int, new_content_data: str) -> Optional[str]:
+    """Applies modifications to an answer's content and returns the new full content block."""
     if not original_message_id:
         return None
 
+    # For UPDATE_ANSWER, the new content is simply the streamed data wrapped in the original tags.
     if block_type == "UPDATE_ANSWER":
-        return content # For UPDATE, the streamed content is the new content.
+        # Re-wrap the content in the standard answer format for consistent storage.
+        return f"_ANSWER_START_\n{{}}\n_JSON_END_\n{new_content_data}\n_ANSWER_END_"
 
+    # For EDIT_ANSWER, fetch old content, apply regex, and re-wrap.
     elif block_type == "EDIT_ANSWER":
         cursor.execute("SELECT content FROM chat_messages WHERE id = ?", (original_message_id,))
         original_row = cursor.fetchone()
         if not original_row:
             return None
         
+        # Extract the text part of the original content
         original_content = original_row['content']
+        content_match = re.search(r"_JSON_END_([\s\S]*?)_ANSWER_END_", original_content, re.DOTALL)
+        editable_text = content_match.group(1).strip() if content_match else ""
+
         try:
-            modifications = json.loads(content.strip())
+            modifications = json.loads(new_content_data.strip())
             for mod in modifications:
-                original_content = re.sub(mod['find'], mod['replace'], original_content)
-            return original_content
+                editable_text = re.sub(mod['find'], mod['replace'], editable_text, flags=re.DOTALL)
+            
+            # Re-wrap the newly modified text in the standard answer format.
+            return f"_ANSWER_START_\n{{}}\n_JSON_END_\n{editable_text}\n_ANSWER_END_"
         except (json.JSONDecodeError, TypeError):
-            print(f"LLM_SAVE_ERROR: Could not apply answer edits due to invalid JSON. Content: {content}")
+            print(f"LLM_SAVE_ERROR: Could not apply answer edits due to invalid JSON. Content: {new_content_data}")
             return None
+    
     return None

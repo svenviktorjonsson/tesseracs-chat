@@ -34,6 +34,16 @@ def init_db():
     print(f"Initializing and migrating database schema at {DATABASE_PATH}...")
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS hidden_messages (
+        user_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        PRIMARY KEY (user_id, message_id),
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+        FOREIGN KEY (message_id) REFERENCES chat_messages (id) ON DELETE CASCADE
+    );
+    """)
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (

@@ -1,4 +1,3 @@
-
 const projectExplorerTemplate = document.createElement('template');
 projectExplorerTemplate.innerHTML = `
     <style>
@@ -144,7 +143,8 @@ class ProjectExplorer extends HTMLElement {
 
     set projectData(data) {
         this._projectData = data;
-        this.hasUncommittedChanges = false;
+        // Do NOT set hasUncommittedChanges here, as it causes race conditions.
+        // Let render() and its helpers manage the state.
         if (this.shadowRoot.getElementById('tree-container')) {
             this.render();
         }
@@ -169,7 +169,6 @@ class ProjectExplorer extends HTMLElement {
     }
 
     hideUncommittedState() {
-        if (!this.hasUncommittedChanges) return;
         this.hasUncommittedChanges = false;
         const commitBtn = this.shadowRoot.getElementById('commit-btn');
         const commitSelect = this.shadowRoot.getElementById('commit-select');
@@ -179,9 +178,8 @@ class ProjectExplorer extends HTMLElement {
         commitBtn.disabled = true;
         uncommittedOption.hidden = true;
         
-        // The first option is the hidden one, the second is the latest commit.
         if (commitSelect.options.length > 1) {
-             commitSelect.value = commitSelect.options[1].value;
+            commitSelect.value = commitSelect.options[1].value;
         }
     }
     
@@ -203,8 +201,30 @@ class ProjectExplorer extends HTMLElement {
     }
 
     updateData(newData) {
-        console.log("ProjectExplorer component is updating with new data:", newData);
-        this.projectData = newData;
+        this._projectData = newData;
+
+        const turnContainer = this.closest('.ai-turn-container');
+        if (turnContainer && this._projectData.files) {
+            this._projectData.files.forEach(file => {
+                const codeBlock = turnContainer.querySelector(`.block-container[data-path="${file.path}"]`);
+                if (codeBlock) {
+                    const codeElement = codeBlock.querySelector('code');
+                    const finalContentFromServer = file.content;
+                    
+                    if (codeElement && codeElement.textContent !== finalContentFromServer) {
+                        codeElement.textContent = finalContentFromServer;
+                        if (typeof Prism !== 'undefined') {
+                            Prism.highlightElement(codeElement);
+                        }
+                    }
+                    
+                    codeBlock.dataset.originalContent = finalContentFromServer;
+                    codeBlock.dataset.edited = 'false';
+                }
+            });
+        }
+        
+        this.render();
     }
     
     render() {
@@ -256,8 +276,6 @@ class ProjectExplorer extends HTMLElement {
             commitSelect.appendChild(option);
         });
 
-        this.hideUncommittedState(); // Reset to clean state on every full render
-
         commitSelect.removeEventListener('change', this._commitChangeHandler);
         this._commitChangeHandler = async (event) => {
             if (event.target.value === 'uncommitted') return;
@@ -308,6 +326,36 @@ class ProjectExplorer extends HTMLElement {
             }
         };
         commitSelect.addEventListener('change', this._commitChangeHandler);
+        
+        // --- START NEW FIX ---
+        // After rendering, dynamically check if the live code blocks differ from the commit data.
+        setTimeout(() => {
+            const turnContainer = this.closest('.ai-turn-container');
+            if (!turnContainer || !this._projectData || !this._projectData.files) {
+                this.hideUncommittedState();
+                return;
+            }
+
+            let hasAnyEdits = false;
+            for (const file of this._projectData.files) {
+                const codeBlock = turnContainer.querySelector(`.block-container[data-path="${file.path}"]`);
+                if (codeBlock) {
+                    const codeElement = codeBlock.querySelector('code');
+                    // Compare the visible content with the data from the latest commit
+                    if (codeElement && codeElement.textContent !== file.content) {
+                        hasAnyEdits = true;
+                        break; // Found an edit, no need to check further
+                    }
+                }
+            }
+
+            if (hasAnyEdits) {
+                this.showUncommittedState();
+            } else {
+                this.hideUncommittedState();
+            }
+        }, 0);
+        // --- END NEW FIX ---
     }
 
     bindEvents() {
